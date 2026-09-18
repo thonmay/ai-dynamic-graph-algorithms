@@ -71,12 +71,14 @@ output.
   one parent p; (3) satisfies delta(p) = delta(v) - 1, where delta(v) is
   the BFS distance from r.
 - Dynamic DFS (directed): the maintained forest is a valid DFS forest of
-  the current graph. Validity is verified via a DFS-forest certificate
-  (parent pointers plus discovery order) per the characterization of valid
-  DFS forests in Yang et al. The pre-audit "no forward-cross edge"
-  predicate is NOT used because directed DFS legitimately admits forward
-  edges. The certificate test rejects only forests that no DFS could
-  produce; back edges and forward edges are permitted.
+  the current graph. Yang et al. Lemma 1: a search spanning tree is a DFS
+  tree iff it has no forward-cross edges. A forward edge (ancestor to
+  descendant) is permitted; a back edge (descendant to ancestor) is
+  permitted; a forward-cross edge (no ancestor relation, source discovered
+  before target) is the defect that invalidates the forest. Validity is
+  verified operationally via a DFS-forest certificate (parent pointers plus
+  discovery and finish times): the certificate test reconstructs whether
+  the forest could have been produced by a DFS of the current graph.
 - Dynamic MCS (undirected, primary target): the output is a vertex ordering
   that is a valid MCS ordering of the current graph: each vertex is chosen
   when its cardinality (number of already-chosen neighbors) is maximal
@@ -99,11 +101,13 @@ output.
 
 ## Yang et al. dynamic-DFS (gold-standard reference)
 
-Full dynamic DFS in directed graphs. The key characterization: a search
-forest is a valid DFS forest iff its parent pointers and discovery order
-are consistent with a depth-first search of the current graph (certificate
-test). Back edges and forward edges are permitted; only forests that no
-DFS could produce are rejected.
+Full dynamic DFS in directed graphs. Lemma 1 (Yang et al.): a search
+spanning tree is a valid DFS tree iff it contains no forward-cross edges.
+Forward edges (ancestor to descendant) and back edges (descendant to
+ancestor) are permitted; only forward-cross edges (no ancestor relation,
+source discovered before target) invalidate the forest. The certificate
+test (parent pointers plus discovery and finish times) is the operational
+form of this check.
 
 The general approach when an edge is inserted or deleted:
 1. Check whether the forest needs updating (only certain insertions and
@@ -112,10 +116,15 @@ The general approach when an edge is inserted or deleted:
 3. Reconstruct only that portion via a constrained DFS.
 4. Update time intervals for affected vertices.
 
-Key domain references: Yang et al. (fully dynamic DFS, directed; the
-valid-DFS-tree characterization above), Frigioni et al. (semi-dynamic BFS,
-O(mn) total), Baswana et al. (incremental DFS), Bernstein et al.
-(almost-linear incremental SCC).
+Key domain references: Yang et al. (fully dynamic DFS, directed; Lemma 1
+no-forward-cross-edge characterization above), Frigioni et al.
+(semi-dynamic BFS, O(mn) total), Baswana et al. (incremental DFS),
+Bernstein et al. (almost-linear decremental SCC), Morse & Kozsik (fully
+dynamic loop nesting forests on reducible flow graphs, built on the
+Yang et al. dynamic-DFS backend; the canonical example of a novel
+dynamic abstraction discovered by extending dynamic DFS), Shinn et al.
+(Reflexion: verbal reinforcement learning with structured self-reflection;
+the pattern the reflector role follows).
 
 ## Data structure toolbox
 
@@ -162,7 +171,8 @@ interesting even if a known solution exists.
 
 Non-isomorphic graph generation:
 - `geng n` - all non-isomorphic undirected graphs on n vertices
-- `directg` - orients edges into all non-isomorphic directed versions
+- `directg` - converts each undirected edge into one direction, the other,
+  or both (2-cycle), producing all non-isomorphic directed versions
 - Pipeline for directed problems: `geng n | directg` -> all non-isomorphic
   digraphs on n vertices
 - For undirected problems (MCS): `geng n` alone (no directg)
