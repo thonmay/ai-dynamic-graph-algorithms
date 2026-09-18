@@ -1,0 +1,511 @@
+"""Orchestrator: composition root and evolutionary loop driver.
+
+The Orchestrator owns the evolutionary loop:
+  1. Select parents (elitism + fitness-proportional)
+  2. Generate offspring (LLM provider -> generator agent)
+  3. Verify candidates (sandbox + verifier)
+  4. Reflect on failures (LLM provider -> reflector agent)
+  5. Score (evaluator: fitness, work_ratio)
+  6. Select and commit (population cull + checkpoint)
+
+Stop conditions:
+  - Any candidate reaches fitness 1.0 (success)
+  - Max generations reached
+  - Max consecutive all-failed generations
+  - Model call budget exhausted
+"""
+
+from __future__ import annotations
+
+import logging
+import random
+import time
+from pathlib import Path
+from typing import Any
+
+from .candidate import Candidate, CandidateState
+from .checkpoint import Checkpoint
+from .config import RunConfig
+from .dashboard import Dashboard
+from .llm_provider import LLMProvider
+from .population import Population
+from .problem_definitions import ProblemDefinition, get_problem
+from .reflector import Reflector
+from .sandbox import Sandbox
+from .verifier import Verifier
+
+logger = logging.getLogger(__name__)
+
+
+class Orchestrator:
+    """Composition root. Drives the evolutionary loop."""
+
+    def __init__(self, config: RunConfig, run_id: str | None = None):
+        self.config = config
+        self.run_id = run_id or self._generate_run_id()
+        self.run_dir = Path(config.workdir).resolve() / self.run_id
+
+        # Validate config
+        errors = config.validate()
+        if errors:
+            raise ValueError(f"Invalid config: {'; '.join(errors)}")
+
+        # Initialize components
+        self.problem: ProblemDefinition = get_problem(config.problem)
+        self.sandbox = Sandbox(timeout_seconds=config.timeout_seconds,
+                               directed=self.problem.directed)
+        self.verifier = Verifier(
+            problem=self.problem,
+            sandbox=self.sandbox,
+            bound_n_max=config.bound.n_max,
+            bound_n_random=config.bound.n_random,
+            bound_seq_len_max=config.bound.seq_len_max,
+            bound_seq_count=config.bound.seq_count,
+            bound_seed=config.bound.seed,
+        )
+        self.checkpoint = Checkpoint(self.run_dir)
+        self.provider = LLMProvider(config=config, run_dir=self.run_dir)
+        self.reflector = Reflector(provider=self.provider, problem=self.problem)
+        self.dashboard = Dashboard(self.run_dir)
+        self.population = Population(
+            max_size=config.population_size,
+            elitism_k=config.elitism_k,
+            diversity_threshold=config.diversity_threshold,
+            crossover_enabled=config.crossover_enabled,
+        )
+
+        self.generation = 0
+        self.consecutive_all_failed = 0
+        self.model_calls = 0
+        self.stop_reason: str | None = None
+        self.fitness_history: list[float] = []
+
+        # Save config
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        config.save(self.run_dir / "config.yaml")
+
+    def _generate_run_id(self) -> str:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        rand = random.randint(0, 999)
+        return f"run_{ts}_{rand:03d}"
+
+    def run(self) -> dict[str, Any]:
+        """Run the evolutionary loop to completion.
+
+        Returns a run summary dict.
+        """
+        logger.info("Starting run %s (problem=%s, pop=%d, max_gen=%d)",
+                     self.run_id, self.config.problem,
+                     self.config.population_size, self.config.max_generations)
+
+        # Try to resume from checkpoint
+        loaded = self._try_resume()
+        if not loaded:
+            # Seed: generate initial population from scratch
+            self._seed_initial_population()
+
+        while self.generation < self.config.max_generations:
+            if self.stop_reason:
+                break
+
+            self.step_generation()
+
+        # Final export
+        summary = self._export_summary()
+        return summary
+
+    def _try_resume(self) -> bool:
+        """Try to resume from the last checkpoint. Returns True if resumed."""
+        latest = self.checkpoint.load_latest()
+        if latest is None:
+            return False
+
+        self.generation = latest["generation"]
+        self.model_calls = latest.get("model_calls", 0)
+        self.consecutive_all_failed = latest.get("consecutive_all_failed", 0)
+        self.fitness_history = latest.get("fitness_history", [])
+        self.stop_reason = latest.get("stop_reason")
+
+        # If the run stopped due to budget exhaustion but the budget has
+        # been raised since, clear the stop reason so the loop can continue.
+        if self.stop_reason == "model_call_budget_exhausted":
+            if self.model_calls < self.config.model_call_budget:
+                logger.info("Budget raised since last stop (%d < %d), resuming",
+                            self.model_calls, self.config.model_call_budget)
+                self.stop_reason = None
+            else:
+                logger.info("Budget still exhausted (%d >= %d), nothing to resume",
+                            self.model_calls, self.config.model_call_budget)
+        self.population = Population.from_json(
+            latest["candidates"],
+            max_size=self.config.population_size,
+            elitism_k=self.config.elitism_k,
+            diversity_threshold=self.config.diversity_threshold,
+            crossover_enabled=self.config.crossover_enabled,
+        )
+
+        # If fitness_history wasn't in the checkpoint, reconstruct it
+        if not self.fitness_history:
+            for gen_num in range(1, self.generation + 1):
+                gen_data = self.checkpoint.load_generation(gen_num)
+                if gen_data:
+                    candidates = gen_data.get("candidates", [])
+                    best = max((c.get("fitness", 0) for c in candidates), default=0)
+                    self.fitness_history.append(best)
+
+        logger.info("Resumed from generation %d (%d candidates)",
+                     self.generation, self.population.size)
+        return True
+
+    def _seed_initial_population(self) -> None:
+        """Generate the first batch of candidates from scratch."""
+        logger.info("Seeding initial population (size=%d)", self.config.population_size)
+        self.generation = 0
+
+        # Generate N candidates with no parent (fresh)
+        new_candidates: list[Candidate] = []
+
+        for i in range(self.config.population_size):
+            if self.model_calls >= self.config.model_call_budget:
+                self.stop_reason = "model_call_budget_exhausted"
+                logger.warning("Model call budget exhausted during seeding")
+                break
+
+            candidate_id = f"gen{self.generation + 1:03d}_c{i + 1:02d}"
+            code_filename = f"{candidate_id}.py"
+            code_path = self.run_dir / "candidates" / code_filename
+
+            # Call generator with no parent
+            self.provider.generate(
+                problem_name=self.config.problem,
+                parent_code=None,
+                candidate_filename=code_filename,
+                generation=self.generation + 1,
+                workdir=str(self.run_dir),
+            )
+            self.model_calls = self.provider.call_count
+
+            if code_path.exists():
+                candidate = Candidate(
+                    id=candidate_id,
+                    code_path=str(code_path),
+                    generation=self.generation + 1,
+                    parent_ids=[],
+                )
+                new_candidates.append(candidate)
+            else:
+                logger.warning("Generator did not produce %s", code_path)
+
+        # Verify all new candidates
+        for candidate in new_candidates:
+            self.verifier.verify(candidate)
+
+        # Reflect on failures
+        for candidate in new_candidates:
+            if candidate.is_failed:
+                if self.model_calls >= self.config.model_call_budget:
+                    self.stop_reason = "model_call_budget_exhausted"
+                    logger.warning("Model call budget exhausted during reflection")
+                    break
+                self.reflector.reflect(candidate, self.run_dir, self.generation + 1)
+                self.model_calls = self.provider.call_count
+
+        # Add to population
+        for candidate in new_candidates:
+            self.population.add(candidate)
+
+        # Commit generation 1
+        self.generation = 1
+        self._check_stop_conditions()
+        self._commit_generation()
+
+    def step_generation(self) -> None:
+        """Execute one generation of the evolutionary loop."""
+        self.generation += 1
+        gen = self.generation
+        logger.info("=== Generation %d ===", gen)
+
+        new_candidates: list[Candidate] = []
+
+        # Determine how many new candidates to generate
+        slots = self.config.population_size - len([
+            c for c in self.population.candidates
+            if c.state == CandidateState.PASS
+        ])
+
+        # Prioritize repair of failed candidates with reflections
+        repairable = self.population.get_failed_repairable()
+        repair_count = min(len(repairable), slots)
+        fresh_count = slots - repair_count
+
+        # Diversity injection: if population is too similar, add a fresh candidate
+        if self.population.needs_diversity_injection:
+            logger.info("Diversity injection triggered (diversity=%.2f)",
+                        self.population.compute_diversity())
+            fresh_count += 1
+
+        # Repair phase
+        for i in range(repair_count):
+            if self.model_calls >= self.config.model_call_budget:
+                self.stop_reason = "model_call_budget_exhausted"
+                break
+
+            parent = repairable[i]
+            candidate_id = f"gen{gen:03d}_c{i + 1:02d}"
+            code_filename = f"{candidate_id}.py"
+
+            # Read parent code
+            parent_code_path = Path(parent.code_path)
+            try:
+                parent_code = parent_code_path.read_text()
+            except Exception:
+                parent_code = ""
+
+            # Read reflection
+            reflection_text = ""
+            if parent.reflection_path:
+                refl_path = Path(parent.reflection_path)
+                if not refl_path.is_absolute():
+                    refl_path = self.run_dir / parent.reflection_path
+                try:
+                    reflection_text = refl_path.read_text()
+                except Exception:
+                    pass
+
+            self.provider.repair(
+                problem_name=self.config.problem,
+                failed_code=parent_code,
+                reflection=reflection_text,
+                candidate_filename=code_filename,
+                workdir=str(self.run_dir),
+            )
+            self.model_calls = self.provider.call_count
+
+            code_path = self.run_dir / "candidates" / code_filename
+            if code_path.exists():
+                candidate = Candidate(
+                    id=candidate_id,
+                    code_path=str(code_path),
+                    generation=gen,
+                    parent_ids=[parent.id],
+                )
+                new_candidates.append(candidate)
+
+        # Fresh generation phase
+        for i in range(fresh_count):
+            if self.model_calls >= self.config.model_call_budget:
+                self.stop_reason = "model_call_budget_exhausted"
+                break
+
+            idx = repair_count + i
+            candidate_id = f"gen{gen:03d}_c{idx + 1:02d}"
+            code_filename = f"{candidate_id}.py"
+
+            # Select a parent (or None for fresh)
+            parents = self.population.select_parents(count=1)
+            parent = parents[0] if parents else None
+
+            parent_code = None
+            parent_ids: list[str] = []
+            if parent is not None:
+                parent_code_path = Path(parent.code_path)
+                try:
+                    parent_code = parent_code_path.read_text()
+                    parent_ids = [parent.id]
+                except Exception:
+                    pass
+
+            self.provider.generate(
+                problem_name=self.config.problem,
+                parent_code=parent_code,
+                candidate_filename=code_filename,
+                generation=gen,
+                workdir=str(self.run_dir),
+            )
+            self.model_calls = self.provider.call_count
+
+            code_path = self.run_dir / "candidates" / code_filename
+            if code_path.exists():
+                candidate = Candidate(
+                    id=candidate_id,
+                    code_path=str(code_path),
+                    generation=gen,
+                    parent_ids=parent_ids,
+                )
+                new_candidates.append(candidate)
+
+        if not new_candidates:
+            logger.warning("Generation %d produced no candidates", gen)
+            self._check_stop_conditions()
+            self._commit_generation()
+            return
+
+        # Verify all new candidates
+        for candidate in new_candidates:
+            self.verifier.verify(candidate)
+
+        # Reflect on failures
+        for candidate in new_candidates:
+            if candidate.is_failed:
+                if self.model_calls >= self.config.model_call_budget:
+                    self.stop_reason = "model_call_budget_exhausted"
+                    logger.warning("Model call budget exhausted during reflection")
+                    break
+                self.reflector.reflect(candidate, self.run_dir, gen)
+                self.model_calls = self.provider.call_count
+
+        # Add to population
+        for candidate in new_candidates:
+            self.population.add(candidate)
+
+        # Cull
+        discarded = self.population.cull()
+        if discarded:
+            logger.info("Discarded %d candidates", len(discarded))
+
+        # Check stop conditions before committing so the checkpoint
+        # captures the updated counter/reason atomically.
+        self._check_stop_conditions()
+
+        # Commit (includes stop_reason + consecutive_all_failed)
+        self._commit_generation()
+
+        # Dashboard
+        if gen % self.config.dashboard_interval == 0:
+            self._emit_dashboard()
+
+    def _commit_generation(self) -> None:
+        """Commit the current generation state atomically."""
+        bound_dict = {
+            "n_max": self.config.bound.n_max,
+            "n_random": self.config.bound.n_random,
+            "seq_len_max": self.config.bound.seq_len_max,
+            "seq_count": self.config.bound.seq_count,
+            "seed": self.config.bound.seed,
+        }
+        best = self.population.best_fitness
+        self.fitness_history.append(best)
+        self.checkpoint.commit(
+            generation=self.generation,
+            run_id=self.run_id,
+            problem=self.config.problem,
+            bound=bound_dict,
+            candidates=self.population.candidates,
+            model_calls=self.model_calls,
+            consecutive_all_failed=self.consecutive_all_failed,
+            fitness_history=self.fitness_history,
+            stop_reason=self.stop_reason,
+        )
+        logger.info("Generation %d committed: best_fitness=%.2f, pop_size=%d",
+                     self.generation, best, self.population.size)
+
+    def _check_stop_conditions(self) -> None:
+        """Check all stop conditions and set stop_reason if met."""
+        if self.stop_reason:
+            return
+
+        # Stop on success: any candidate reaches fitness 1.0
+        if self.population.has_passing:
+            self.stop_reason = "success"
+            logger.info("SUCCESS: candidate reached fitness 1.0 at generation %d", self.generation)
+            return
+
+        # Stop on max generations
+        if self.generation >= self.config.max_generations:
+            self.stop_reason = "max_generations"
+            logger.info("Max generations reached (%d)", self.config.max_generations)
+            return
+
+        # Stop on consecutive all-failed generations
+        all_failed = all(c.is_failed for c in self.population.candidates) if self.population.candidates else True
+        if all_failed:
+            self.consecutive_all_failed += 1
+            if self.consecutive_all_failed >= self.config.max_consecutive_all_failed:
+                self.stop_reason = "consecutive_all_failed"
+                logger.warning("Stopping: %d consecutive all-failed generations",
+                              self.consecutive_all_failed)
+        else:
+            self.consecutive_all_failed = 0
+
+        # Stop on model call budget
+        if self.model_calls >= self.config.model_call_budget:
+            self.stop_reason = "model_call_budget_exhausted"
+            logger.warning("Model call budget exhausted (%d)", self.model_calls)
+
+    def _emit_dashboard(self) -> None:
+        """Emit a dashboard HTML snapshot."""
+        generations_data = []
+        for gen_num in range(1, self.generation + 1):
+            gen_data = self.checkpoint.load_generation(gen_num)
+            if gen_data:
+                generations_data.append(gen_data)
+
+        self.dashboard.render(
+            generation=self.generation,
+            config=self.config.to_dict(),
+            generations_data=generations_data,
+            run_id=self.run_id,
+        )
+
+    def _export_summary(self) -> dict[str, Any]:
+        """Export final run summary."""
+        best = self.population.best_candidate
+
+        # Emit final dashboard
+        self._emit_dashboard()
+
+        summary = {
+            "run_id": self.run_id,
+            "problem": self.config.problem,
+            "generation": self.generation,
+            "stop_reason": self.stop_reason,
+            "best_fitness": best.fitness if best else 0.0,
+            "best_candidate_id": best.id if best else None,
+            "best_work_ratio": best.work_ratio if best else None,
+            "total_candidates": len(self.population.candidates),
+            "passing_candidates": sum(1 for c in self.population.candidates if c.is_passing),
+            "model_calls": self.model_calls,
+            "fitness_history": self.fitness_history,
+            "config": self.config.to_dict(),
+        }
+
+        # Write summary
+        results_dir = self.run_dir / "results"
+        results_dir.mkdir(exist_ok=True)
+        import json
+        (results_dir / "run_summary.json").write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False)
+        )
+
+        # Efficiency report CSV
+        csv_lines = ["candidate_id,generation,fitness,work_ratio,state,timeout,tests_passed,tests_total"]
+        for gen_num in range(1, self.generation + 1):
+            gen_data = self.checkpoint.load_generation(gen_num)
+            if gen_data:
+                for c in gen_data.get("candidates", []):
+                    csv_lines.append(
+                        f"{c['id']},{gen_num},{c.get('fitness', 0)},"
+                        f"{c.get('work_ratio', '')},{c['state']},"
+                        f"{c.get('timeout', False)},{c.get('tests_passed', 0)},"
+                        f"{c.get('tests_total', 0)}"
+                    )
+        (results_dir / "efficiency_report.csv").write_text("\n".join(csv_lines))
+
+        logger.info("Run %s complete: %s (best_fitness=%.2f, %d generations)",
+                     self.run_id, self.stop_reason,
+                     summary["best_fitness"], self.generation)
+
+        return summary
+
+    def status(self) -> dict[str, Any]:
+        """Return current run status for CLI."""
+        return {
+            "run_id": self.run_id,
+            "generation": self.generation,
+            "best_fitness": self.population.best_fitness,
+            "population_size": self.population.size,
+            "passing": self.population.has_passing,
+            "stop_reason": self.stop_reason,
+            "model_calls": self.model_calls,
+            "consecutive_all_failed": self.consecutive_all_failed,
+        }

@@ -1,0 +1,182 @@
+"""Population management: selection, elitism, diversity, culling."""
+
+from __future__ import annotations
+
+import logging
+import random
+from typing import Any
+
+from .candidate import Candidate, CandidateState
+
+logger = logging.getLogger(__name__)
+
+
+class Population:
+    """Manages the candidate collection for one run."""
+
+    def __init__(
+        self,
+        max_size: int = 8,
+        elitism_k: int = 2,
+        diversity_threshold: float = 0.8,
+        crossover_enabled: bool = False,
+    ):
+        self.max_size = max_size
+        self.elitism_k = elitism_k
+        self.diversity_threshold = diversity_threshold
+        self.crossover_enabled = crossover_enabled
+        self.candidates: list[Candidate] = []
+
+    def add(self, candidate: Candidate) -> None:
+        self.candidates.append(candidate)
+
+    @property
+    def size(self) -> int:
+        return len(self.candidates)
+
+    @property
+    def best_fitness(self) -> float:
+        if not self.candidates:
+            return 0.0
+        return max(c.fitness for c in self.candidates)
+
+    @property
+    def best_candidate(self) -> Candidate | None:
+        if not self.candidates:
+            return None
+        return max(self.candidates, key=lambda c: c.fitness)
+
+    @property
+    def has_passing(self) -> bool:
+        return any(c.is_passing for c in self.candidates)
+
+    def select_parents(self, count: int = 1) -> list[Candidate | None]:
+        """Select parents for offspring generation.
+
+        Strategy:
+        1. If no viable candidates, return [None] (fresh generation)
+        2. Tournament selection: pick k=3 random viable candidates,
+           return the fittest. This preserves selection pressure while
+           ensuring different parents can be selected across repeated
+           calls (the orchestrator calls this once per offspring).
+        """
+        if not self.candidates:
+            return [None] * count
+
+        # Sort by fitness descending
+        ranked = sorted(self.candidates, key=lambda c: c.fitness, reverse=True)
+
+        # Filter to candidates that produced some result (not NEW, not CRASH-only)
+        viable = [c for c in ranked if c.state in (CandidateState.PASS, CandidateState.FAIL)]
+
+        if not viable:
+            return [None] * count
+
+        if len(viable) == 1:
+            return [viable[0]] * count
+
+        parents: list[Candidate | None] = []
+        tournament_k = min(3, len(viable))
+
+        for _ in range(count):
+            # Tournament: pick k random candidates, choose the fittest
+            contenders = random.sample(viable, tournament_k)
+            best = max(contenders, key=lambda c: c.fitness)
+            parents.append(best)
+
+        return parents
+
+    def get_failed_repairable(self) -> list[Candidate]:
+        """Return failed candidates that have reflections (eligible for repair)."""
+        return [c for c in self.candidates if c.is_repairable]
+
+    def compute_diversity(self) -> float:
+        """Compute pairwise diversity of the population.
+
+        Returns a value in [0, 1] where 1 means maximum diversity.
+        Low diversity (high similarity) triggers the diversity injection.
+
+        We use a simple metric: fraction of candidates with distinct
+        (fitness, failing_case_signature) pairs.
+        """
+        if len(self.candidates) <= 1:
+            return 1.0
+
+        signatures = set()
+        for c in self.candidates:
+            sig = (
+                round(c.fitness, 2),
+                c.error_message[:50] if c.error_message else "",
+                c.tests_passed,
+            )
+            signatures.add(sig)
+
+        diversity = len(signatures) / len(self.candidates)
+        return diversity
+
+    @property
+    def needs_diversity_injection(self) -> bool:
+        """True if population similarity exceeds threshold."""
+        return self.compute_diversity() < self.diversity_threshold
+
+    def cull(self) -> list[Candidate]:
+        """Reduce population to max_size, keeping best and most diverse.
+
+        Returns the discarded candidates.
+        """
+        if len(self.candidates) <= self.max_size:
+            return []
+
+        # Sort by fitness descending
+        ranked = sorted(self.candidates, key=lambda c: c.fitness, reverse=True)
+
+        # Keep elite (top-k)
+        elite = ranked[: self.elitism_k]
+
+        # From the rest, keep the most diverse failing-case signatures
+        rest = ranked[self.elitism_k:]
+        seen_signatures = set()
+        kept_rest: list[Candidate] = []
+        discarded: list[Candidate] = []
+
+        for c in rest:
+            if len(elite) + len(kept_rest) >= self.max_size:
+                # Discard the rest
+                c.transition(CandidateState.DISCARDED)
+                discarded.append(c)
+                continue
+
+            sig = (
+                round(c.fitness, 2),
+                c.error_message[:50] if c.error_message else "",
+            )
+            if sig not in seen_signatures:
+                seen_signatures.add(sig)
+                kept_rest.append(c)
+            else:
+                c.transition(CandidateState.DISCARDED)
+                discarded.append(c)
+
+        self.candidates = elite + kept_rest
+        return discarded
+
+    def to_json(self) -> list[dict[str, Any]]:
+        return [c.to_json() for c in self.candidates]
+
+    @classmethod
+    def from_json(
+        cls,
+        data: list[dict[str, Any]],
+        max_size: int = 8,
+        elitism_k: int = 2,
+        diversity_threshold: float = 0.8,
+        crossover_enabled: bool = False,
+    ) -> Population:
+        pop = cls(
+            max_size=max_size,
+            elitism_k=elitism_k,
+            diversity_threshold=diversity_threshold,
+            crossover_enabled=crossover_enabled,
+        )
+        pop.candidates = [Candidate.from_json(c) for c in data]
+        return pop
