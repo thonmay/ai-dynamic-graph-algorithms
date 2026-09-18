@@ -1,0 +1,156 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm]{geometry}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows.meta,positioning,fit,backgrounds}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+
+\tikzset{
+  actor/.style={rectangle, draw, fill=white, minimum height=0.8cm, minimum width=1.8cm, align=center, font=\small},
+  usecase/.style={ellipse, draw, fill=blue!8, minimum height=0.7cm, minimum width=2.6cm, align=center, font=\footnotesize},
+  internal/.style={ellipse, draw, fill=gray!10, minimum height=0.7cm, minimum width=2.6cm, align=center, font=\footnotesize},
+  boundary/.style={rectangle, draw, dashed, rounded corners, inner sep=0.5cm},
+  link/.style={thick},
+  inc/.style={->, >=Stealth, dashed}
+}
+
+\title{Software Requirements Specification\\[2pt]
+\large AI-Assisted Discovery of Dynamic Graph Algorithms\\ via Evolutionary Code Repair}
+\author{Thonmay Md Thoriqul Islam\\
+\textit{E\"otv\"os Lor\'and University, Faculty of Informatics}}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+% ============================================================
+\section{Problem and Scope}
+
+Designing correct \emph{dynamic} graph algorithms, where a structural property (BFS tree, DFS tree, strongly connected components) is maintained incrementally under edge insertions and deletions rather than recomputed from scratch, is difficult and poorly served by existing tooling. This project builds a research tool that assists in discovering such algorithms by combining LLM-based code generation and repair with exhaustive, isomorphism-aware verification, wrapped in an evolutionary search loop.
+
+The scope covers directed graphs and a tiered set of target problems: calibration problems with known solutions (dynamic BFS, dynamic DFS), harder problems (dynamic SCC, reachability), and one open problem (dynamic Lexicographic BFS). The system runs experiments autonomously and reports both positive results (a discovered correct algorithm) and negative results (where and why the search fails); both are valid outcomes.
+
+% ============================================================
+\section{Core Design Decisions}
+
+\begin{itemize}
+  \item \textbf{LLM-agnostic.} Code generation goes through a provider abstraction (hosted API or local model). No component depends on a specific vendor or agent framework.
+  \item \textbf{Multi-agent system.} Generation and repair are handled by several agents with focused roles (for example a generator and a critic/reflector). Whether the agents act cooperatively or critically, and whether new specialised agents are spawned dynamically, is treated as a research question decided empirically from the first experiments rather than fixed in advance.
+  \item \textbf{Verifier as trusted infrastructure.} The verification engine is pre-built and validated against known-correct reference implementations before any run. It lies outside every agent's write scope: no agent can read or modify it. The correctness of the whole thesis rests on this boundary.
+  \item \textbf{Correctness by invariant, not by equality.} Dynamic outputs (DFS tree, BFS tree, Lex-BFS order) are generally \emph{not unique}; many valid results exist depending on tie-breaking. A candidate is therefore judged correct when its output satisfies the problem's validity invariant (for example, a search tree is a valid DFS tree iff it contains no forward-cross edge), not when it equals one particular offline result.
+  \item \textbf{Sequence-based testing.} A dynamic algorithm maintains internal state across many operations, so the verifier replays \emph{sequences} of interleaved edge insertions and deletions, checking the invariant after every operation, rather than testing a single operation on a static base graph.
+  \item \textbf{Exhaustive isomorphism-aware coverage.} Base graphs are all non-isomorphic digraphs up to size $n$ (via the \texttt{nauty} tools \texttt{geng} and \texttt{directg}), with random sampling of larger graphs and longer operation sequences beyond the exhaustive range.
+  \item \textbf{Fitness and efficiency baseline.} Primary fitness is the fraction of operation sequences whose invariant holds throughout; among correct candidates, the tie-break is efficiency, measured as vertices visited and edges scanned per update against full offline recomputation ($O(|V|+|E|)$).
+  \item \textbf{Evolutionary loop with reflection.} A population of candidates is evolved across generations; failing cases produce structured reflections that feed the next generation's repair prompt.
+  \item \textbf{Candidate isolation.} Generated code is untrusted: each candidate runs under a per-execution timeout, and crashes or non-termination are recorded as failures rather than halting the run.
+  \item \textbf{Interface.} A command-line interface is the primary user interface, together with a progress-monitoring view; a richer visual interface is left open as a later design decision.
+  \item \textbf{Persistence.} Run state is saved every generation for crash recovery; results are exported as human-readable and machine-readable files.
+\end{itemize}
+
+% ============================================================
+\clearpage
+\section{Functional Requirements}
+
+The functional requirements are given as a use case diagram (Figure~\ref{fig:uc}) with two human actors, followed by a user story table (Table~\ref{tab:us}) in the given-when-then format.
+
+\subsection{Use Case Diagram}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.9cm]
+
+% Use cases inside boundary
+\node[usecase] (config)  {UC-01\\Configure Run};
+\node[usecase] (launch)  [below=of config]  {UC-02\\Launch Loop};
+\node[usecase] (monitor) [below=of launch]   {UC-03\\Monitor Progress};
+\node[usecase] (export)  [below=of monitor]  {UC-04\\Export Results};
+\node[usecase] (review)  [below=of export]   {UC-05\\Review History};
+
+% Internal (system-performed) use cases, no actor
+\node[internal] (gen)     [right=2.6cm of launch]  {UC-06\\Generate Candidate};
+\node[internal] (verify)  [below=of gen]           {UC-07\\Verify Candidate};
+\node[internal] (reflect) [below=of verify]        {UC-08\\Reflect on Failure};
+
+% Boundary around all use cases
+\begin{scope}[on background layer]
+\node[boundary, fit=(config)(launch)(monitor)(export)(review)(gen)(verify)(reflect)] (bound) {};
+\end{scope}
+\node[anchor=north west, font=\small\bfseries] at (bound.north west) {Discovery Platform};
+
+% Actors
+\node[actor] (student)    [left=2.2cm of monitor, yshift=1.2cm] {Student};
+\node[actor] (supervisor) [left=2.2cm of monitor, yshift=-1.4cm] {Supervisor};
+
+% Student links
+\draw[link] (student) -- (config);
+\draw[link] (student) -- (launch);
+\draw[link] (student) -- (monitor);
+\draw[link] (student) -- (export);
+% Supervisor links
+\draw[link] (supervisor) -- (monitor);
+\draw[link] (supervisor) -- (review);
+
+% Include / extend relationships
+\draw[inc] (launch) -- node[above, font=\scriptsize] {$\ll$include$\gg$} (gen);
+\draw[inc] (gen) -- (verify);
+\draw[inc] (verify) -- node[right, font=\scriptsize] {$\ll$extend$\gg$} (reflect);
+
+\end{tikzpicture}
+\caption{Use case diagram. White ellipses are user-triggered; grey ellipses are performed automatically by the system inside the evolutionary loop.}
+\label{fig:uc}
+\end{figure}
+
+\clearpage
+\subsection{User Stories}
+
+{\small\setlength{\tabcolsep}{4pt}\renewcommand{\arraystretch}{1.2}
+\newcolumntype{R}[1]{>{\raggedright\arraybackslash}p{#1}}
+\begin{longtable}{|R{0.7cm}|R{2.5cm}|R{2.3cm}|R{2.5cm}|R{2.5cm}|R{3.0cm}|}
+\hline
+\textbf{ID} & \textbf{Function} & \textbf{Description} & \textbf{Given} & \textbf{When} & \textbf{Then} \\
+\hline
+\endfirsthead
+\hline
+\textbf{ID} & \textbf{Function} & \textbf{Description} & \textbf{Given} & \textbf{When} & \textbf{Then} \\
+\hline
+\endhead
+\hline
+\endfoot
+
+US-01 & configure\_\allowbreak run & Set run parameters & I am a student & I choose the problem, model provider, and evolutionary parameters & The configuration is validated and saved \\
+\hline
+US-02 & launch\_\allowbreak run & Start the loop & A run is configured & I launch it & The system evolves and tests candidates until a stop condition \\
+\hline
+US-03 & monitor\_\allowbreak progress & View run state & A run is active or finished & I query its status & I see the generation, best fitness, and failure patterns \\
+\hline
+US-04 & export\_\allowbreak results & Save outputs & A run has produced results & I export it & A readable report and a structured data file are written \\
+\hline
+US-05 & review\_\allowbreak history & Inspect past runs & Previous runs exist & I select one & I see its summary and can drill into generations \\
+\hline
+US-06 & generate\_\allowbreak candidate & Produce an algorithm & A parent and prompt are ready & The loop needs offspring & A new candidate is written to disk \\
+\hline
+US-07 & verify\_\allowbreak candidate & Test correctness & A candidate exists & The loop verifies it & Its validity invariant is checked over operation sequences; it is marked correct or incorrect, with efficiency metrics and failing cases recorded \\
+\hline
+US-08 & reflect\_\allowbreak on\_\allowbreak failure & Analyse a failure & A candidate failed verification & The loop requests a reflection & A structured reflection and repair hints are produced for the next generation \\
+\hline
+
+\caption{User stories in given-when-then format.}
+\label{tab:us}
+\end{longtable}
+}
+
+% ============================================================
+\section{Non-Functional Requirements}
+
+\begin{itemize}
+  \item \textbf{Performance.} Exhaustive verification is feasible for small sizes (about $n \le 5$); larger graphs and longer operation sequences use random sampling with a configurable budget. Each model call and each candidate execution runs under its own timeout so that slow or non-terminating code cannot stall a run.
+  \item \textbf{Reliability.} Run state is checkpointed every generation so a run can resume after interruption; transient model-call failures are retried before a candidate is abandoned. Exact retry and timeout policies are configurable and fixed during experimentation.
+  \item \textbf{Portability.} The tool depends only on Python, the \texttt{nauty} CLI, and a configurable model backend; no vendor lock-in.
+  \item \textbf{Usability.} All runs are configured through files and driven from the command line, with a monitoring view for progress.
+\end{itemize}
+
+\end{document}
