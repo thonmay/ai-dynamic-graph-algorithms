@@ -81,6 +81,16 @@ def main(argv: list[str] | None = None) -> int:
     p_verify.add_argument("--problem", choices=sorted(VALID_PROBLEMS), default="dynamic_bfs")
     p_verify.add_argument("--n-max", type=int, default=4, help="max graph size for self-test")
 
+    # formalize (Lean proof of a PASS candidate)
+    p_formalize = subparsers.add_parser(
+        "formalize",
+        help="dispatch lean-prover agent to prove a PASS candidate correct (FR-AGENT-07)",
+    )
+    p_formalize.add_argument("--run", required=True, help="run directory")
+    p_formalize.add_argument("--candidate", required=True, help="candidate id, e.g. gen001_c01")
+    p_formalize.add_argument("--model", default=None, help="override model id")
+    p_formalize.add_argument("--enlcode-path", default=None, help="override enlcode binary path")
+
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
 
@@ -98,6 +108,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_history(args)
     elif args.command == "verify":
         return cmd_verify(args)
+    elif args.command == "formalize":
+        from .formalize import run_formalize
+        return run_formalize(
+            Path(args.run),
+            args.candidate,
+            model=args.model,
+            enlcode_path=args.enlcode_path,
+        )
     else:
         parser.print_help()
         return 1
