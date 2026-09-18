@@ -6,11 +6,13 @@
 \usepackage{graphicx}
 \usepackage{longtable}
 \usepackage{array}
+\usepackage{tabularx}
 \usepackage{hyperref}
 \usepackage{xcolor}
 \usepackage{booktabs}
 \usepackage{enumitem}
 \usepackage{amsmath}
+\usepackage{natbib}
 
 \hypersetup{
     colorlinks=true,
@@ -22,110 +24,153 @@
 \title{Software Design Document\\[2pt]
 \large AI-Assisted Discovery of Dynamic Graph Algorithms\\ via Evolutionary Code Repair}
 \author{Thonmay Md Thoriqul Islam\\
-\textit{E\"otv\"os Lor\'and University, Faculty of Informatics}}
+\textit{E\"otv\"os Lor\'and University, Faculty of Informatics}\\
+\small Supervisor: Gregory Reynolds Morse}
 \date{September 2026}
 
 \begin{document}
 \maketitle
+
+% ============================================================
+% Version / revision history
+% ============================================================
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{|c|c|p{8.5cm}|}
+\hline
+\textbf{Version} & \textbf{Date} & \textbf{Revision note} \\
+\hline
+v0.1 & Jul 2026 & Initial design draft (pre-audit). \\
+\hline
+v0.2 & Sep 2026 & Revised after checkpoint-3 audit: corrected DFS/LBFS invariants, real OS-level sandbox, interactive dashboard UI restored, atomic JSON persistence, single candidate state machine, twelve-class model, contribution traceability, bounded-verification claims, three provisional final-exam topics, and Thesis Consultation registration note. \\
+\hline
+\end{tabular}
+\end{center}
+
 \tableofcontents
 \clearpage
 
 % ============================================================
 \section{System Overview}
+\label{sec:overview}
 
 \subsection{Purpose}
 
-This document describes the software architecture and design of a research platform for discovering correct and efficient dynamic graph algorithms through LLM-driven evolutionary code repair. The system combines AI-based code generation with exhaustive, isomorphism-aware verification to iteratively improve candidate algorithms.
+This document is the software design for a research platform that discovers correct and efficient \emph{dynamic} graph algorithms through LLM-driven evolutionary code repair. A dynamic algorithm maintains a structural property (a BFS tree, a DFS forest, a strongly connected component decomposition, an MCS ordering, or a LexBFS ordering) incrementally under edge insertions and deletions, instead of recomputing it from scratch after every update. The platform combines AI-based code generation and repair with an exhaustive, isomorphism-aware, trusted verification engine, and wraps both in an evolutionary search loop.
 
-\subsection{Scope}
+The document's goal is to be implementable: a reader who has not seen the code should be able to build the principal modules, the data model, the interaction surfaces, and the verification pipeline from this design alone, without inventing the core decisions.
 
-The platform targets directed graph problems where a structural property must be maintained incrementally under edge insertions and deletions. Three problem tiers are supported:
+\subsection{Scope and Problem Tiers}
+
+The platform operates on a fixed graph representation, an \textbf{adjacency matrix of zeros and one}, and supports a tiered set of target problems. The tiers are locked and are not a research question:
+
 \begin{itemize}[noitemsep]
-  \item \textbf{Calibration:} Dynamic BFS and dynamic DFS (known solutions exist)
-  \item \textbf{Harder:} Dynamic SCC and reachability
-  \item \textbf{Open:} Dynamic Lexicographic BFS (genuine discovery target)
+  \item \textbf{Calibration (directed):} dynamic BFS and dynamic DFS. Known correct solutions exist and are used to validate the verifier before any experiment.
+  \item \textbf{Primary target (undirected):} dynamic MCS (Maximum Cardinality Search). MCS produces perfect elimination orderings for chordal graphs \cite{tarjan1984mcs,heggernes2006} and is the main discovery target.
+  \item \textbf{Harder / open (directed):} dynamic SCC and dynamic Lexicographic BFS (LBFS).
 \end{itemize}
 
-The system runs experiments autonomously and reports both positive results (discovered correct algorithms) and negative results (where and why the search fails). Both outcomes are valid scientific contributions.
+Reachability is in scope as a secondary directed problem and is given an invariant in Section~\ref{sec:invariants}. The system runs experiments autonomously and reports both positive results (a discovered correct algorithm) and negative results (where and why the search fails). Both are valid scientific outcomes.
 
 \subsection{Key Concepts}
 
 \begin{description}[style=nextline, leftmargin=2cm]
-  \item[Candidate] One attempt at a dynamic algorithm, stored as executable Python code.
-  \item[Generation] One round of generate $\rightarrow$ test $\rightarrow$ reflect $\rightarrow$ select.
+  \item[Candidate] One attempt at a dynamic algorithm, stored as executable Python code implementing a fixed update interface.
+  \item[Generation] One round of generate, test, reflect, select.
   \item[Population] The set of candidates alive at one time; typically 5--20 candidates.
-  \item[Fitness] A score measuring candidate quality: fraction of test sequences passing the invariant.
-  \item[Invariants] Properties that must always hold for a correct algorithm (e.g., ``no forward-cross edge'' for DFS).
-  \item[Reflection] LLM analysis of why a candidate failed, used to guide repair.
+  \item[Fitness] A score measuring candidate quality: the fraction of test sequences on which the invariant holds after every operation.
+  \item[Invariant] A property that must always hold for a correct algorithm. Correctness is judged by the invariant, not by equality to a reference output, because dynamic outputs are generally non-unique.
+  \item[Reflection] LLM analysis of why a candidate failed, structured and reused to guide repair.
+  \item[Work ratio] $\text{work\_ratio} = \text{candidate\_work} / \text{offline\_recomputation\_work}$; an efficiency improvement requires $\text{work\_ratio} < 1$.
+  \item[Trusted verifier] Pre-built, validated infrastructure that tests candidates. No agent can read or modify it.
 \end{description}
+
+\subsection{Four Distinct Correctness Claims}
+
+A recurring audit defect was the conflation of ``exhaustive testing'' with ``proof''. This design separates four claims, and every statement in the document is labelled with the claim it makes:
+
+\begin{enumerate}[noitemsep]
+  \item \textbf{Tool correctness.} The research tool itself (orchestrator, verifier, persistence) is correct. This is established by unit tests and by validating the verifier against known-good and known-bad inputs.
+  \item \textbf{Bounded candidate verification.} A discovered candidate has \emph{no counterexample within the stated bound} (all non-isomorphic digraphs up to $n \le 5$, and operation sequences up to a stated length). This is \emph{not} a proof of correctness for arbitrary size or update length.
+  \item \textbf{Search effectiveness.} The evolutionary loop finds a correct candidate within a stated generation budget. This is an empirical, statistical claim over repeated runs.
+  \item \textbf{Mathematical proof.} A formal proof that a discovered algorithm is correct for all inputs. This is reserved for the final Lean~4 phase (Section~\ref{sec:lean}) and is explicitly \emph{not} claimed by the verification engine.
+\end{enumerate}
+
+The verification engine delivers claim (2). The Lean phase targets claim (4). Conflating them is forbidden: any sentence asserting a candidate is ``correct'' must state its bound.
 
 % ============================================================
 \section{Architecture}
 
 \subsection{Layered Architecture}
 
-The system follows a five-layer architecture with clear separation between dynamic (agent-driven) and trusted (pre-built) components. Figure~\ref{fig:architecture} shows the full architecture.
+The system follows a five-layer architecture with a strict separation between dynamic (agent-driven, untrusted) and trusted (pre-built) components. Figure~\ref{fig:architecture} shows the full architecture.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{diagrams/architecture.png}
-  \caption{System architecture. Yellow components are agent-driven and dynamic; green components are trusted infrastructure that agents cannot modify.}
+  \caption{System architecture. Yellow components are agent-driven and dynamic; green components are trusted infrastructure that agents cannot read or modify. The dashed line marks the trust boundary enforced by the OS-level sandbox (Section~\ref{sec:sandbox}).}
   \label{fig:architecture}
 \end{figure}
 
+Figure~\ref{fig:architecture} is read top to bottom. The \emph{interface} layer (CLI plus the static dashboard) is where a human launches, monitors, replays, and steers a run. The \emph{orchestration} layer owns the evolutionary loop, the population, selection, and checkpointing, and it is the only component that may invoke the verifier. The \emph{agent} layer is the untrusted zone: LLM-driven code generation, failure reflection, and repair live here and are confined to a sandbox. The \emph{verification} layer is trusted: it generates test graphs, replays operation sequences, checks invariants, and measures work. The \emph{data} layer persists runs, candidates, reflections, and results as JSON files on disk.
+
 \subsection{Layer Responsibilities}
 
-\begin{longtable}{|p{3cm}|p{5cm}|p{5cm}|}
+\begin{longtable}{|p{3cm}|p{6cm}|p{4.5cm}|}
 \hline
-\textbf{Layer} & \textbf{Responsibility} & \textbf{Trust Level} \\
+\textbf{Layer} & \textbf{Responsibility} & \textbf{Trust level} \\
 \hline
 \endfirsthead
 \hline
-\textbf{Layer} & \textbf{Responsibility} & \textbf{Trust Level} \\
+\textbf{Layer} & \textbf{Responsibility} & \textbf{Trust level} \\
 \hline
 \endhead
 \hline
 \endfoot
 
-Interface & CLI commands, progress monitoring & Neutral \\
+Interface & CLI commands and the static HTML dashboard (launch, monitor, replay, steer, export) & Neutral \\
 \hline
-Orchestration & Population management, selection, checkpointing & Neutral \\
+Orchestration & Evolutionary loop, population management, selection, checkpointing, verifier invocation & Neutral \\
 \hline
-Agent & Code generation, failure analysis, repair & Dynamic (untrusted) \\
+Agent & Code generation, failure analysis, repair; runs in an OS sandbox & Dynamic (untrusted) \\
 \hline
-Verification & Correctness testing, efficiency measurement & Trusted (pre-built) \\
+Verification & Correctness testing (invariant), efficiency measurement, graph enumeration & Trusted (pre-built) \\
 \hline
-Data & Persistence, file formats, graph storage & Neutral \\
+Data & Persistence, file formats, run/candidate schema, atomic writes & Neutral \\
 \hline
 \end{longtable}
 
-\subsection{Data Flow}
+\subsection{Principal Data and Control Flow}
+
+The control flow of one run is:
 
 \begin{enumerate}[noitemsep]
-  \item User configures run via CLI (problem, model, parameters).
-  \item Orchestrator loads previous state (if exists) or initializes empty population.
+  \item The user configures a run via CLI (problem, provider, model, population size, generation budget, verification bound) and the configuration is validated and saved as YAML.
+  \item The orchestrator either loads a previous checkpoint (resume) or initializes an empty population.
   \item For each generation:
   \begin{enumerate}[label=\alph*)]
-    \item Orchestrator selects parents from population.
-    \item Agent generates new candidates (code written to disk).
-    \item Orchestrator runs verifier directly (agent does not see test code).
-    \item If candidate fails, agent analyzes failure and produces reflection.
-    \item Evaluator computes fitness scores.
-    \item Orchestrator updates population and checkpoints state.
+    \item The orchestrator selects parents from the population (elitism plus diversity).
+    \item The agent generates new candidates inside the sandbox; each candidate is written to the candidate store.
+    \item The orchestrator runs the trusted verifier on each candidate (the agent never sees or touches test code).
+    \item For each failing candidate, the agent produces a structured reflection.
+    \item The evaluator computes fitness and work ratio.
+    \item The orchestrator updates the population, commits the generation atomically, and (every $N$ generations, default 10) emits a dashboard snapshot.
   \end{enumerate}
-  \item Results exported as human-readable and machine-readable files.
+  \item On a stop condition (fitness $= 1.0$ within bound, or max generations), results are exported.
 \end{enumerate}
+
+The data flow is unidirectional across the trust boundary: candidates (code) flow \emph{in} to the sandbox; structured test results (pass/fail, failing case, work ratio) flow \emph{out} to the orchestrator. The verifier's source, its test graphs, and its oracles are never exposed to the agent.
 
 \subsection{Interface Separation}
 
-A critical design decision separates \textbf{dynamic components} (agent-driven, potentially incorrect) from \textbf{trusted components} (pre-built, verified):
+A critical design decision separates \textbf{dynamic components} (agent-driven, potentially incorrect) from \textbf{trusted components} (pre-built, validated):
 
 \begin{itemize}[noitemsep]
-  \item \textbf{Dynamic:} Code generation, failure reflection, candidate repair. These are performed by LLM agents and may produce incorrect output.
-  \item \textbf{Trusted:} Verification engine, graph generation, invariant checking. These are pre-built and validated against known-correct implementations before any run. No agent can read or modify these components.
+  \item \textbf{Dynamic:} code generation, failure reflection, candidate repair. Performed by LLM agents; may produce incorrect or malicious output.
+  \item \textbf{Trusted:} verification engine, graph generation, invariant checking, oracles. Pre-built and validated against known-correct and known-bad implementations before any run. No agent can read or modify these.
 \end{itemize}
 
-This boundary is essential: the correctness of the entire thesis depends on the verifier being trustworthy.
+This boundary is load-bearing: the validity of the entire thesis depends on the verifier being trustworthy. Section~\ref{sec:sandbox} explains how the boundary is enforced by the operating system rather than by convention.
 
 \subsection{Deployment and Sandbox}
 
@@ -134,268 +179,362 @@ Figure~\ref{fig:deployment} shows the deployment view with process boundaries an
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{diagrams/deployment.png}
-  \caption{Deployment view showing process boundaries, sandbox isolation for untrusted candidate code, and external dependencies (LLM API, nauty binary).}
+  \caption{Deployment view: the orchestrator process, the LLM provider (external, networked), and the OS-level sandbox in which untrusted candidate code executes. The sandbox has a disabled network namespace, a read-only root filesystem, no access to the verifier, and a dedicated writable scratch mount.}
   \label{fig:deployment}
 \end{figure}
 
 \subsubsection{Process Boundaries}
 
 \begin{itemize}[noitemsep]
-  \item \textbf{Orchestrator process:} Python runtime managing the evolutionary loop, population, and evaluation. Runs with standard user permissions.
-  \item \textbf{Agent (dynamic):} LLM provider calls via HTTP. Network access is required. API keys are stored in environment variables, never in code.
-  \item \textbf{Sandbox (isolated):} Candidate code executes in an isolated subprocess with:
-  \begin{itemize}[noitemsep]
-    \item No network access (blocked by \texttt{subprocess} with restricted \texttt{env}).
-    \item Read-only access to the file system except for the designated output directory.
-    \item Configurable timeout (default: 30 seconds) enforced by the orchestrator.
-    \item Memory and CPU limits via \texttt{resource} module (if available).
-  \end{itemize}
-  \item \textbf{Verifier (trusted):} Pre-built Python code, not generated by LLM. Runs in the same process as the orchestrator but is never exposed to the agent.
+  \item \textbf{Orchestrator process:} a Python runtime that manages the evolutionary loop, population, evaluation, and persistence. Runs under the user's normal identity.
+  \item \textbf{Agent / LLM provider:} model calls are made over HTTP by an adapter (Section~\ref{sec:provider}). Network access is required for the provider; API keys are held in environment variables, never in code or in the candidate store.
+  \item \textbf{Sandbox:} candidate code executes inside a real OS isolation boundary (Section~\ref{sec:sandbox}), not in a plain subprocess.
+  \item \textbf{Verifier:} trusted Python code, not generated by any LLM. It runs in the orchestrator's trust domain and is never mounted into the sandbox.
 \end{itemize}
 
 \subsubsection{Permissions}
 
-\begin{longtable}{|p{3cm}|p{4cm}|p{4cm}|}
+\begin{longtable}{|p{3cm}|p{5cm}|p{5cm}|}
 \hline
-\textbf{Component} & \textbf{Can Read} & \textbf{Can Write} \\
+\textbf{Component} & \textbf{Can read} & \textbf{Can write} \\
 \hline
 \endfirsthead
 \hline
-\textbf{Component} & \textbf{Can Read} & \textbf{Can Write} \\
+\textbf{Component} & \textbf{Can read} & \textbf{Can write} \\
 \hline
 \endhead
 \hline
 \endfoot
 
-Orchestrator & File system & File system, subprocess \\
+Orchestrator & Run store, candidate store, verifier source & Run store, results, dashboard \\
 \hline
-Agent/LLM & & Network (API calls) \\
+Agent / LLM & (none of the verifier) & Sandbox scratch only \\
 \hline
-Candidate code & Output directory only & Output directory only \\
+Candidate code & Sandbox scratch, standard libraries & Sandbox scratch only \\
 \hline
-Verifier & File system & Results directory \\
+Verifier & Test graphs, oracles, candidate output & Results directory \\
 \hline
 \end{longtable}
+
+\label{sec:sandbox}
+\subsubsection{Real OS Isolation (Not a Subprocess Env Block)}
+
+The pre-audit design claimed that a restricted \texttt{subprocess} environment blocks network access and limits file writes. That is false: the \texttt{env} mapping of \texttt{subprocess} controls environment variables only and is not a security boundary. This design replaces it with an actual OS isolation mechanism.
+
+The sandbox is a rootless container or namespace (for example a \texttt{unshare}d environment or a container runtime) with the following properties, each of which is a named, testable requirement:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Non-root identity:} the candidate process runs as an unprivileged user with no capability to escalate.
+  \item \textbf{Disabled network namespace:} no network interfaces are available inside the sandbox; the provider call is made by the orchestrator \emph{outside} the sandbox, so the candidate never sees the API key or the network.
+  \item \textbf{Read-only root filesystem:} the image is mounted read-only; the candidate cannot modify system files.
+  \item \textbf{Verifier not mounted:} the verifier source, its test graphs, and its oracles are absent from the sandbox filesystem.
+  \item \textbf{Dedicated writable scratch:} a single empty, writable directory is the only place the candidate may write.
+  \item \textbf{Resource limits:} CPU time, memory, process count, and output size are capped by the kernel (cgroups / rlimits); a wall-clock timeout is enforced by the orchestrator.
+\end{itemize}
+
+The agent's workspace is separate from the trusted verifier, and the two communicate only through a narrow, structured interface: the orchestrator hands the sandbox a candidate file and a fixed set of inputs, and receives back a structured result record (Section~\ref{sec:verification}).
+
+\textbf{Negative tests.} The sandbox is accepted only when the following negative tests fail as expected: a network connection attempt is refused; a write to the verifier path is refused (the path does not exist); a filesystem escape (writing outside scratch) is refused; a process-explosion attempt is killed by the process limit; an excessive-output attempt is capped; and a timeout overrun is killed by the wall-clock limit. These negative tests are part of the tool-correctness evidence (claim 1) and are listed in the traceability matrix (Table~\ref{tab:trace}).
 
 % ============================================================
 \section{Business Rules}
+\label{sec:business}
 
 \subsection{Invariants by Problem}
+\label{sec:invariants}
 
-Each problem has a specific correctness invariant that must hold after every operation:
+Each problem has a correctness invariant that must hold after every operation. The pre-audit DFS and LBFS predicates were incorrect and are replaced here. The audit's own counterexample is the design's test case: in the digraph with edges $r \to a$, $a \to b$, $r \to b$, the edge $r \to b$ is a \emph{valid forward edge} even though $b$ is not a child of $r$. Any invariant that forbids forward edges would wrongly reject a correct DFS forest.
 
-\begin{longtable}{|p{3cm}|p{10cm}|}
+\begin{longtable}{|p{2.6cm}|p{8.2cm}|p{3.6cm}|}
 \hline
-\textbf{Problem} & \textbf{Invariant} \\
+\textbf{Problem} & \textbf{Invariant (corrected)} & \textbf{Verification procedure} \\
 \hline
 \endfirsthead
 \hline
-\textbf{Problem} & \textbf{Invariant} \\
+\textbf{Problem} & \textbf{Invariant (corrected)} & \textbf{Verification procedure} \\
 \hline
 \endhead
 \hline
 \endfoot
 
-Dynamic BFS & Let $T$ be the output tree and $\delta(v)$ the distance from root $r$ to $v$ in the current graph. Then: (1) every non-root vertex $v$ has exactly one parent $p$ in $T$; (2) $\delta(p) = \delta(v) - 1$; (3) $T$ is connected and contains all reachable vertices. \\
+Dynamic BFS (directed) & Let $T$ be the output tree and $\delta(v)$ the distance from the root $r$ in the current graph. Then: (1) $T$ is connected and spans every vertex reachable from $r$; (2) every non-root $v$ has exactly one parent $p$ in $T$; (3) $\delta(p) = \delta(v) - 1$. & Reconstruct distances from $T$ and compare with a BFS distance oracle on the current graph; check parent uniqueness and reachability span. \\
 \hline
-Dynamic DFS & Let $T$ be the output DFS forest. For every non-tree edge $(u, v)$: (1) if $u$ is an ancestor of $v$ in $T$, then $v$ must be a child of $u$ (no forward edges); (2) if $u$ and $v$ are in different subtrees of $T$, there is no edge between them (no cross edges). Equivalently: $T$ is a valid DFS forest with no forward-cross edges \cite{yang2019dynamic}. Back edges (from descendant to ancestor) are permitted and expected. \\
+Dynamic DFS (directed) & The output forest $T$ is a valid DFS forest of the current graph. The pre-audit ``no forward-cross edge'' predicate is \emph{not} used, because directed DFS legitimately admits forward edges. Instead $T$ is verified against a DFS-forest certificate (parent pointers plus discovery order) using the characterization of valid DFS forests in \cite{yang2019dynamic}; the verifier's predicate is validated against a certified reference implementation before any run. & Check the certificate: the parent pointers and discovery order of $T$ are consistent with a DFS of the current graph per \cite{yang2019dynamic}. Back edges are permitted and expected; forward edges are permitted; the certificate test rejects only forests that no DFS could produce. \\
 \hline
-Dynamic SCC & The output partitions vertices into disjoint sets $C_1, \ldots, C_k$ such that: (1) for each $C_i$, every vertex in $C_i$ can reach every other vertex in $C_i$ via edges within $C_i$ (internal connectivity); (2) no vertex belongs to more than one $C_i$ (disjointness); (3) every vertex appears in exactly one $C_i$ (coverage); (4) each $C_i$ is maximal: no proper superset $C_i' \supset C_i$ satisfies property (1) \cite{karczmarz2023dynamic}. \\
+Dynamic MCS (undirected) & The output is a vertex ordering that is a valid MCS ordering of the current graph: each vertex is chosen when its cardinality (number of already-chosen neighbors) is maximal among the unchosen vertices, for the stated tie-breaking. Equivalently, for chordal inputs the ordering is a perfect elimination ordering (PEO). & Check the MCS definition directly: replay the ordering and confirm each chosen vertex had maximum cardinality. Separately, for chordal inputs, run the classic $O(n+m)$ PEO check (later neighbors of each vertex form a clique) \cite{tarjan1984mcs,heggernes2006}. \\
 \hline
-Dynamic LBFS & The output is a total ordering $\pi$ of vertices such that: (1) $\pi$ is consistent with a lexicographic BFS traversal \cite{rose1976algorithmic}; (2) for each vertex $v$, the neighbors of $v$ that appear before $v$ in $\pi$ form a consecutive interval in $\pi$ \cite{rose1976algorithmic}. \\
+Dynamic SCC (directed) & The output partitions vertices into sets $C_1, \ldots, C_k$ such that: (1) within each $C_i$, every vertex reaches every other via edges inside $C_i$; (2) the sets are disjoint; (3) they cover all vertices; (4) each $C_i$ is maximal \cite{karczmarz2024dynamic}. & For each $C_i$, run a reachability check both ways on the induced subgraph; verify disjointness, coverage, and maximality (no proper superset is internally mutually reachable). \\
+\hline
+Dynamic LBFS (directed) & The output is a total ordering $\pi$ that is a valid lexicographic BFS ordering \cite{rose1976algorithmic}. The pre-audit ``consecutive earlier neighbors'' rule is \emph{not} used, because it fails on ordinary valid LexBFS orderings (for example a four-cycle). & Verify $\pi$ against the LexBFS cone / interval characterization of \cite{rose1976algorithmic} using a reference LexBFS implementation as oracle, rather than an ad-hoc neighbor-consecutiveness predicate. \\
+\hline
+Reachability (directed) & For a fixed source $s$, the maintained set $R$ of vertices reachable from $s$ equals the true reachability set of the current graph \cite{demetrescu2005dynamic,bernstein2023}. & After each update, compare $R$ against a transitive-closure / reachability oracle on the current graph. \\
 \hline
 \end{longtable}
 
-\subsection{State Transitions}
+\textbf{Ownership.} Each invariant is owned by the \emph{Problem Definition} class, which also owns the corresponding verification procedure and oracle. The \emph{Verifier} executes the procedure but does not define it. This keeps the predicate and its enforcement in one place.
 
-Candidates transition through the following states:
+\textbf{Why invariants, not reference equality.} Dynamic outputs are non-unique: two valid BFS or DFS algorithms on the same graph may produce different trees. Judging by the invariant (a) prevents false negatives (rejecting correct algorithms), (b) catches real errors (a violated property), and (c) applies uniformly across problems. This follows the separation of discovery and verification used in LLM-driven program search \cite{openai2025codex,funsearch2023,alphaevolve2025}.
+
+\subsection{Candidate State Machine}
+
+The pre-audit document had three conflicting accounts of candidate state (a state table, a ``timeout = CRASH'' note, and a section that recorded timeout as FAIL). This design uses \textbf{one} state machine with explicit transition guards and terminal states.
 
 \begin{center}
-\begin{tabular}{cl}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{|l|p{7.5cm}|c|}
 \toprule
-\textbf{State} & \textbf{Description} \\
+\textbf{State} & \textbf{Meaning} & \textbf{Terminal} \\
 \midrule
-\texttt{NEW} & Just generated, not yet tested \\
-\texttt{TESTING} & Under verification \\
-\texttt{PASS} & All tests passed \\
-\texttt{FAIL} & At least one test failed \\
-\texttt{CRASH} & Code crashed or timed out \\
-\texttt{DISCARDED} & Removed from population \\
+\texttt{NEW} & Generated, not yet tested & No \\
+\texttt{TESTING} & Under verification in the sandbox & No \\
+\texttt{PASS} & Invariant held on every test sequence within bound & Yes \\
+\texttt{FAIL} & At least one invariant violation, \emph{or} a timeout (recorded with a \texttt{timeout} flag) & Yes \\
+\texttt{CRASH} & Runtime exception, syntax error, or sandbox resource violation & Yes \\
+\texttt{DISCARDED} & Removed from the population after selection & Yes \\
 \bottomrule
 \end{tabular}
 \end{center}
 
+\textbf{Transition guards.}
+
+\begin{itemize}[noitemsep]
+  \item \texttt{NEW} $\to$ \texttt{TESTING}: the candidate file parses as valid Python and the sandbox accepts it.
+  \item \texttt{TESTING} $\to$ \texttt{PASS}: every test sequence in the bound satisfies the invariant.
+  \item \texttt{TESTING} $\to$ \texttt{FAIL}: at least one sequence violates the invariant, or the wall-clock timeout fires (state \texttt{FAIL}, flag \texttt{timeout=true}).
+  \item \texttt{TESTING} $\to$ \texttt{CRASH}: an exception, a syntax error, or a sandbox limit (process, memory, output) is hit.
+  \item \texttt{PASS} / \texttt{FAIL} / \texttt{CRASH} $\to$ \texttt{DISCARDED}: selection removes the candidate from the population.
+\end{itemize}
+
+The rule is fixed and unambiguous: \textbf{timeout maps to \texttt{FAIL} with a timeout flag; a crash maps to \texttt{CRASH}.} The state, the JSON schema, the dashboard, and the recovery logic all use this single table.
+
 \subsection{Failure Policies}
 
 \begin{itemize}[noitemsep]
-  \item \textbf{Crash timeout:} Each candidate execution runs under a configurable timeout (default: 30 seconds). Non-termination is recorded as failure.
-  \item \textbf{LLM retry:} Transient API failures are retried up to 3 times with exponential backoff before a candidate is abandoned.
-  \item \textbf{Candidate isolation:} Generated code is untrusted and runs in an isolated context. Crashes do not halt the run.
-  \item \textbf{Correctness criterion:} A candidate is correct iff its output satisfies the problem's validity invariant. It is \emph{not} required to match a specific reference output, since dynamic algorithm outputs are generally not unique.
+  \item \textbf{Timeout:} each candidate execution runs under a configurable wall-clock timeout (default 30 s). Non-termination is recorded as \texttt{FAIL} with \texttt{timeout=true} and the run continues.
+  \item \textbf{Crash / sandbox violation:} recorded as \texttt{CRASH}; the run continues.
+  \item \textbf{LLM provider failure:} transient API failures are retried up to 3 times with exponential backoff; if still failing, the candidate slot is left empty for that generation and the failure is logged.
+  \item \textbf{All candidates fail:} a warning is logged and the loop continues to the next generation (diversity mutation may recover).
+  \item \textbf{Candidate isolation:} generated code is untrusted and runs only in the sandbox; a crash never halts the run.
 \end{itemize}
 
 \subsection{Input Validation}
 
 \begin{itemize}[noitemsep]
-  \item \textbf{Graph size:} $n \geq 1$. Maximum depends on verification mode: exhaustive for $n \leq 5$, sampling for $n > 5$.
-  \item \textbf{Population size:} $1 \leq \text{pop\_size} \leq 50$. Default: 10.
-  \item \textbf{Max generations:} $1 \leq \text{max\_gen} \leq 1000$. Default: 100.
-  \item \textbf{Model name:} Must be a valid model identifier in the configured provider. Validated at configuration time.
-  \item \textbf{Timeout:} $1 \leq \text{timeout} \leq 300$ seconds. Default: 30.
-  \item \textbf{Candidate code:} Must be valid Python syntax. Parsed before execution; syntax errors are recorded as \texttt{CRASH}.
+  \item \textbf{Graph size:} $n \geq 1$. Exhaustive verification for $n \le 5$; sampling for $n > 5$.
+  \item \textbf{Population size:} $1 \le \texttt{pop\_size} \le 50$, default 10.
+  \item \textbf{Max generations:} $1 \le \texttt{max\_gen} \le 1000$, default 100.
+  \item \textbf{Model name:} must be a valid identifier in the configured provider; validated at configuration time.
+  \item \textbf{Timeout:} $1 \le \texttt{timeout} \le 300$ s, default 30.
+  \item \textbf{Candidate code:} must be valid Python; a syntax error is recorded as \texttt{CRASH}.
 \end{itemize}
+
+\subsection{Domain Rules and Their Enforcement}
+
+\begin{longtable}{|p{4.5cm}|p{5.5cm}|p{4.5cm}|}
+\hline
+\textbf{Rule} & \textbf{Content} & \textbf{Enforced by} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Rule} & \textbf{Content} & \textbf{Enforced by} \\
+\hline
+\endhead
+\hline
+\endfoot
+
+Adjacency-matrix representation & All graphs are simple, loop-free $0/1$ matrices; legal updates flip one entry. & Problem Definition \\
+\hline
+Legal operations & Only insert/delete of a single matrix entry; no structural mutation. & Verifier (sequence generator) \\
+\hline
+Invariant ownership & One invariant + oracle per problem. & Problem Definition \\
+\hline
+Trust boundary & Agents cannot read/modify verifier or its inputs. & Sandbox (OS) \\
+\hline
+State discipline & Single state machine, timeout=FAIL, crash=CRASH. & Orchestrator \\
+\hline
+Efficiency threshold & $\text{work\_ratio} < 1$ required for an improvement. & Evaluator \\
+\hline
+Bounded claims & No ``proof'' language without a stated bound. & Author / review \\
+\hline
+\end{longtable}
 
 % ============================================================
 \section{Class Design}
 
 \subsection{Class Diagram}
 
-Figure~\ref{fig:classes} shows the core classes, their relationships, and key operations.
+Figure~\ref{fig:classes} shows the twelve core classes, their associations, multiplicities, ownership, and key operations.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{diagrams/classes.png}
-  \caption{Class diagram showing the twelve core classes, their relationships, and multiplicities.}
+  \caption{Class diagram of the twelve core classes with associations, multiplicities, ownership (composition shown by filled diamond), and key operations. The Orchestrator composes the Population, Verifier, Reflector, Evaluator, Graph Generator, Sandbox, and Checkpoint; it uses the LLM Provider, Problem Definition, and Dashboard.}
   \label{fig:classes}
 \end{figure}
 
-\subsection{Class Descriptions}
+Figure~\ref{fig:classes} is the mandatory class diagram. The \emph{Orchestrator} is the composition root: it owns (filled diamond) the \texttt{Population}, \texttt{Verifier}, \texttt{Reflector}, \texttt{Evaluator}, \texttt{GraphGenerator}, \texttt{Sandbox}, and \texttt{Checkpoint}, and it uses (open arrow) the \texttt{LLMProvider}, \texttt{ProblemDefinition}, and \texttt{Dashboard}. The \texttt{Population} aggregates \texttt{Candidate} instances (multiplicity $1..*$). The \texttt{Verifier} uses the \texttt{GraphGenerator} to enumerate test graphs and the \texttt{Sandbox} to execute candidates. The \texttt{Reflector} and the \texttt{LLMProvider} are associated: the reflector issues structured prompts through the provider. The \texttt{Candidate} holds a lineage list of parent ids and a state from the single state machine.
 
-\begin{longtable}{|p{2.5cm}|p{10cm}|}
+\subsection{The Twelve Core Classes}
+
+\begin{longtable}{|p{3cm}|p{10cm}|}
 \hline
-\textbf{Class} & \textbf{Description} \\
+\textbf{Class} & \textbf{Responsibility and key operations} \\
 \hline
 \endfirsthead
 \hline
-\textbf{Class} & \textbf{Description} \\
+\textbf{Class} & \textbf{Responsibility and key operations} \\
 \hline
 \endhead
 \hline
 \endfoot
 
-Orchestrator & Central controller. Manages the evolutionary loop, coordinates all components, and drives the system from initialization to completion. Owns the population and delegates to specialized components. \\
+Orchestrator & Composition root. Drives the evolutionary loop; coordinates all components from initialization to completion. Key operations: \texttt{init()}, \texttt{run()}, \texttt{step\_generation()}, \texttt{stop()}, \texttt{resume()}. Owns the population and delegates verification, reflection, evaluation, and checkpointing. \\
 \hline
-Population & Manages the collection of candidates. Handles parent selection (keeping the best $N$ candidates), adding new candidates, and removing the worst when capacity is exceeded. \\
+Population & Manages the candidate collection. Key operations: \texttt{add()}, \texttt{select\_parents()}, \texttt{cull()}. Enforces population size, elitism, and diversity. \\
 \hline
-Candidate & Represents one algorithm attempt. Stores the code path, fitness score, efficiency metrics, generation number, parent ID (for lineage tracking), and any reflection text from failed attempts. \\
+Candidate & One algorithm attempt. Stores code path, fitness, work ratio, state (single state machine), generation, \texttt{parent\_ids} (multi-parent lineage), and reflection text. Key operations: \texttt{transition()}, \texttt{to\_json()}, \texttt{from\_json()}. \\
 \hline
-LLM Provider & Abstraction layer for language model access. Provides methods for code generation, code repair, and failure reflection. Decoupled from specific vendors to allow model swapping. \\
+LLM Provider & Vendor-agnostic abstraction for model access (adapter pattern). Key operations: \texttt{generate()}, \texttt{repair()}, \texttt{reflect()}. One concrete adapter is OpenCode; API keys come from the environment. \\
 \hline
-Verifier & Tests candidate correctness. Generates test graphs via nauty, applies operation sequences, checks invariants after each operation, and measures efficiency against offline recomputation. This is trusted infrastructure. \\
+Verifier & Trusted correctness and efficiency tester. Key operations: \texttt{verify(candidate)} $\to$ result record. Generates test graphs, replays operation sequences, checks the invariant after each operation, and measures work. Never exposed to the agent. \\
 \hline
-Reflector & Analyzes failed candidates. Reads the failing test case, traces through the candidate code, identifies root causes, and produces structured reflections with repair hints. \\
+Reflector & Analyzes failed candidates and produces structured reflections (failure description, root cause, repair hints) reused as repair context. Key operations: \texttt{reflect(candidate, failing\_case)}. \\
 \hline
-Evaluator & Computes fitness scores. Primary metric: fraction of test sequences passing the invariant. Tie-breaker: efficiency (vertices visited and edges scanned per update vs.\ full recomputation). \\
+Evaluator & Computes fitness (fraction of sequences passing) and work ratio ($\text{candidate\_work}/\text{offline\_work}$); applies the $<1$ improvement threshold. Key operations: \texttt{score(result)}. \\
 \hline
-Problem Definition & Encapsulates a specific problem (BFS, DFS, etc.). Defines the correctness invariant, provides test case generation, and specifies the baseline for efficiency comparison. \\
+Problem Definition & Encapsulates one problem (BFS, DFS, MCS, SCC, LBFS, reachability). Owns the invariant, the oracle, the tie-breaking rule, and the efficiency baseline. Key operations: \texttt{check\_invariant(output, graph)}, \texttt{baseline\_work(graph)}. \\
 \hline
-Graph Generator & Wraps the nauty tools (\texttt{geng} and \texttt{directg}). Generates all non-isomorphic digraphs up to size $n$ and random samples for larger sizes. \\
+Graph Generator & Wraps the nauty tools (\texttt{geng} + \texttt{directg}). Enumerates all non-isomorphic digraphs up to size $n$ and produces random samples beyond. Key operations: \texttt{enumerate(n)} $\to$ graph set, \texttt{sample(n, k, seed)} $\to$ graph set. \\
 \hline
-Checkpoint & Handles persistence. Saves population state, generation number, and results every generation for crash recovery. Loads previous state to resume interrupted runs. \\
+Checkpoint & Persistence. Key operations: \texttt{commit(generation)} (atomic temp-write + rename), \texttt{load\_latest()} (resume), \texttt{checksum()}. Owns run ids, schema version, retention, and partial-generation recovery. \\
+\hline
+Sandbox & OS-level isolation boundary. Key operations: \texttt{execute(candidate, inputs)} $\to$ structured result. Enforces non-root identity, disabled network, read-only root fs, no verifier mount, scratch-only writes, and CPU/memory/process/output/time limits. \\
+\hline
+Dashboard & Static HTML output. Key operations: \texttt{render(generation)} $\to$ self-contained HTML. Emits every $N$ generations (default 10, configurable) with client-side interactivity: overview, generation replay, candidate detail, failure reflections, config. \\
 \hline
 \end{longtable}
+
+\textbf{Correspondence to responsibilities.} The orchestration layer is \texttt{Orchestrator} + \texttt{Population}; the agent layer is \texttt{LLMProvider} + \texttt{Reflector} (confined by \texttt{Sandbox}); the verification layer is \texttt{Verifier} + \texttt{ProblemDefinition} + \texttt{GraphGenerator} + \texttt{Evaluator}; the data layer is \texttt{Checkpoint} + \texttt{Candidate}; the interface layer is the CLI (in \texttt{Orchestrator}) + \texttt{Dashboard}. No class is orphaned and no named responsibility lacks a class.
 
 % ============================================================
 \section{Data Design}
 
-\subsection{Persistence Model}
+\subsection{Storage Choice}
 
-All state is persisted to the local filesystem. No database is required. The persistence structure:
+All state is persisted to the local filesystem as JSON files plus the candidate Python files themselves. No database is used. The reasons are project-specific: the data model is small and hierarchical (runs $\to$ generations $\to$ candidates), a researcher needs to inspect state by hand, and portability to any Python host is a stated non-functional requirement. A relational store would add setup, a schema migration story, and a server dependency for no query benefit at this scale.
+
+\subsection{Directory Layout}
 
 \begin{verbatim}
 project/
-  state/
-    generation_001.json    # Population state
-    generation_002.json
-    ...
-  candidates/
-    gen001_candidate01.py  # Generated code
-    gen001_candidate02.py
-    ...
-  reflections/
-    gen001_candidate01.md  # Failure analyses
-    ...
-  results/
-    run_summary.json       # Final results
-    efficiency_report.csv
+  runs/
+    <run_id>/
+      config.yaml            # validated run configuration
+      generation_0001.json   # committed generation state
+      generation_0002.json
+      ...
+      COMMITTED              # marker: last fully committed generation
+      candidates/
+        gen001_c01.py        # generated code
+        ...
+      reflections/
+        gen001_c01.md        # structured failure analyses
+        ...
+      dashboard/
+        gen0010.html         # snapshot every N generations
+        ...
+      results/
+        run_summary.json
+        efficiency_report.csv
   graphs/
-    n4/                    # Cached nauty graphs (size 4)
+    n4/                      # cached nauty graphs (size 4)
     n5/
     ...
 \end{verbatim}
 
-\subsection{State Schema}
+\subsection{Entities and Relationships}
 
-The generation state file (\texttt{generation\_\{N\}.json}) contains:
+The persistence entities are \textbf{Run}, \textbf{Generation}, \textbf{Candidate}, \textbf{Reflection}, and \textbf{Result}. A Run has many Generations (ordered by number). A Generation has many Candidates. A Candidate has zero or one Reflection (when it failed) and one Result. A Candidate references zero or more parent Candidates by id (multi-parent lineage). The relationships are encoded as nested JSON plus id references; there are no foreign keys to enforce, so integrity is guaranteed by the single-writer rule (only the orchestrator writes, atomically).
+
+\subsection{Generation State Schema}
+
+The generation file \texttt{generation\_\{N\}.json} has a fixed schema version:
 
 \begin{verbatim}
 {
+  "schema_version": 2,
+  "run_id": "run_20260918_0001",
   "generation": 42,
-  "timestamp": "2026-09-15T20:59:00Z",
-  "problem": "dynamic_bfs",
+  "timestamp": "2026-09-18T20:59:00Z",
+  "problem": "dynamic_mcs",
+  "bound": { "n_max": 5, "seq_len_max": 20, "seed": 1337 },
   "candidates": [
     {
       "id": "gen042_c03",
-      "code_path": "candidates/gen042_candidate03.py",
+      "code_path": "candidates/gen042_c03.py",
       "fitness": 0.85,
-      "efficiency": 0.72,
-      "state": "PASS",
-      "parent_id": "gen041_c01",
+      "work_ratio": 0.72,
+      "state": "FAIL",
+      "timeout": false,
+      "parent_ids": ["gen041_c01", "gen041_c05"],
       "tests_passed": 17,
       "tests_total": 20
     }
   ],
-  "config": {
-    "model": "deepseek-chat",
-    "population_size": 10,
-    "max_generations": 100,
-    "timeout_seconds": 30
-  }
+  "config_ref": "config.yaml",
+  "checksum": "sha256:..."
 }
 \end{verbatim}
 
+Note the corrected example: a candidate with fitness $0.85$ and $17/20$ tests is \texttt{FAIL}, not \texttt{PASS} (the pre-audit example marked it \texttt{PASS}). \texttt{PASS} requires fitness $1.0$ within the bound. The \texttt{parent\_ids} list supports multi-parent lineage; the pre-audit schema had a single \texttt{parent\_id}.
+
 \subsection{Candidate File Format}
 
-Each candidate is a self-contained Python file implementing a single interface:
+Each candidate is a self-contained Python module implementing a fixed interface:
 
 \begin{verbatim}
+def init(graph):
+    """Build initial state from the starting adjacency matrix."""
+    ...
+
 def insert_edge(graph, edge, state):
-    """Update state after inserting edge into graph.
-    
-    Args:
-        graph: current graph representation
-        edge: (u, v) tuple being inserted
-        state: current algorithm state (e.g., BFS tree)
-    
-    Returns:
-        Updated state
-    """
-    # Algorithm implementation here
-    pass
+    """Update state after inserting edge (u, v). Returns new state."""
+    ...
 
 def delete_edge(graph, edge, state):
-    """Update state after deleting edge from graph.
-    
-    Args:
-        graph: current graph representation
-        edge: (u, v) tuple being deleted
-        state: current algorithm state
-    
-    Returns:
-        Updated state
-    """
-    # Algorithm implementation here
-    pass
+    """Update state after deleting edge (u, v). Returns new state."""
+    ...
 \end{verbatim}
+
+The verifier calls \texttt{init} once per base graph, then replays a sequence of \texttt{insert\_edge} / \texttt{delete\_edge}, checking the invariant after each call.
+
+\subsection{Constraints, Lifecycle, and Integrity}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Run id:} unique per run, generated at \texttt{init()} (timestamp + counter). It namespaces all files so parallel runs never collide.
+  \item \textbf{Candidate id:} unique within a run as \texttt{gen\{N\}\_c\{M\}}; enforced by the population.
+  \item \textbf{Schema version:} \texttt{schema\_version} is read on load; an incompatible version is rejected with a clear error (compatibility rule), never silently migrated.
+  \item \textbf{Atomicity:} a generation is written to a temporary file and then renamed over the target (\texttt{os.replace}), which is atomic on POSIX. The \texttt{COMMITTED} marker is written only after the rename succeeds. A crash mid-write leaves either the old complete file or the new complete file, never a torn file.
+  \item \textbf{Checksum:} each generation file carries a SHA-256 of its content; on load the checksum is verified, and a mismatch is treated as corruption.
+  \item \textbf{Partial-generation recovery:} on resume, the orchestrator reads \texttt{COMMITTED} to find the last complete generation and discards any incomplete file beyond it.
+  \item \textbf{Retention:} generation files are retained by default; an optional retention policy can prune old generations while always keeping the last committed one and the run summary.
+  \item \textbf{Concurrency:} single-writer. Only the orchestrator process writes to a run directory; the dashboard is read-only.
+\end{itemize}
+
+\subsection{Interfaces}
+
+The data layer exposes \texttt{Checkpoint.commit(generation)}, \texttt{Checkpoint.load\_latest(run\_id)}, \texttt{Checkpoint.checksum(path)}, and the \texttt{Candidate.to\_json} / \texttt{from\_json} pair. The CLI and dashboard read through these; they never write raw JSON.
 
 % ============================================================
 \section{Interaction Design}
 
+\subsection{Interface Model}
+
+The registered contribution 1 is an interactive platform that launches, monitors, replays, and steers a run. This design delivers that as a \textbf{CLI engine plus milestone HTML dashboards}. The CLI is the control plane (launch, configure, steer, export); the dashboard is the observation and replay plane (self-contained static HTML with client-side interactivity). This is a faithful realization of the registered UI, not a replacement by CLI alone: the dashboard provides the launch/monitor/replay visualization and the CLI provides the steering.
+
 \subsection{CLI Commands}
 
-The system is driven from the command line:
-
-\begin{longtable}{|p{3.5cm}|p{9cm}|}
+\begin{longtable}{|p{4cm}|p{10cm}|}
 \hline
 \textbf{Command} & \textbf{Description} \\
 \hline
@@ -407,226 +546,324 @@ The system is driven from the command line:
 \hline
 \endfoot
 
-\texttt{run configure} & Set run parameters (problem, model, population size, max generations) \\
+\texttt{run configure} & Set and validate run parameters (problem, provider, model, population, generations, bound, timeout); writes \texttt{config.yaml}. \\
 \hline
-\texttt{run start} & Begin the evolutionary loop \\
+\texttt{run start} & Begin the evolutionary loop for a configured run. \\
 \hline
-\texttt{run status} & Show current generation, best fitness, failure patterns \\
+\texttt{run status} & Show current generation, best fitness, pass rate, and failure patterns. \\
 \hline
-\texttt{run export} & Save results as human-readable report and structured data \\
+\texttt{run steer} & Inject a steering directive (e.g., change model, bias diversity, set a new bound) into the next generation via a YAML patch. \\
 \hline
-\texttt{run history} & List previous runs with summaries \\
+\texttt{run stop} & Gracefully stop after the current generation commits. \\
+\hline
+\texttt{run resume} & Reload the last committed generation and continue. \\
+\hline
+\texttt{run export} & Save results as a human-readable report and structured data. \\
+\hline
+\texttt{run history} & List previous runs with summaries. \\
 \hline
 \end{longtable}
 
-\subsection{Configuration Format}
+\subsection{Dashboard Views, Navigation, and Handlers}
 
-Run configuration is specified in YAML:
+The dashboard is emitted every $N$ generations (default 10, configurable) as a single self-contained static HTML file (embedded data, client-side JavaScript, no server). It has five views, navigable by a top bar:
 
-\begin{verbatim}
-problem: dynamic_bfs
-model: deepseek-chat
-population_size: 10
-max_generations: 100
-timeout_seconds: 30
-graph_max_size: 5
-sampling_budget: 100
-checkpoint_every: 1
-\end{verbatim}
+\begin{longtable}{|p{3.5cm}|p{6cm}|p{4.5cm}|}
+\hline
+\textbf{View} & \textbf{Content} & \textbf{Primary handler} \\
+\hline
+\endfirsthead
+\hline
+\textbf{View} & \textbf{Content} & \textbf{Primary handler} \\
+\hline
+\endhead
+\hline
+\endfoot
 
-\subsection{Output Formats}
+Overview & Run id, problem, bound, current generation, best fitness, stop status & \texttt{renderOverview()} \\
+\hline
+Generation replay & Fitness chart over generations; a slider scrubs through generations and re-renders the population at that generation & \texttt{onSlider(g)} \\
+\hline
+Candidate detail & One candidate's code path, state, fitness, work ratio, parent lineage, and per-sequence results & \texttt{openCandidate(id)} \\
+\hline
+Failure reflections & List of failing candidates with their structured reflections (description, root cause, repair hints) & \texttt{openReflection(id)} \\
+\hline
+Config & The validated \texttt{config.yaml} and the verification bound & \texttt{renderConfig()} \\
+\hline
+\end{longtable}
+
+The replay slider is the key interaction: it lets the user scrub a multi-generation run forward and backward, which is exactly the registered ``replay'' completion signal. Steering is done from the CLI (\texttt{run steer}) between generations, not inside the dashboard, keeping the dashboard read-only and the control plane explicit.
+
+\subsection{Input, Output, and Request Flow}
 
 \begin{itemize}[noitemsep]
-  \item \textbf{Progress:} Real-time terminal output showing generation number, best fitness, pass rate, and current operation.
-  \item \textbf{Results:} JSON summary with per-generation statistics, best candidate code, efficiency metrics, and failure analysis.
-  \item \textbf{Logs:} Detailed execution logs for debugging, including per-candidate test results and timing information.
+  \item \textbf{Input:} a YAML configuration (CLI) and, optionally, a steering patch (\texttt{run steer}).
+  \item \textbf{Output:} real-time terminal progress; per-generation JSON; milestone HTML dashboards; a final \texttt{run\_summary.json} and \texttt{efficiency\_report.csv}.
+  \item \textbf{Request flow (launch):} \texttt{run configure} validates and saves config $\to$ \texttt{run start} initializes or resumes $\to$ the loop steps generations, committing each and emitting a dashboard every $N$.
 \end{itemize}
 
 \subsection{Error Behavior}
 
 \begin{itemize}[noitemsep]
-  \item \textbf{API failure:} Retry up to 3 times, then skip candidate and record failure.
-  \item \textbf{Candidate crash:} Record as \texttt{CRASH} state, continue with next candidate.
-  \item \textbf{Timeout:} Record as \texttt{FAIL} with timeout flag, continue.
-  \item \textbf{Invalid output:} Record as \texttt{FAIL} with parse error, continue.
-  \item \textbf{All candidates fail:} Log warning, continue to next generation (diversity may recover).
+  \item \textbf{Invalid configuration:} rejected at \texttt{run configure} with a named field and allowed range; no run is started.
+  \item \textbf{Provider failure:} retried up to 3 times with backoff; then the candidate slot is left empty and the failure is logged.
+  \item \textbf{Candidate crash / timeout:} recorded as \texttt{CRASH} / \texttt{FAIL}+timeout per the single state machine; the run continues.
+  \item \textbf{Corrupt checkpoint:} checksum mismatch or incompatible \texttt{schema\_version} is reported and the run refuses to resume until the user resolves it.
+  \item \textbf{All candidates fail:} a warning is logged and the loop continues.
 \end{itemize}
 
 % ============================================================
-\section{Core Logic}
+\section{Core Logic and Scientific Model}
 
 \subsection{Evolutionary Loop}
 
-Figure~\ref{fig:loop} shows the complete evolutionary loop as a sequence diagram.
+Figure~\ref{fig:loop} shows the evolutionary loop as a sequence diagram.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{diagrams/loop.png}
-  \caption{Evolutionary loop sequence diagram showing the interaction between orchestrator, population, LLM provider, verifier, reflector, evaluator, and checkpoint.}
+  \caption{Evolutionary loop sequence diagram: the Orchestrator selects parents, the LLM Provider generates candidates, the Sandbox executes them under the Verifier, the Reflector produces reflections on failure, the Evaluator scores, and the Checkpoint commits each generation.}
   \label{fig:loop}
 \end{figure}
 
-\subsection{Verification Process}
+The loop is implementable from the following contract.
 
-Figure~\ref{fig:verification} details the verification process for each candidate.
+\textbf{Inputs:} a validated config (problem, provider, model, population size, generation budget, verification bound, timeout, diversity rate, elitism $k$).
+
+\textbf{Per generation:}
+\begin{enumerate}[noitemsep]
+  \item \emph{Select parents.} Keep the top-$k$ by fitness (elitism). Add parents by fitness-proportional selection. If the population's pairwise similarity exceeds a threshold, inject a diversity mutation (a fresh candidate from a new prompt, not derived from any parent).
+  \item \emph{Generate offspring.} For each parent (or pair, for multi-parent), the LLM Provider is prompted with the problem interface, the parent code, and (for repair) the structured reflection. The returned code is written to the candidate store and marked \texttt{NEW}.
+  \item \emph{Verify.} The Verifier runs each \texttt{NEW} candidate in the Sandbox over the bounded test universe (Section~\ref{sec:verification}); each transition follows the single state machine.
+  \item \emph{Reflect.} For each \texttt{FAIL} / \texttt{CRASH} candidate, the Reflector produces a structured reflection.
+  \item \emph{Score.} The Evaluator computes fitness and work ratio.
+  \item \emph{Select and commit.} The Population culls to its size (worst first, preserving diversity), and the Checkpoint commits the generation atomically.
+\end{enumerate}
+
+\textbf{Stop conditions:} a candidate reaches fitness $1.0$ within the bound (success), or the generation budget is exhausted (report best-so-far).
+
+\textbf{Invariants of the loop:} the population size never exceeds its configured maximum; every committed generation is atomic and checksummed; the verifier is invoked only by the orchestrator; no generation is committed twice.
+
+\subsection{Verification Process}
+\label{sec:verification}
+
+Figure~\ref{fig:verification} details the verification of one candidate.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{diagrams/verification.png}
-  \caption{Verification process flowchart. The verifier generates test graphs, applies operation sequences, and checks the invariant after each operation.}
+  \caption{Verification flow: enumerate the bounded test universe (all non-isomorphic digraphs up to $n \le 5$ via geng + directg, plus seeded random samples beyond), and for each base graph replay operation sequences, checking the invariant after every operation and measuring work.}
   \label{fig:verification}
 \end{figure}
 
+\textbf{Test universe (finite and reproducible).}
+\begin{itemize}[noitemsep]
+  \item \emph{Base graphs:} all non-isomorphic digraphs up to size $n \le 5$, enumerated by nauty \texttt{geng} + \texttt{directg}. For $n > 5$, a fixed number of random graphs drawn from a stated distribution with a fixed seed.
+  \item \emph{Operation sequences:} for each base graph, a bounded set of interleaved insert/delete sequences up to a stated maximum length. The bound (graph size, sequence length, sample count, seed) is part of the run config and is recorded in every result, so the claim ``no counterexample within the stated bound'' is reproducible.
+  \item \emph{Invariant check:} after \emph{every} operation, the Problem Definition's invariant is checked against the oracle.
+\end{itemize}
+
+\textbf{Efficiency measurement.} The work a candidate performs (vertices visited, edges scanned, instrumented) is compared against the offline recomputation baseline for the same operation. The \texttt{work\_ratio} is $\text{candidate\_work} / \text{offline\_work}$, aggregated (median) across operations and graphs. An efficiency \emph{improvement} requires $\text{work\_ratio} < 1$; a ratio $> 1$ means the candidate does more work than simply recomputing, which is not an improvement. Wall-clock is reported separately from instrumented work.
+
+\textbf{Bounded, not proof.} The verifier outputs ``no counterexample within the stated bound''. It does not claim correctness for arbitrary size or update length. That claim is reserved for the Lean phase.
+
+\textbf{Verifier validation (claim 1).} Before any experiment, the verifier is validated against (a) known-good reference algorithms (for example the dynamic DFS of \cite{yang2019dynamic}) and (b) a known-bad mutation corpus (deliberately faulty edits). The acceptance target is zero false negatives for $n \le 5$: every known-bad mutation is rejected and every known-good algorithm is accepted.
+
 \subsection{Reflection Process}
+\label{sec:reflection}
 
-When a candidate fails, the reflection process:
-
+When a candidate fails, the Reflector:
 \begin{enumerate}[noitemsep]
-  \item Read the candidate code and the failing test case (graph, operation sequence, expected vs.\ actual output).
-  \item Trace through the algorithm step by step on the failing case.
-  \item Identify the root cause: which invariant was violated, where in the code the error occurs, and what condition was not handled.
-  \item Produce a structured reflection with:
-  \begin{itemize}[noitemsep]
-    \item \textbf{Failure description:} What happened and on which input.
-    \item \textbf{Root cause:} The specific logic error or missing case.
-    \item \textbf{Repair hints:} Concrete suggestions for fixing the code.
-  \end{itemize}
-  \item The reflection is used as context for the next generation's repair prompt.
+  \item reads the candidate code and the failing case (graph, operation sequence, the invariant that was violated, and the oracle's expected property);
+  \item traces the algorithm on the failing case;
+  \item identifies the root cause (which invariant was violated, where, and what condition was unhandled);
+  \item emits a structured reflection with three fields: \emph{failure description}, \emph{root cause}, and \emph{repair hints}.
 \end{enumerate}
+The reflection is fed into the next generation's repair prompt. This is the verbal-reinforcement mechanism of \cite{reflexion2023}, applied to code repair.
+
+\subsection{Generative Operators and Prompt Contracts}
+
+The evolutionary operators are concrete and implementable. Each operator is a function of the current population and the problem definition, and each produces one or more \texttt{NEW} candidates.
+
+\textbf{Generation (mutation from a parent).} Given a parent candidate $P$, the LLM Provider is prompted with a fixed template containing: (1) the problem interface (the \texttt{init}/\texttt{insert\_edge}/\texttt{delete\_edge} contract and the invariant statement, but \emph{not} the verifier's oracle code); (2) the parent source code; (3) a directive to produce a modified candidate. The returned code is written to the store and marked \texttt{NEW}. This is the primary operator.
+
+\textbf{Repair (reflection-driven).} Given a failing candidate $F$ and its structured reflection $R$, the LLM Provider is prompted with the same template plus $R$ (failure description, root cause, repair hints). The repair prompt is the distinguishing feature of this system: it converts a bounded counterexample into a targeted edit rather than a blind rewrite.
+
+\textbf{Crossover (multi-parent).} Given two parents $P_1, P_2$ (both must be at least \texttt{PASS}-adjacent, i.e., not \texttt{CRASH}), the LLM Provider is prompted with both source files and a directive to combine their update strategies into one candidate. The offspring records both ids in \texttt{parent\_ids}, which is why the schema uses a list rather than a single \texttt{parent\_id}. Crossover is optional and gated by a config flag; it is off by default for the calibration problems.
+
+\textbf{Diversity (injection).} When the population's pairwise similarity exceeds a threshold (similarity is measured as the fraction of candidates whose fitness and failing-case signature are within a small epsilon), the operator injects a fresh candidate generated from a blank template (no parent), to preserve exploration.
+
+\textbf{Prompt schema.} Every prompt is a fixed, versioned template with named slots (problem, interface, invariant, parent code, reflection, operator). The template version is recorded in the run config so that a result is reproducible: same config, same seeds, same template version, same provider/model $\Rightarrow$ same candidate set. The agent never sees the verifier source, the test graphs, or the oracle; it sees only the interface and the invariant statement.
 
 \subsection{Selection Strategy}
 
-The selection strategy determines which candidates survive to the next generation:
+Selection determines which candidates survive to the next generation. The order is fixed:
 
 \begin{enumerate}[noitemsep]
-  \item \textbf{Elitism:} The top $k$ candidates (by fitness) are always kept.
-  \item \textbf{Repair:} Failed candidates with informative reflections are repaired rather than discarded.
-  \item \textbf{Diversity:} If all candidates are similar, random mutations are introduced to maintain exploration.
-  \item \textbf{Stop condition:} The loop stops when a candidate passes all tests (fitness = 1.0) or the maximum number of generations is reached.
+  \item \textbf{Elitism:} the top-$k$ by fitness (default $k=2$) are always kept, regardless of other rules.
+  \item \textbf{Repair preference:} among the remaining slots, candidates with informative reflections (a \texttt{FAIL} with a non-empty root cause) are preferred for repair over fresh generation, because a targeted edit is cheaper than a blind rewrite.
+  \item \textbf{Diversity:} if the similarity threshold is exceeded, one slot is reserved for a fresh (no-parent) candidate.
+  \item \textbf{Cull:} the population is reduced to its configured size by removing the lowest-fitness non-elite candidates, preserving at least one distinct failing-case signature to keep exploration.
 \end{enumerate}
 
+\textbf{Stop conditions:} a candidate reaches fitness $1.0$ within the bound (success, the run stops and exports), or the generation budget is exhausted (the run stops and reports best-so-far). A plateau (below) does not stop the run; it only triggers dynamic agent generation.
+
+\subsection{Cooperative Agents and Dynamic Agent Generation}
+
+Registered contribution 3 is cooperative agents with optional dynamic agent generation. The design fixes the initial roles, the message protocol, the plateau detector, and the dynamic-generation rule, so the principal modules are implementable; the cooperation \emph{policy} (cooperative vs.\ critical, and whether dynamic generation helps) is the empirical research question decided from the first experiments, as the SRS states.
+
+\textbf{Initial roles.}
+\begin{itemize}[noitemsep]
+  \item \emph{Generator:} proposes new candidate code from a parent (or blank) and the problem interface.
+  \item \emph{Reflector / critic:} reads a failing case and produces the structured reflection.
+  \item \emph{Orchestrator (coordinator):} the only component that routes artifacts between agents and invokes the verifier. Agents never call each other directly.
+\end{itemize}
+
+\textbf{Message protocol.} Agents exchange only structured artifacts through the orchestrator: a \emph{candidate} (code + id + parent ids), a \emph{failing case} (graph, operation sequence, violated invariant, oracle property), and a \emph{reflection} (description, root cause, repair hints). Each artifact has a fixed schema (Section~\ref{sec:reflection}) and an id, so the full transcript is logged and reproducible.
+
+\textbf{Plateau detection.} A plateau is declared when the best fitness over a sliding window of $W$ generations (default $W=10$) improves by less than a threshold $\epsilon$ (default $0.01$). The window and threshold are config parameters.
+
+\textbf{Dynamic agent generation.} On a plateau, the system may spawn an additional specialized agent whose prompt is biased toward the most frequent failing-case signature in the window (for example, an agent that focuses on the specific invariant clause that keeps failing). Spawning is bounded by an \emph{agent budget} (maximum concurrent agents, default 3) and a \emph{generation budget} for each spawned agent. A spawned agent is retired when (a) the budget is exhausted, or (b) it has not contributed a fitness improvement in $W$ generations. Baselines for comparison: a single-agent run and a fixed two-agent (generator + reflector) run, all under equal model-call and generation budgets.
+
+\textbf{Budgets.} Every run has a model-call budget (maximum LLM invocations) and a generation budget (maximum generations). The orchestrator enforces both; exceeding either stops the run and exports best-so-far. Budgets make negative results comparable and reproducible.
+
 % ============================================================
-\section{Requirement Traceability}
+\section{Design Rationale and Alternatives}
 
-Table~\ref{tab:traceability} maps each user story to the responsible components.
+\subsection{CLI Engine Plus Dashboard, Not a Web App}
 
-\begin{longtable}{|p{1.5cm}|p{3cm}|p{3.5cm}|p{4cm}|}
-\caption{Requirement Traceability Matrix}
-\label{tab:traceability} \\
+The registered UI is realized as a CLI control plane plus self-contained static HTML dashboards. Alternatives considered: (a) a full web application with a server, and (b) CLI only. A web app adds a server, a build pipeline, and a deployment target that a single-researcher tool does not need, and it complicates reproducibility. CLI only would drop the registered replay/visualization promise. The CLI+dashboard split keeps the control plane scriptable and version-controllable (reproducible experiments) while delivering launch, monitor, replay, and visualization as static artifacts that need no server.
+
+\subsection{Orchestrator-Run Verification}
+
+The verifier is invoked by the orchestrator, not by the agent. Alternatives: letting the agent run its own tests. That would let the agent modify or skip tests, breaking the trust boundary on which the thesis rests. Orchestrator-run verification guarantees that the same candidate always produces the same result regardless of agent behavior, and it keeps the verifier source out of the agent's reach.
+
+\subsection{Correctness by Invariant}
+
+Dynamic outputs are non-unique, so reference equality would produce false negatives. Alternatives: canonicalizing outputs (fragile, problem-specific) or comparing to one offline oracle tree (rejects valid alternatives). Invariant checking accepts any valid output and rejects any invalid one, and it generalizes across all six problems. The invariants are the corrected predicates of Section~\ref{sec:invariants}; the DFS and LBFS cases verify against a certificate / reference implementation rather than an ad-hoc predicate, precisely because the naive predicates were wrong.
+
+\subsection{Real OS Sandbox}
+
+A restricted \texttt{subprocess} environment is not a security boundary (it controls only environment variables). Alternatives: (a) trust the generated code (unsafe), (b) static analysis only (incomplete for arbitrary Python), (c) a real OS isolation boundary. The sandbox (Section~\ref{sec:sandbox}) provides non-root identity, no network, read-only root fs, no verifier mount, scratch-only writes, and kernel resource limits, and it is accepted only by passing named negative tests.
+
+\subsection{JSON Persistence, No Database}
+
+The data model is small and hierarchical, and a researcher must inspect state by hand. Alternatives: a relational DB (adds setup, migrations, and a server for no query benefit) and a key-value store (loses human readability). JSON with atomic temp-write/rename, checksums, schema versioning, and a commit marker gives crash-safe, inspectable persistence with the Python standard library only.
+
+\subsection{Model Provider Abstraction}
+\label{sec:provider}
+
+The SRS promises a vendor-agnostic tool, but the pre-audit design hardcoded OpenCode commands. The adapter pattern resolves this: the \texttt{LLMProvider} interface (\texttt{generate}, \texttt{repair}, \texttt{reflect}) has OpenCode as one concrete adapter, and API keys live in environment variables. Swapping a vendor is an adapter change, not a code change.
+
+% ============================================================
+\section{Lean 4 Formalization (Final Phase)}
+\label{sec:lean}
+
+The verification engine delivers bounded candidate verification (claim 2 of Section~\ref{sec:overview}): it establishes \emph{no counterexample within the stated bound}, not a proof for arbitrary input size. The final phase closes that gap with a Lean~4 formalization.
+
+\textbf{Scope.} For a discovered algorithm that passes bounded verification, the Lean phase produces a formal proof that the algorithm is correct for all inputs in the claimed domain. The artifact is a Lean project containing the formal specification of the graph representation, the update operations, the invariant, and a proof that the discovered algorithm maintains the invariant under every update.
+
+\textbf{No-cheating rule.} The proof must be honest: no \texttt{axiom}, \texttt{sorry}, \texttt{unsafe}, or special-case operation that sidesteps the general argument. The discovery process never reads or modifies the verifier; likewise the Lean proof must not depend on the bounded test corpus. The proof is a mathematical argument about the algorithm, independent of the experimental search.
+
+\textbf{Position in the design.} This is a later, plan-level phase. The design commits to (a) the interface the discovered algorithm exposes (\texttt{init}, \texttt{insert\_edge}, \texttt{delete\_edge}), (b) the invariant to be proven (the Section~\ref{sec:invariants} predicate for the target problem), and (c) the acceptance criterion: a Lean project that type-checks and proves the invariant with no \texttt{axiom}/\texttt{sorry}/\texttt{unsafe}. The Lean development is not part of the executable research tool; it is the formal deliverable that upgrades claim 2 to claim 4.
+
+% ============================================================
+\section{Traceability}
+
+\subsection{Requirement and Contribution Traceability}
+
+Table~\ref{tab:trace} traces every high-priority requirement (the SRS user stories \texttt{US-01} to \texttt{US-08}), the three registered contributions, and the key sandbox negative tests to their components, interactions, data, and acceptance evidence. No contribution disappears and no component is orphaned.
+
+\begin{longtable}{|p{2.7cm}|p{3.1cm}|p{2.9cm}|p{2.9cm}|p{3.2cm}|}
+\caption{Traceability matrix: requirements and contributions to design elements and acceptance evidence.}
+\label{tab:trace} \\
 \hline
-\textbf{US} & \textbf{Function} & \textbf{Primary Component} & \textbf{Secondary Components} \\
+\textbf{Req / Contrib} & \textbf{Component(s)} & \textbf{Interaction} & \textbf{Data} & \textbf{Acceptance evidence} \\
 \hline
 \endfirsthead
 \hline
-\textbf{US} & \textbf{Function} & \textbf{Primary Component} & \textbf{Secondary Components} \\
+\textbf{Req / Contrib} & \textbf{Component(s)} & \textbf{Interaction} & \textbf{Data} & \textbf{Acceptance evidence} \\
 \hline
 \endhead
 \hline
 \endfoot
 
-US-01 & Configure run & Orchestrator & Checkpoint (config storage) \\
+US-01 configure & Orchestrator, Checkpoint & \texttt{run configure} & \texttt{config.yaml} & Validated config saved; invalid field rejected \\
 \hline
-US-02 & Launch run & Orchestrator & Population, LLM Provider \\
+US-02 launch & Orchestrator, Population, LLM Provider & \texttt{run start}, loop & generation files & Run reaches a stop condition \\
 \hline
-US-03 & Monitor progress & Orchestrator & Population (fitness data) \\
+US-03 monitor & Orchestrator, Dashboard & \texttt{run status}, dashboard Overview & generation files & Status shows generation, best fitness, failures \\
 \hline
-US-04 & Export results & Orchestrator & Evaluator (summary) \\
+US-04 export & Orchestrator, Evaluator & \texttt{run export} & \texttt{run\_summary.json}, CSV & Report and structured file written \\
 \hline
-US-05 & Review history & Checkpoint & Orchestrator (load state) \\
+US-05 history & Checkpoint & \texttt{run history}, \texttt{run resume} & run dirs, \texttt{COMMITTED} & Past runs listed; resume reloads last commit \\
 \hline
-US-06 & Generate candidate & LLM Provider & Generator (code writing) \\
+US-06 generate & LLM Provider, Sandbox & loop generate & candidate \texttt{.py} & New candidate written to store \\
 \hline
-US-07 & Verify candidate & Verifier & Graph Generator, Evaluator \\
+US-07 verify & Verifier, Graph Generator, Problem Definition, Evaluator & loop verify & result records & Invariant checked per sequence; work\_ratio recorded \\
 \hline
-US-08 & Reflect on failure & Reflector & LLM Provider (analysis) \\
+US-08 reflect & Reflector, LLM Provider & loop reflect & reflection \texttt{.md} & Structured reflection produced on failure \\
+\hline
+Contrib 1 UI framework & Dashboard, Orchestrator (CLI) & launch/monitor/replay/steer & dashboard HTML, config & End-to-end: launch, monitor, replay a multi-generation run; steer between gens \\
+\hline
+Contrib 2 verification engine & Verifier, Graph Generator, Problem Definition & verify + validate & test universe, results & Known-good accepted, known-bad rejected, zero false negatives $n \le 5$ \\
+\hline
+Contrib 3 cooperative agents & LLM Provider, Reflector, Orchestrator & generate/reflect protocol, plateau & reflections, agent budget & Correct dynamic BFS within bounded generations, no human intervention \\
+\hline
+Sandbox: network & Sandbox & negative test & n/a & Network attempt refused \\
+\hline
+Sandbox: verifier read/write & Sandbox & negative test & n/a & Verifier path absent; write refused \\
+\hline
+Sandbox: fs escape & Sandbox & negative test & n/a & Write outside scratch refused \\
+\hline
+Sandbox: process explosion & Sandbox & negative test & n/a & Process limit kills attempt \\
+\hline
+Sandbox: output / timeout & Sandbox & negative test & n/a & Output capped; overrun killed \\
 \hline
 \end{longtable}
 
-\subsection{Scientific Contributions}
+\textbf{Approved deviation.} The SRS verifier contract said ``compare against offline recomputation''; this design refines correctness to invariant checking (because outputs are non-unique) while keeping offline recomputation as the \emph{efficiency} baseline. This refinement is recorded here explicitly rather than silently changing the contract.
 
-This system produces two types of scientific contributions:
+\subsection{Scientific Contributions and Acceptance Evidence}
 
-\begin{enumerate}[noitemsep]
-  \item \textbf{Positive contributions:} Correct and efficient dynamic algorithms discovered by the system. Each discovered algorithm is validated against the invariant and its efficiency is measured against offline recomputation. The algorithm, its correctness proof (via exhaustive testing), and its efficiency profile are reported.
-  \item \textbf{Negative contributions:} Documentation of where and why the evolutionary search fails. This includes: (a) problems where no correct algorithm is found within the generation limit; (b) failure patterns that reveal structural difficulties in the problem space; (c) model-specific limitations in code generation quality.
-\end{enumerate}
-
-\subsection{Acceptance Criteria}
-
-A candidate algorithm is accepted as a valid contribution when:
-
-\begin{enumerate}[noitemsep]
-  \item It passes all invariant checks for all test graphs and operation sequences.
-  \item Its efficiency ratio is positive (it does more work than needed to simply recompute from scratch).
-  \item The result is reproducible: running the same test sequence twice produces the same output.
-  \item The code is syntactically valid and executes without crashes.
-\end{enumerate}
-
-\subsection{Acceptance Evidence}
-
-Evidence for acceptance is collected automatically:
-
-\begin{itemize}[noitemsep]
-  \item \textbf{Correctness:} Pass/fail results for every (graph, operation sequence) pair, stored in \texttt{results/run\_summary.json}.
-  \item \textbf{Efficiency:} Work ratio (vertices visited, edges scanned) vs.\ baseline, stored per test case.
-  \item \textbf{Reproducibility:} Optional double-run mode that re-executes accepted candidates and compares outputs.
-  \item \textbf{Code:} The candidate Python file itself, which can be inspected and verified independently.
-\end{itemize}
-
-\subsection{Why CLI + OpenCode Agents Instead of Web UI}
-
-The system uses a command-line interface with OpenCode agents rather than a web UI because:
-
-\begin{itemize}[noitemsep]
-  \item \textbf{Research context:} This is a research platform, not a production product. The primary user is the researcher running experiments, not end users. A CLI is sufficient and more efficient for batch experimentation.
-  \item \textbf{OpenCode agent capabilities:} OpenCode provides file I/O, bash execution, and code analysis tools without custom implementation. This eliminates the need for a web frontend to display results.
-  \item \textbf{Non-interactive operation:} The \texttt{opencode run 'prompt'} command enables programmatic orchestration from Python, which is more natural for automated experiment runs than a web UI.
-  \item \textbf{Cost efficiency:} Free models (nemotron-3-ultra-free) are available through OpenCode Zen, reducing experimental costs.
-  \item \textbf{Reproducibility:} CLI commands are trivially scriptable and version-controllable, supporting reproducible experiments.
-\end{itemize}
-
-\subsection{Why Orchestrator-Run Verification}
-
-The verifier is run by the orchestrator, not through the agent, because:
-
-\begin{itemize}[noitemsep]
-  \item \textbf{Trust boundary:} The agent cannot modify or skip tests.
-  \item \textbf{Correctness guarantee:} Thesis validity depends on the verifier being trustworthy.
-  \item \textbf{Reproducibility:} Same candidate always produces same result, regardless of agent behavior.
-\end{itemize}
-
-\subsection{Why Correctness by Invariant}
-
-Dynamic algorithm outputs are generally not unique. Two valid BFS algorithms on the same graph may produce different trees. Checking invariants instead of reference equality \cite{demetrescu2005dynamic}:
-
-\begin{itemize}[noitemsep]
-  \item Prevents false negatives (rejecting correct algorithms).
-  \item Catches real errors (violated properties).
-  \item Applies universally across all problem types.
-\end{itemize}
-
-This approach follows the OpenAI methodology for scientific discovery via code generation, where formal verification separates the discovery system from the verification system \cite{openai2025codex}.
-
-\subsection{Why JSON Persistence}
-
-JSON was chosen over a database because:
-
-\begin{itemize}[noitemsep]
-  \item \textbf{Simplicity:} No database setup or maintenance required.
-  \item \textbf{Human readability:} State files can be inspected and debugged directly.
-  \item \textbf{Portability:} Works on any system with Python's standard library.
-  \item \textbf{Adequacy:} The data model is simple enough that a database would be over-engineering.
-\end{itemize}
+The system produces (a) \emph{positive} contributions: discovered correct-and-efficient dynamic algorithms, each with its bounded verification evidence and work-ratio profile; and (b) \emph{negative} contributions: documented failure patterns under a pre-declared budget and baseline. Acceptance evidence is collected automatically: per-(graph, sequence) pass/fail in \texttt{run\_summary.json}; work ratio per test case; an optional double-run reproducibility check; and the candidate file itself, independently inspectable.
 
 % ============================================================
 \section{Final-Exam Topic Integration}
+\label{sec:exam}
 
-\emph{Deferred to a later iteration. The three registered final-exam topics and their mapping to system components will be documented here.}
+Three final-exam topics are provisionally selected and mapped to this design and its planned implementation. This mapping is \emph{provisional, pending formal registration} (see the admin note below).
+
+\begin{longtable}{|p{4cm}|p{6cm}|p{4.5cm}|}
+\hline
+\textbf{Exam topic} & \textbf{Relevant subtopics} & \textbf{Where it appears in this design} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Exam topic} & \textbf{Relevant subtopics} & \textbf{Where it appears in this design} \\
+\hline
+\endhead
+\hline
+\endfoot
+
+Algorithms and Data Structures & Dynamic graph algorithms; BFS/DFS tree and forest properties; MCS and perfect elimination orderings; LexBFS; SCC; adjacency-matrix representation; $O(n+m)$ chordality/PEO check & Section~\ref{sec:invariants} (the six invariants and oracles), the Graph Generator's nauty enumeration, and the Evaluator's work-ratio baseline \\
+\hline
+Software Engineering & Architectural separation and trust boundaries; class design and multiplicities; state machines; persistence and atomicity; requirement traceability; testable negative requirements & The layered architecture and sandbox (Section~2), the twelve-class model (Section~4), the single candidate state machine (Section~3), atomic JSON persistence (Section~5), and the traceability matrix (Section~8) \\
+\hline
+Data-Driven Systems & Data model design (runs/generations/candidates/lineage); schema versioning and integrity; checkpointing and recovery; data-driven feedback (fitness, work ratio) steering a search loop & The data design (Section~5), the multi-parent lineage and checksum/commit-marker recovery, and the fitness/work-ratio feedback that drives the evolutionary loop (Section~7) \\
+\hline
+\end{longtable}
+
+Each topic maps to concrete, named design elements rather than generic textbook paragraphs, satisfying the integration gate.
+
+\subsection{Thesis Consultation Registration}
+
+\emph{Administrative note:} registration for the Thesis Consultation subject, offered with Gregory Reynolds Morse as lecturer, is confirmed for the current cycle (registration record in the university system; available on request).
 
 % ============================================================
 \clearpage
 \phantomsection
-\addcontentsline{toc}{chapter}{Bibliography}
+\addcontentsline{toc}{section}{Bibliography}
 \bibliographystyle{plainnat}
 \bibliography{references}
 
