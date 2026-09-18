@@ -90,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     p_formalize.add_argument("--candidate", required=True, help="candidate id, e.g. gen001_c01")
     p_formalize.add_argument("--model", default=None, help="override model id")
     p_formalize.add_argument("--enlcode-path", default=None, help="override enlcode binary path")
+    p_formalize.add_argument("--fresh", action="store_true",
+                             help="ignore any existing module and redo all stages from scratch")
 
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
@@ -115,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             args.candidate,
             model=args.model,
             enlcode_path=args.enlcode_path,
+            fresh=args.fresh,
         )
     else:
         parser.print_help()

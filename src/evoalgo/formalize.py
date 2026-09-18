@@ -50,15 +50,22 @@ def lean_project_dir() -> Path:
     return project
 
 
-def _module_name(candidate_id: str, run_id: str) -> str:
-    """Stable, collision-resistant module name for a candidate."""
+def _module_name(candidate_id: str, run_id: str, candidate_path: Path) -> str:
+    """Stable, collision-resistant module name for a candidate.
+
+    The digest covers the candidate CONTENT (plus run and id), so a changed
+    candidate gets a fresh module instead of silently resuming a stale proof.
+    """
     base = re.sub(r"[^0-9A-Za-z]", "", candidate_id)
-    digest = hashlib_sha256(f"{run_id}:{candidate_id}")[:8]
+    content = hashlib_sha256(candidate_path.read_bytes())[:16]
+    digest = hashlib_sha256(f"{run_id}:{candidate_id}:{content}")[:8]
     return f"Formal_{base}_{digest}"
 
 
-def hashlib_sha256(s: str) -> str:
+def hashlib_sha256(s: str | bytes) -> str:
     import hashlib
+    if isinstance(s, bytes):
+        return hashlib.sha256(s).hexdigest()
     return hashlib.sha256(s.encode()).hexdigest()
 
 
@@ -70,6 +77,7 @@ STAGES = [
                  "Run `lake build ThesisLean.<Module>` and make it compile. "
                  "Do NOT yet prove anything."),
         "allow_sorry": True,
+        "retries": 0,
     },
     {
         "name": "lemmas",
@@ -78,6 +86,7 @@ STAGES = [
                  "placeholders. Keep the main theorem statement as `sorry` for now. "
                  "Run `lake build ThesisLean.<Module>` and make it compile."),
         "allow_sorry": True,
+        "retries": 6,
     },
     {
         "name": "theorem",
@@ -86,6 +95,7 @@ STAGES = [
                  "`lake build ThesisLean.<Module>` and make it compile with NO "
                  "`sorry`/`axiom`/`admit`/`unsafe` anywhere."),
         "allow_sorry": False,
+        "retries": 4,
     },
 ]
 
@@ -98,6 +108,8 @@ def _build_stage_task(
     candidate_path: Path,
     module_name: str,
     project_dir: Path,
+    retry: int = 0,
+    broken_existing: bool = False,
 ) -> str:
     """Build the stage-specific task for the lean-prover agent."""
     allow = (
@@ -108,6 +120,20 @@ def _build_stage_task(
              "this stage. If a lemma resists proof, report the gap in your final "
              "message instead of leaving sorry."
     )
+    resume = (
+        f"\nThis is retry {retry + 1} of this stage. The module already contains\n"
+        f"work from previous attempts. PRESERVE everything already correct;\n"
+        f"only add/complete what this stage requires. Do NOT rewrite the file\n"
+        f"from scratch."
+        if retry > 0
+        else ""
+    )
+    broken = (
+        f"\nThe existing module does not compile and must be rewritten from\n"
+        f"scratch; do not preserve its content.\n"
+        if broken_existing
+        else ""
+    )
     return (
         f"Stage {stage_index}/{len(STAGES)}: {stage['name']}\n"
         f"Problem: {problem_name}\n"
@@ -115,6 +141,8 @@ def _build_stage_task(
         f"Read the candidate source at {candidate_path} and the problem\n"
         f"definition in the dynamic-graph-algorithms skill.\n"
         f"{stage['desc']}\n"
+        f"{resume}"
+        f"{broken}"
         f"Work in the module {project_dir}/ThesisLean/{module_name}.lean\n"
         f"(create it if it does not exist; the previous stages may have written\n"
         f"it already - edit in place). Ensure `import ThesisLean.{module_name}` is\n"
@@ -244,6 +272,7 @@ def run_formalize(
     candidate_id: str,
     model: str | None = None,
     enlcode_path: str | None = None,
+    fresh: bool = False,
 ) -> int:
     """Execute the formalization workflow for one candidate.
 
@@ -287,50 +316,121 @@ def run_formalize(
         print(str(e))
         return 2
 
-    module_name = _module_name(candidate_id, run_dir.name)
+    module_name = _module_name(candidate_id, run_dir.name, candidate_path)
     module_path = project_dir / "ThesisLean" / f"{module_name}.lean"
 
     print(f"Formalizing {candidate_id} ({config.problem}) -> {module_name}")
+
+    # Resume support: if the module already exists and builds, skip definitions.
+    existing_build_ok, _ = _verify_lake_build(project_dir, module_name) \
+        if module_path.exists() else (False, "")
+
+    # Early-accept branch: an already-complete module skips all agent stages.
+    already_complete = (
+        module_path.exists()
+        and existing_build_ok
+        and bool(_verify_lean_no_sorry(project_dir, module_path)[0])
+        and not _scan_for_banned(module_path)
+    )
 
     enlcode = enlcode_path or os.environ.get(
         "ENLCODE_PATH", str(Path.home() / ".enlcode" / "enlcode")
     )
     resolved_model = model or config.model
 
+    candidate_digest = hashlib_sha256(candidate_path.read_bytes())[:16]
+
     stage_records: list[dict[str, Any]] = []
     total_elapsed = 0.0
     failed_stage: str | None = None
+    resumed = False
+    if already_complete and not fresh:
+        print("  Module already complete (builds, no sorry, no banned); accepting without agent calls.")
+        ok_build, build_tail = _verify_lake_build(project_dir, module_name)
+        ok_no_sorry, lean_tail = _verify_lean_no_sorry(project_dir, module_path)
+        banned: list[str] = []
+        accepted = True
+        result = {
+            "candidate_id": candidate_id,
+            "problem": config.problem,
+            "module": module_name,
+            "module_path": str(module_path),
+            "model": resolved_model,
+            "stages": [],
+            "failed_stage": None,
+            "already_complete": True,
+            "elapsed_seconds": 0.0,
+            "build_ok": ok_build,
+            "no_sorry_warnings": ok_no_sorry,
+            "banned_hits": banned,
+            "accepted": accepted,
+            "candidate_digest": candidate_digest,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "build_tail": build_tail,
+            "lean_tail": lean_tail,
+        }
+        out_path = _write_result(run_dir, candidate_id, result)
+        print(f"  ACCEPTED (already complete) -> {out_path}")
+        return 0
+
+    completed_stages: set[str] = set()
+    if module_path.exists() and existing_build_ok and not fresh:
+        completed_stages.add("definitions")
+        resumed = True
+        existing_sorries = _scan_for_banned(module_path)
+        print(f"  Existing module found and builds ({len(existing_sorries)} "
+              f"sorry placeholders remaining); resuming from lemmas stage.")
+    elif module_path.exists():
+        print(f"  Existing module found but does NOT build; will redo from definitions.")
     for i, stage in enumerate(STAGES, 1):
-        task = _build_stage_task(
-            stage,
-            i,
-            config.problem,
-            candidate_id,
-            candidate_path,
-            module_name,
-            project_dir,
-        )
-        print(f"  Stage {i}/{len(STAGES)} ({stage['name']})...")
-        t0 = time.time()
-        returncode, report, agent_exc = _dispatch_agent(
-            enlcode, run_dir, task, resolved_model
-        )
-        elapsed = time.time() - t0
-        total_elapsed += elapsed
-        stage_build_ok, stage_build_tail = _verify_lake_build(project_dir, module_name)
-        stage_records.append({
-            "stage": stage["name"],
-            "elapsed_seconds": round(elapsed, 1),
-            "agent_return": returncode,
-            "agent_error": agent_exc,
-            "build_ok": stage_build_ok,
-            "build_tail": stage_build_tail[-800:],
-            "report_tail": report[-2000:],
-        })
-        print(f"    elapsed {elapsed:.0f}s, exit {returncode}, build "
-              f"{'OK' if stage_build_ok else 'FAILED'}"
-              + (f" ({agent_exc})" if agent_exc else ""))
-        if agent_exc is not None or returncode != 0 or not stage_build_ok:
+        if stage["name"] in completed_stages:
+            print(f"  Stage {i}/{len(STAGES)} ({stage['name']}): already done, skipping.")
+            continue
+        stage_attempts = stage.get("retries", 0) + 1
+        stage_ok = False
+        for attempt in range(stage_attempts):
+            retry_note = f" (attempt {attempt + 1}/{stage_attempts})" if stage_attempts > 1 else ""
+            task = _build_stage_task(
+                stage,
+                i,
+                config.problem,
+                candidate_id,
+                candidate_path,
+                module_name,
+                project_dir,
+                retry=attempt,
+                broken_existing=(
+                    module_path.exists()
+                    and not existing_build_ok
+                    and stage["name"] == "definitions"
+                    and attempt == 0
+                ),
+            )
+            print(f"  Stage {i}/{len(STAGES)} ({stage['name']}){retry_note}...")
+            t0 = time.time()
+            returncode, report, agent_exc = _dispatch_agent(
+                enlcode, run_dir, task, resolved_model
+            )
+            elapsed = time.time() - t0
+            total_elapsed += elapsed
+            stage_build_ok, stage_build_tail = _verify_lake_build(project_dir, module_name)
+            stage_records.append({
+                "stage": stage["name"],
+                "attempt": attempt + 1,
+                "elapsed_seconds": round(elapsed, 1),
+                "agent_return": returncode,
+                "agent_error": agent_exc,
+                "build_ok": stage_build_ok,
+                "build_tail": stage_build_tail[-800:],
+                "report_tail": report[-2000:],
+            })
+            print(f"    elapsed {elapsed:.0f}s, exit {returncode}, build "
+                  f"{'OK' if stage_build_ok else 'FAILED'}"
+                  + (f" ({agent_exc})" if agent_exc else ""))
+            if agent_exc is None and returncode == 0 and stage_build_ok:
+                stage_ok = True
+                break
+        if not stage_ok:
             failed_stage = stage["name"]
             break
 
@@ -362,6 +462,8 @@ def run_formalize(
         "model": resolved_model,
         "stages": stage_records,
         "failed_stage": failed_stage,
+        "resumed": resumed,
+        "candidate_digest": candidate_digest,
         "elapsed_seconds": round(total_elapsed, 1),
         "build_ok": ok_build,
         "no_sorry_warnings": ok_no_sorry,
