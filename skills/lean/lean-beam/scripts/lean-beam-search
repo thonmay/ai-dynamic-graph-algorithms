@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+
+# Copyright (c) 2026 Lean FRO LLC. All rights reserved.
+# Released under Apache 2.0 license as described in the file LICENSE.
+# Author: Emilio J. Gallego Arias
+
+set -euo pipefail
+
+resolve_script_path() {
+  local source="${BASH_SOURCE[0]}"
+  local dir=""
+  while [ -L "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    case "$source" in
+      /*)
+        ;;
+      *)
+        source="$dir/$source"
+        ;;
+    esac
+  done
+  dir="$(cd -P "$(dirname "$source")" && pwd)"
+  printf '%s/%s\n' "$dir" "$(basename "$source")"
+}
+
+script_path="$(resolve_script_path)"
+script_dir="$(cd -P "$(dirname "$script_path")" && pwd)"
+beam_home="${BEAM_HOME:-$(cd -P "$script_dir/.." && pwd)}"
+if [ -x "$beam_home/bin/lean-beam" ]; then
+  cli_script="$beam_home/bin/lean-beam"
+else
+  cli_script="$beam_home/scripts/lean-beam"
+fi
+
+usage() {
+  cat <<'EOF' >&2
+usage:
+  lean-beam-search [lean-beam opts...] mint <path> <version> <line> <character> <text...>
+  lean-beam-search [lean-beam opts...] branch <path> <text...>
+  lean-beam-search [lean-beam opts...] linear <path> <text...>
+  lean-beam-search [lean-beam opts...] playout <path> <step> [step...]
+  lean-beam-search [lean-beam opts...] release <path>
+
+notes:
+  - branch, linear, playout, and release read a prior wrapper response or handle JSON from stdin
+  - mint requires the version returned by `lean-beam update <path>` or `lean-beam sync <path>`
+  - lean-beam opts such as --root may appear before the subcommand
+EOF
+  exit 1
+}
+
+if [ ! -x "$cli_script" ]; then
+  echo "missing lean-beam wrapper at $cli_script" >&2
+  exit 1
+fi
+
+prefix=()
+subcmd=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    mint|branch|linear|playout|release)
+      subcmd="$1"
+      shift
+      break
+      ;;
+    *)
+      prefix+=("$1")
+      shift
+      ;;
+  esac
+done
+
+[ -n "$subcmd" ] || usage
+
+case "$subcmd" in
+  mint)
+    [ "$#" -ge 5 ] || usage
+    path="$1"
+    version="$2"
+    line="$3"
+    character="$4"
+    shift 4
+    if [ -n "${prefix[*]-}" ]; then
+      exec "$cli_script" ${prefix[@]+"${prefix[@]}"} run-at-handle "$path" "$version" "$line" "$character" "$@"
+    else
+      exec "$cli_script" run-at-handle "$path" "$version" "$line" "$character" "$@"
+    fi
+    ;;
+  branch)
+    [ "$#" -ge 2 ] || usage
+    path="$1"
+    shift
+    if [ -n "${prefix[*]-}" ]; then
+      exec "$cli_script" ${prefix[@]+"${prefix[@]}"} run-with "$path" - "$@"
+    else
+      exec "$cli_script" run-with "$path" - "$@"
+    fi
+    ;;
+  linear)
+    [ "$#" -ge 2 ] || usage
+    path="$1"
+    shift
+    if [ -n "${prefix[*]-}" ]; then
+      exec "$cli_script" ${prefix[@]+"${prefix[@]}"} run-with-linear "$path" - "$@"
+    else
+      exec "$cli_script" run-with-linear "$path" - "$@"
+    fi
+    ;;
+  release)
+    [ "$#" -eq 1 ] || usage
+    path="$1"
+    if [ -n "${prefix[*]-}" ]; then
+      exec "$cli_script" ${prefix[@]+"${prefix[@]}"} release "$path" -
+    else
+      exec "$cli_script" release "$path" -
+    fi
+    ;;
+  playout)
+    [ "$#" -ge 2 ] || usage
+    path="$1"
+    shift
+    current="$(cat)"
+    for step in "$@"; do
+      if [ -n "${prefix[*]-}" ]; then
+        current="$(printf '%s\n' "$current" | "$cli_script" ${prefix[@]+"${prefix[@]}"} run-with-linear "$path" - "$step")"
+      else
+        current="$(printf '%s\n' "$current" | "$cli_script" run-with-linear "$path" - "$step")"
+      fi
+    done
+    printf '%s\n' "$current"
+    ;;
+esac
