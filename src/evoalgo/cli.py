@@ -92,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
     p_formalize.add_argument("--enlcode-path", default=None, help="override enlcode binary path")
     p_formalize.add_argument("--fresh", action="store_true",
                              help="ignore any existing module and redo all stages from scratch")
+    p_formalize.add_argument("--stage-timeout", type=int, default=2400,
+                             help="per-stage agent timeout in seconds (default 2400)")
+    p_formalize.add_argument("--hints", default=None,
+                             help="path to a markdown file with proof-strategy hints "
+                                  "appended to every stage task")
 
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
@@ -111,6 +116,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "verify":
         return cmd_verify(args)
     elif args.command == "formalize":
+        if args.stage_timeout < 60:
+            print("--stage-timeout must be at least 60 seconds")
+            return 2
         from .formalize import run_formalize
         return run_formalize(
             Path(args.run),
@@ -118,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             enlcode_path=args.enlcode_path,
             fresh=args.fresh,
+            stage_timeout=args.stage_timeout,
+            hints_path=args.hints,
         )
     else:
         parser.print_help()

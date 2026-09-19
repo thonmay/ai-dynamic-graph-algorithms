@@ -84,7 +84,10 @@ STAGES = [
         "desc": ("Edit the existing module: prove the lemma statements from the "
                  "previous stage with real proofs, removing their `sorry` "
                  "placeholders. Keep the main theorem statement as `sorry` for now. "
-                 "Run `lake build ThesisLean.<Module>` and make it compile."),
+                 "Run `lake build ThesisLean.<Module>` and make it compile. "
+                 "Before finishing, run `grep -c sorry <the module file>` and "
+                 "confirm zero `sorry` remains in the LEMMA section; a build that "
+                 "passes with leftover `sorry` is NOT a success."),
         "allow_sorry": True,
         "retries": 6,
     },
@@ -93,7 +96,9 @@ STAGES = [
         "desc": ("Edit the existing module: prove the main correctness theorem, "
                  "removing the last `sorry` placeholder(s). Run "
                  "`lake build ThesisLean.<Module>` and make it compile with NO "
-                 "`sorry`/`axiom`/`admit`/`unsafe` anywhere."),
+                 "`sorry`/`axiom`/`admit`/`unsafe` anywhere. Before finishing, "
+                 "run `grep -c sorry <the module file>` and confirm it outputs 0; "
+                 "if any `sorry` remains the stage is NOT complete."),
         "allow_sorry": False,
         "retries": 4,
     },
@@ -110,6 +115,7 @@ def _build_stage_task(
     project_dir: Path,
     retry: int = 0,
     broken_existing: bool = False,
+    hints: str = "",
 ) -> str:
     """Build the stage-specific task for the lean-prover agent."""
     allow = (
@@ -134,6 +140,11 @@ def _build_stage_task(
         if broken_existing
         else ""
     )
+    hints_text = (
+        f"\nProof-strategy hints from the supervisor:\n{hints}\n"
+        if hints
+        else ""
+    )
     return (
         f"Stage {stage_index}/{len(STAGES)}: {stage['name']}\n"
         f"Problem: {problem_name}\n"
@@ -143,6 +154,7 @@ def _build_stage_task(
         f"{stage['desc']}\n"
         f"{resume}"
         f"{broken}"
+        f"{hints_text}"
         f"Work in the module {project_dir}/ThesisLean/{module_name}.lean\n"
         f"(create it if it does not exist; the previous stages may have written\n"
         f"it already - edit in place). Ensure `import ThesisLean.{module_name}` is\n"
@@ -223,19 +235,22 @@ def _verify_lean_no_sorry(project_dir: Path, module_path: Path) -> tuple[bool, s
     return True, out[-2000:]
 
 
-def _scan_for_banned(file_path: Path) -> list[str]:
-    """Return lines containing axiom/sorry/admit/unsafe outside comments/docstrings.
+THEOREM_DECL = re.compile(r"^theorem\s")
 
-    Handles `--` line comments and `/- ... -/` block comments, including nested
-    block comments (Lean supports nesting).
+
+def _has_theorem(file_path: Path) -> bool:
+    """True if the module declares at least one top-level `theorem`.
+
+    Guards against a truncated/empty module passing the no-banned + no-sorry
+    checks: an empty file compiles, emits no sorry warning, and contains no
+    banned tokens, yet proves nothing.
     """
-    hits: list[str] = []
     try:
         lines = file_path.read_text().splitlines()
     except OSError:
-        return ["<unreadable>"]
+        return False
     depth = 0
-    for i, line in enumerate(lines, 1):
+    for line in lines:
         stripped = line.strip()
         if depth > 0:
             depth += stripped.count("/-") - stripped.count("-/")
@@ -247,8 +262,42 @@ def _scan_for_banned(file_path: Path) -> list[str]:
         if stripped.startswith("/-"):
             depth = stripped.count("/-") - stripped.count("-/")
             continue
-        if BANNED.search(line):
-            hits.append(f"{i}: {line.strip()[:120]}")
+        if THEOREM_DECL.match(stripped):
+            return True
+    return False
+
+
+def _scan_for_banned(file_path: Path) -> list[str]:
+    """Return banned-construct occurrences (axiom/sorry/admit/unsafe) outside comments.
+
+    Handles `--` line comments (including trailing ones after code), `/- ... -/`
+    block comments, and nested block comments (Lean supports nesting). Counts
+    each construct, not each line, so two `sorry` on one line count twice.
+    """
+    hits: list[str] = []
+    try:
+        lines = file_path.read_text().splitlines()
+    except OSError:
+        return ["<unreadable>"]
+    depth = 0
+    for i, line in enumerate(lines, 1):
+        code = line
+        stripped = line.strip()
+        if depth > 0:
+            depth += stripped.count("/-") - stripped.count("-/")
+            if depth < 0:
+                depth = 0
+            continue
+        if stripped.startswith("--"):
+            continue
+        if stripped.startswith("/-"):
+            depth = stripped.count("/-") - stripped.count("-/")
+            continue
+        # strip a trailing `--` line comment so code like `... := trivial -- no sorry`
+        # is not counted; only the code part before `--` matters.
+        code = line.split("--", 1)[0]
+        for m in BANNED.finditer(code):
+            hits.append(f"{i}: {m.group(0)}")
     return hits
 
 
@@ -273,6 +322,8 @@ def run_formalize(
     model: str | None = None,
     enlcode_path: str | None = None,
     fresh: bool = False,
+    stage_timeout: int = 2400,
+    hints_path: str | None = None,
 ) -> int:
     """Execute the formalization workflow for one candidate.
 
@@ -340,6 +391,14 @@ def run_formalize(
 
     candidate_digest = hashlib_sha256(candidate_path.read_bytes())[:16]
 
+    hints_text = ""
+    if hints_path:
+        hp = Path(hints_path)
+        if hp.exists():
+            hints_text = hp.read_text()
+        else:
+            print(f"  WARNING: hints file not found: {hp}")
+
     stage_records: list[dict[str, Any]] = []
     total_elapsed = 0.0
     failed_stage: str | None = None
@@ -348,8 +407,8 @@ def run_formalize(
         print("  Module already complete (builds, no sorry, no banned); accepting without agent calls.")
         ok_build, build_tail = _verify_lake_build(project_dir, module_name)
         ok_no_sorry, lean_tail = _verify_lean_no_sorry(project_dir, module_path)
-        banned: list[str] = []
-        accepted = True
+        banned = _scan_for_banned(module_path)
+        accepted = ok_build and ok_no_sorry and not banned and _has_theorem(module_path)
         result = {
             "candidate_id": candidate_id,
             "problem": config.problem,
@@ -388,6 +447,11 @@ def run_formalize(
             continue
         stage_attempts = stage.get("retries", 0) + 1
         stage_ok = False
+        # Stage-level baseline: progress is measured against where the stage
+        # started, so a retry that nets back to the original count still fails.
+        stage_start_banned = (
+            len(_scan_for_banned(module_path)) if module_path.exists() else 0
+        )
         for attempt in range(stage_attempts):
             retry_note = f" (attempt {attempt + 1}/{stage_attempts})" if stage_attempts > 1 else ""
             task = _build_stage_task(
@@ -405,15 +469,19 @@ def run_formalize(
                     and stage["name"] == "definitions"
                     and attempt == 0
                 ),
+                hints=hints_text,
             )
             print(f"  Stage {i}/{len(STAGES)} ({stage['name']}){retry_note}...")
+            banned_before = len(_scan_for_banned(module_path)) if module_path.exists() else 0
             t0 = time.time()
             returncode, report, agent_exc = _dispatch_agent(
-                enlcode, run_dir, task, resolved_model
+                enlcode, run_dir, task, resolved_model, timeout=stage_timeout
             )
             elapsed = time.time() - t0
             total_elapsed += elapsed
             stage_build_ok, stage_build_tail = _verify_lake_build(project_dir, module_name)
+            module_present = module_path.exists()
+            banned_after = len(_scan_for_banned(module_path)) if module_present else 0
             stage_records.append({
                 "stage": stage["name"],
                 "attempt": attempt + 1,
@@ -421,13 +489,31 @@ def run_formalize(
                 "agent_return": returncode,
                 "agent_error": agent_exc,
                 "build_ok": stage_build_ok,
+                "banned_before": banned_before,
+                "banned_after": banned_after,
                 "build_tail": stage_build_tail[-800:],
                 "report_tail": report[-2000:],
             })
             print(f"    elapsed {elapsed:.0f}s, exit {returncode}, build "
-                  f"{'OK' if stage_build_ok else 'FAILED'}"
+                  f"{'OK' if stage_build_ok else 'FAILED'}, banned "
+                  f"{banned_before} -> {banned_after}"
                   + (f" ({agent_exc})" if agent_exc else ""))
-            if agent_exc is None and returncode == 0 and stage_build_ok:
+            # Honest-progress gates: a green build is not enough, because `sorry`
+            # compiles. The lemmas stage must strictly reduce the stage's starting
+            # placeholder count (or the theorem stage inherits fake lemmas it can
+            # never discharge); the theorem stage must reach zero. Progress is
+            # measured against stage_start_banned so a retry that nets back to the
+            # original count still fails.
+            if not module_present:
+                print("    module missing after attempt; treating as failure")
+            elif agent_exc is not None or returncode != 0 or not stage_build_ok:
+                pass
+            elif stage["name"] == "lemmas" and stage_start_banned > 0 and banned_after >= stage_start_banned:
+                print(f"    no sorry removed (stage start {stage_start_banned} -> "
+                      f"{banned_after}); treating as failure")
+            elif stage["name"] == "theorem" and banned_after != 0:
+                print(f"    {banned_after} sorry still present; treating as failure")
+            else:
                 stage_ok = True
                 break
         if not stage_ok:
@@ -453,6 +539,7 @@ def run_formalize(
         and ok_no_sorry
         and not banned
         and module_path.exists()
+        and _has_theorem(module_path)
     )
     result = {
         "candidate_id": candidate_id,
