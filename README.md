@@ -13,6 +13,24 @@ and efficient dynamic graph algorithms on directed graphs.
 - [`docs/design.tex`](docs/design.tex) - Software Design Document (LaTeX source)
 - [`docs/design.pdf`](docs/design.pdf) - Compiled Design Document
 
+## Lean Formalization
+
+The dynamic MCS candidate `gen001_c01` is formalized and proved correct in Lean 4 +
+mathlib under [`lean/`](lean/). The headline theorem `mcsUpdate_preserves_invariant`
+states that the candidate's update preserves a valid MCS ordering under every single
+edge flip; `init_valid`, `insert_edge_valid` and `delete_edge_valid` follow.
+
+Verify the proof is honest (builds, no `sorry`, standard axioms only):
+
+```bash
+cd lean
+lake build ThesisLean.Formal_gen001c01_3939115c   # must end "Build completed successfully"
+lake env lean AxiomAudit.lean                      # each theorem: [propext, Classical.choice, Quot.sound]
+lake env leanchecker ThesisLean.Formal_gen001c01_3939115c   # kernel replay, exit 0
+```
+
+Toolchain: `leanprover/lean4:v4.34.0`, mathlib `v4.34.0` (see `lean/lean-toolchain`).
+
 ## Project Overview
 
 The system runs an evolutionary loop in which candidate dynamic graph algorithms
