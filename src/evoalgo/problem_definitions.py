@@ -458,7 +458,47 @@ def offline_compute(graph, root):
             return state.get("ordering", state.get("order", state))
         return state
 
+    def _adjacency_lists(self, graph: np.ndarray) -> list[list[int]]:
+        """Adjacency lists for `graph`, cached per graph.
+
+        Building lists from the dense matrix is O(n^2), but the verifier
+        calls check_invariant repeatedly on the same graph with different
+        orderings, so caching makes each subsequent check O(n+m). The cache
+        is bounded by the test universe size; cleared if it grows past a cap
+        so a very large random sample cannot grow it without bound.
+        """
+        cache = self.__dict__.setdefault("_adj_cache", {})
+        key = graph.tobytes()
+        adj = cache.get(key)
+        if adj is None:
+            n = graph.shape[0]
+            adj = [[] for _ in range(n)]
+            for u in range(n):
+                row = graph[u]
+                for v in range(u + 1, n):
+                    if row[v]:
+                        adj[u].append(v)
+                        adj[v].append(u)
+            if len(cache) >= 5000:
+                cache.clear()
+            # Freeze to tuples: check_invariant only reads the lists, but
+            # returning mutable shared lists would let a future caller poison
+            # the cache for all later checks on the same graph.
+            adj = [tuple(a) for a in adj]
+            cache[key] = adj
+        return adj
+
     def check_invariant(self, state: Any, graph: np.ndarray, root: int | None) -> bool:
+        """Check `ordering` is a valid MCS ordering of `graph` in O(n+m).
+
+        Replays the ordering and confirms each vertex, when chosen, has
+        cardinality (already-chosen neighbors) equal to the maximum over all
+        unchosen vertices. The running maximum is maintained with a
+        cardinality-bucket count array and a pointer that only moves up on
+        neighbor increments and down when a bucket empties, so total pointer
+        work is O(m) amortized and the whole check is O(n+m) once adjacency
+        lists are cached.
+        """
         ordering = self._extract_ordering(state)
         if ordering is None:
             return False
@@ -468,24 +508,29 @@ def offline_compute(graph, root):
         if set(ordering) != set(range(n)):
             return False
 
-        # MCS property: each vertex is chosen when its cardinality
-        # (number of already-chosen neighbors) is maximal among unchosen.
-        chosen = set()
-        cardinality = {v: 0 for v in range(n)}
+        adj = self._adjacency_lists(graph)
+        cardinality = [0] * n          # per-vertex: # already-chosen neighbors
+        count = [0] * (n + 1)          # count[c] = # UNCHOSEN vertices with cardinality c
+        count[0] = n
+        max_card = 0                   # running max cardinality among unchosen
+        chosen = [False] * n
 
         for v in ordering:
-            # Check that v has maximum cardinality among unchosen
-            unchosen = [u for u in range(n) if u not in chosen]
-            if not unchosen:
-                break
-            max_card = max(cardinality[u] for u in unchosen)
             if cardinality[v] != max_card:
                 return False
-            chosen.add(v)
-            # Update cardinalities for neighbors
-            for u in range(n):
-                if graph[v, u] == 1 and u not in chosen:
-                    cardinality[u] += 1
+            chosen[v] = True
+            count[cardinality[v]] -= 1
+            for u in adj[v]:
+                if not chosen[u]:
+                    old = cardinality[u]
+                    new = old + 1
+                    cardinality[u] = new
+                    count[old] -= 1
+                    count[new] += 1
+                    if new > max_card:
+                        max_card = new
+            while max_card > 0 and count[max_card] == 0:
+                max_card -= 1
 
         return True
 
