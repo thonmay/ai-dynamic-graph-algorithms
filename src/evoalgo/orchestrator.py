@@ -405,7 +405,7 @@ class Orchestrator:
             return
 
         # Stop on success: any candidate reaches fitness 1.0
-        if self.population.has_passing:
+        if self.config.early_stop_on_success and self.population.has_passing:
             self.stop_reason = "success"
             logger.info("SUCCESS: candidate reached fitness 1.0 at generation %d", self.generation)
             return

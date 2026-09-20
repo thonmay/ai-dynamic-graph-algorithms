@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     p_configure.add_argument("--seed", type=int, default=1337, help="random seed")
     p_configure.add_argument("--elitism-k", type=int, default=2, help="top-k survivors")
     p_configure.add_argument("--workdir", default="runs", help="run directory root")
+    p_configure.add_argument("--no-early-stop", action="store_true",
+                             help="keep evolving past fitness 1.0 instead of stopping on first success")
     p_configure.add_argument("--output", "-o", default="config.yaml", help="output config file")
 
     # run start
@@ -142,6 +144,7 @@ def cmd_configure(args) -> int:
         max_generations=args.generations,
         timeout_seconds=args.timeout,
         elitism_k=args.elitism_k,
+        early_stop_on_success=not args.no_early_stop,
         workdir=args.workdir,
         bound=Bound(
             n_max=args.n_max,

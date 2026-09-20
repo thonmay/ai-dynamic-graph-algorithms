@@ -77,6 +77,7 @@ class RunConfig:
     plateau_epsilon: float = 0.01
     max_consecutive_all_failed: int = 5
     model_call_budget: int = 500
+    early_stop_on_success: bool = True
     workdir: str = "runs"
 
     @classmethod
@@ -115,6 +116,7 @@ class RunConfig:
             "plateau_epsilon": self.plateau_epsilon,
             "max_consecutive_all_failed": self.max_consecutive_all_failed,
             "model_call_budget": self.model_call_budget,
+            "early_stop_on_success": self.early_stop_on_success,
             "workdir": self.workdir,
         }
         return d
