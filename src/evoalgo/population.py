@@ -11,6 +11,17 @@ from .candidate import Candidate, CandidateState
 logger = logging.getLogger(__name__)
 
 
+def _rank_key(candidate: Candidate) -> tuple:
+    """Ranking key: smaller is better.
+
+    Order: passing before failing (a timed-out FAIL can still show
+    fitness 1.0), then higher fitness, then lower work_ratio. Candidates
+    without a measured work_ratio rank last among equals.
+    """
+    wr = candidate.work_ratio if candidate.work_ratio is not None else float("inf")
+    return (0 if candidate.is_passing else 1, -candidate.fitness, wr)
+
+
 class Population:
     """Manages the candidate collection for one run."""
 
@@ -44,7 +55,7 @@ class Population:
     def best_candidate(self) -> Candidate | None:
         if not self.candidates:
             return None
-        return max(self.candidates, key=lambda c: c.fitness)
+        return min(self.candidates, key=_rank_key)
 
     @property
     def has_passing(self) -> bool:
@@ -63,8 +74,8 @@ class Population:
         if not self.candidates:
             return [None] * count
 
-        # Sort by fitness descending
-        ranked = sorted(self.candidates, key=lambda c: c.fitness, reverse=True)
+        # Rank best-first (passing, then fitness, then work_ratio)
+        ranked = sorted(self.candidates, key=_rank_key)
 
         # Filter to candidates that produced some result (not NEW, not CRASH-only)
         viable = [c for c in ranked if c.state in (CandidateState.PASS, CandidateState.FAIL)]
@@ -79,9 +90,9 @@ class Population:
         tournament_k = min(3, len(viable))
 
         for _ in range(count):
-            # Tournament: pick k random candidates, choose the fittest
+            # Tournament: pick k random candidates, choose the best-ranked
             contenders = random.sample(viable, tournament_k)
-            best = max(contenders, key=lambda c: c.fitness)
+            best = min(contenders, key=_rank_key)
             parents.append(best)
 
         return parents
@@ -127,13 +138,16 @@ class Population:
         if len(self.candidates) <= self.max_size:
             return []
 
-        # Sort by fitness descending
-        ranked = sorted(self.candidates, key=lambda c: c.fitness, reverse=True)
+        # Rank best-first (passing, then fitness, then work_ratio)
+        ranked = sorted(self.candidates, key=_rank_key)
 
         # Keep elite (top-k)
         elite = ranked[: self.elitism_k]
 
-        # From the rest, keep the most diverse failing-case signatures
+        # Fill remaining slots: passing candidates are always kept (ranked by
+        # work_ratio); failing candidates are deduplicated by failure signature
+        # so the population explores distinct failure modes rather than many
+        # variants that break the same way.
         rest = ranked[self.elitism_k:]
         seen_signatures = set()
         kept_rest: list[Candidate] = []
@@ -144,6 +158,10 @@ class Population:
                 # Discard the rest
                 c.transition(CandidateState.DISCARDED)
                 discarded.append(c)
+                continue
+
+            if c.is_passing:
+                kept_rest.append(c)
                 continue
 
             sig = (
