@@ -211,10 +211,26 @@ def cmd_status(args) -> int:
     best = max((c.get("fitness", 0) for c in candidates), default=0)
     passing = sum(1 for c in candidates if c.get("state") == "PASS")
 
+    # Name the best candidate by the same ranking selection uses (passing,
+    # then fitness, then lowest work_ratio), not just max fitness.
+    from .population import _rank_key_dict
+    ranked = sorted(
+        (c for c in candidates if c.get("state")),
+        key=_rank_key_dict,
+    )
+    top = ranked[0] if ranked else None
+    if top is not None and top.get("work_ratio") is not None:
+        top_str = f"{top['id']} (work_ratio={top['work_ratio']:.3f})"
+    elif top is not None:
+        top_str = top["id"]
+    else:
+        top_str = "--"
+
     print(f"Run: {data.get('run_id', '?')}")
     print(f"  Generation: {gen_num}")
     print(f"  Problem: {data.get('problem', '?')}")
     print(f"  Best fitness: {best:.2f}")
+    print(f"  Best candidate: {top_str}")
     print(f"  Passing: {passing}/{len(candidates)}")
     print(f"  Candidates:")
     for c in candidates:
@@ -273,12 +289,25 @@ def cmd_export(args) -> int:
                 c["generation"] = g
                 all_candidates.append(c)
 
+    # Best candidate: reuse the population ranking (passing, then fitness,
+    # then lowest work_ratio) so the exported headline matches what selection
+    # actually chose, instead of max-fitness + insertion order.
+    from .population import _rank_key_dict
+
+    ranked = sorted(
+        (c for c in all_candidates if c.get("state")),
+        key=_rank_key_dict,
+    )
+    best = ranked[0] if ranked else None
+
     # Write summary
     summary = {
         "run_id": run_dir.name,
         "total_generations": gen_num,
         "total_candidates": len(all_candidates),
-        "best_fitness": max((c.get("fitness", 0) for c in all_candidates), default=0),
+        "best_fitness": best.get("fitness", 0) if best else 0,
+        "best_candidate_id": best.get("id") if best else None,
+        "best_work_ratio": best.get("work_ratio") if best else None,
         "passing": sum(1 for c in all_candidates if c.get("state") == "PASS"),
     }
 
@@ -315,24 +344,32 @@ def cmd_history(args) -> int:
         print("No runs found.")
         return 0
 
-    print(f"{'Run ID':<30} {'Gen':>5} {'Best':>6} {'Pass':>5} {'Problem':<15}")
-    print("-" * 65)
+    print(f"{'Run ID':<30} {'Gen':>5} {'Best':>6} {'BestWR':>7} {'Pass':>5} {'Problem':<15}")
+    print("-" * 73)
     for run_dir in runs:
         if not run_dir.is_dir():
             continue
         committed = run_dir / "COMMITTED"
-        if not committed.exists():
+        try:
+            if not committed.exists():
+                continue
+            gen_num = int(committed.read_text().strip())
+            gen_file = run_dir / f"generation_{gen_num:04d}.json"
+            if not gen_file.exists():
+                continue
+            data = json.loads(gen_file.read_text())
+        except (OSError, ValueError):
+            # Skip unreadable or malformed run dirs (e.g. a non-run dir under
+            # the workdir that happens to contain a COMMITTED file).
             continue
-        gen_num = int(committed.read_text().strip())
-        gen_file = run_dir / f"generation_{gen_num:04d}.json"
-        if not gen_file.exists():
-            continue
-        data = json.loads(gen_file.read_text())
         candidates = data.get("candidates", [])
         best = max((c.get("fitness", 0) for c in candidates), default=0)
         passing = sum(1 for c in candidates if c.get("state") == "PASS")
+        pass_wrs = [c["work_ratio"] for c in candidates
+                    if c.get("state") == "PASS" and c.get("work_ratio") is not None]
+        best_wr_str = f"{min(pass_wrs):.3f}" if pass_wrs else "--"
         problem = data.get("problem", "?")
-        print(f"{run_dir.name:<30} {gen_num:>5} {best:>6.2f} {passing:>5} {problem:<15}")
+        print(f"{run_dir.name:<30} {gen_num:>5} {best:>6.2f} {best_wr_str:>7} {passing:>5} {problem:<15}")
     return 0
 
 

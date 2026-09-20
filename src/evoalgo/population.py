@@ -14,12 +14,26 @@ logger = logging.getLogger(__name__)
 def _rank_key(candidate: Candidate) -> tuple:
     """Ranking key: smaller is better.
 
-    Order: passing before failing (a timed-out FAIL can still show
-    fitness 1.0), then higher fitness, then lower work_ratio. Candidates
-    without a measured work_ratio rank last among equals.
+    Order: passing before failing, then higher fitness, then lower
+    work_ratio. Passing-first separates correct candidates from failures
+    robustly; work_ratio gives efficiency pressure among equally-correct
+    candidates. Candidates without a measured work_ratio rank last among
+    equals.
     """
     wr = candidate.work_ratio if candidate.work_ratio is not None else float("inf")
     return (0 if candidate.is_passing else 1, -candidate.fitness, wr)
+
+
+def _rank_key_dict(candidate: dict) -> tuple:
+    """Same ordering as _rank_key, over a serialized candidate dict.
+
+    Used by the reporting path (export/status/history) which works on the
+    JSON written by Candidate.to_json rather than live Candidate objects.
+    """
+    wr = candidate.get("work_ratio")
+    wr = float("inf") if wr is None else wr
+    passing = candidate.get("state") == "PASS"
+    return (0 if passing else 1, -candidate.get("fitness", 0.0), wr)
 
 
 class Population:
