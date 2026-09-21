@@ -77,7 +77,7 @@ STAGES = [
                  "Run `lake build ThesisLean.<Module>` and make it compile. "
                  "Do NOT yet prove anything."),
         "allow_sorry": True,
-        "retries": 0,
+        "retries": 2,
     },
     {
         "name": "lemmas",
@@ -173,7 +173,7 @@ def _dispatch_agent(
     run_dir: Path,
     task: str,
     model: str | None,
-    timeout: int = 2400,
+    timeout: int = 900,
 ) -> tuple[int, str, str | None]:
     """Dispatch one enlcode agent invocation.
 
@@ -194,6 +194,28 @@ def _dispatch_agent(
         return -1, "", f"agent dispatch failed: {e}"
 
 
+def _verify_leanchecker(project_dir: Path, module_name: str) -> tuple[bool, str]:
+    """Run the independent external kernel checker (Lean4Lean leanchecker) on
+    the compiled module. This guards against elaborator/kernel discrepancies
+    beyond what `lake build` verifies."""
+    cmd = ["lake", "env", "leanchecker", f"ThesisLean.{module_name}"]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+    except FileNotFoundError:
+        return False, "leanchecker binary not found on PATH"
+    except subprocess.TimeoutExpired:
+        return False, "leanchecker timed out after 1800s"
+    out = proc.stdout + "\n" + proc.stderr
+    ok = proc.returncode == 0
+    return ok, out[-3000:]
+
+
 def _verify_lake_build(project_dir: Path, module_name: str) -> tuple[bool, str]:
     """Run lake build for the module; return (ok, tail_of_output)."""
     cmd = ["lake", "build", f"ThesisLean.{module_name}"]
@@ -211,6 +233,12 @@ def _verify_lake_build(project_dir: Path, module_name: str) -> tuple[bool, str]:
         return False, "lake build timed out after 1800s"
     out = proc.stdout + "\n" + proc.stderr
     ok = proc.returncode == 0 and "Build completed successfully" in out
+    if ok:
+        # Independent kernel re-check: if leanchecker rejects the module, the
+        # build result does not count as verified.
+        checker_ok, checker_tail = _verify_leanchecker(project_dir, module_name)
+        if not checker_ok:
+            return False, "leanchecker rejected module:\n" + checker_tail
     return ok, out[-3000:]
 
 
@@ -322,7 +350,7 @@ def run_formalize(
     model: str | None = None,
     enlcode_path: str | None = None,
     fresh: bool = False,
-    stage_timeout: int = 2400,
+    stage_timeout: int = 900,
     hints_path: str | None = None,
 ) -> int:
     """Execute the formalization workflow for one candidate.

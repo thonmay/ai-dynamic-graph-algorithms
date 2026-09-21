@@ -31,6 +31,49 @@ from .sandbox import Sandbox, SandboxResult
 logger = logging.getLogger(__name__)
 
 
+def _exhaustive_flip_sequences(
+    n: int,
+    graph: np.ndarray,
+    directed: bool,
+) -> list[list[tuple[str, tuple[int, int]]]]:
+    """Deterministic short update sequences covering the update space for small n.
+
+    Returns all legal single-edge flips (each as a length-1 sequence) plus a
+    compact set of length-2 paths (flip one edge, then flip each other edge).
+    This closes the coverage hole left by random sequences: a reachable
+    counterexample at n<=exhaustive_flip_n_max is now hit deterministically.
+    """
+    pairs = [(u, v) for u in range(n) for v in range(n) if u != v and (directed or u < v)]
+    single: list[list[tuple[str, tuple[int, int]]]] = []
+    twins: list[list[tuple[str, tuple[int, int]]]] = []
+    for u, v in pairs:
+        if graph[u, v]:
+            single.append([("delete", (u, v))])
+        else:
+            single.append([("insert", (u, v))])
+    # length-2 paths: first flip (u,v), then flip (u',v') in the resulting graph
+    for u, v in pairs:
+        flipped = graph.copy()
+        if flipped[u, v]:
+            flipped[u, v] = 0
+            if not directed:
+                flipped[v, u] = 0
+            first: tuple[str, tuple[int, int]] = ("delete", (u, v))
+        else:
+            flipped[u, v] = 1
+            if not directed:
+                flipped[v, u] = 1
+            first = ("insert", (u, v))
+        for u2, v2 in pairs:
+            if (u2, v2) == (u, v):
+                continue
+            if flipped[u2, v2]:
+                twins.append([first, ("delete", (u2, v2))])
+            else:
+                twins.append([first, ("insert", (u2, v2))])
+    return single + twins
+
+
 @dataclass
 class VerifyResult:
     """Result of verifying one candidate."""
@@ -59,6 +102,7 @@ class Verifier:
         bound_seq_len_max: int = 20,
         bound_seq_count: int = 10,
         bound_seed: int = 1337,
+        exhaustive_flip_n_max: int = 5,
     ):
         self.problem = problem
         self.sandbox = sandbox
@@ -67,6 +111,7 @@ class Verifier:
         self.seq_len_max = bound_seq_len_max
         self.seq_count = bound_seq_count
         self.seed = bound_seed
+        self.exhaustive_flip_n_max = exhaustive_flip_n_max
 
         # Cache test graphs (they don't change between candidates)
         self._test_graphs: list[tuple[int, np.ndarray]] | None = None
@@ -87,10 +132,18 @@ class Verifier:
     def get_sequences(self, n: int, graph: np.ndarray) -> list[list[tuple[str, tuple[int, int]]]]:
         key = (n, graph.tobytes())
         if key not in self._test_sequences:
-            self._test_sequences[key] = generate_operation_sequences(
+            seqs = generate_operation_sequences(
                 n, graph, self.seq_len_max, self.seq_count, self.seed + n,
                 directed=self.problem.directed,
             )
+            # Deterministic exhaustive short sequences for small n: every
+            # single-edge flip plus a compact set of 2-flip paths. Random
+            # sequences alone missed reachable counterexamples (e.g. a single
+            # insert breaking dynamic MCS at n=3), so close that gap for the
+            # sizes where exhaustive coverage is cheap.
+            if n <= self.exhaustive_flip_n_max:
+                seqs = seqs + _exhaustive_flip_sequences(n, graph, self.problem.directed)
+            self._test_sequences[key] = seqs
         return self._test_sequences[key]
 
     def _offline_src(self) -> str:
