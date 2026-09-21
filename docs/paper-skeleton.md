@@ -118,3 +118,19 @@ update.
 - Candidate: runs/mcs_pressure_e2e/candidates/gen003_c01.py
 - Verifier results: runs/mcs_pressure_e2e/generation_0003.json (PASS 7524/7524,
   work_ratio 0.1817)
+## 9. Optimization attempt: O(log n) probe is impossible (negative result)
+We investigated replacing the linear first-break probe (insertion windows
+[pos[u]+1, pos[v]]) with an O(log n) binary search over a monotone predicate
+backed by prefix sums / Fenwick. The required monotonicity claim is FALSE:
+the predicate P(k) = (d(k) > c(k)) or (d(k) = c(k) and v < order[k]) where
+d(k) = |N(v) ∩ prefix|, c(k) = |N(order[k]) ∩ prefix| is NOT a prefix —
+6191 windows in the exhaustive universe (n<=6) show P=True followed by
+P=False, and 2536 even among interior steps. Because each position's
+predicate depends on the running prefix and competitors' cardinalities vary
+independently, a sound first-break query needs the O(k) scan; a segment
+tree/Fenwick cannot answer it. gen003_c02 keeps the exact O(k) probe and
+adds a flag-gated periodic-rebuild lever (bounded worst-case suffix), which
+is never slower on the recorded bench (0.1823 vs 0.1817, within noise) and
+strictly faster on the exhaustive universe (0.2420 vs 0.2904). This negative
+result is itself a contribution: it documents an information-theoretic
+obstacle to sublinear probing for MCS-ordering maintenance.
