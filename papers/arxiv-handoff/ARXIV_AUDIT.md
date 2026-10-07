@@ -35,7 +35,7 @@ No other blockers.
 One raw `\iffalse` / `\fi` region (`ARXIV-METADATA-BEGIN` … `ARXIV-METADATA-END`) sits immediately before `\begin{document}`. Compile-tested; 14 fields. `ARXIV_METADATA.txt` is derived from it byte-for-byte by stripping the markers.
 
 - Abstract is **not** copy-paste-safe (contains `\emph`, `$P_4$`), so the region uses the expanded single-line `Abstract:` form. Scientific identity with the visible abstract confirmed (only macro/format expansion differs): `emph{}` → plain; `$P_4$` → `P_4`; `Lean~4` → `Lean 4`.
-- Comments page count reconciled from the extracted final ZIP (8 pages, 1 table).
+- Comments page count reconciled from the extracted final ZIP (12 pages, 1 table).
 
 ## 6. Category / classification decision
 
@@ -72,7 +72,7 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 | Repository | https://github.com/thonmay/thesis-lean |
 | Public (unauth) | HTTP 200 |
 | Pin | annotated tag `mcs-arxiv-v2` (Lean proof) |
-| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v2^{}` → `a92df358739288c32485b4039d4899b7fb04eaaa` |
+| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v3^{}` → `afcc911405e9bb7e7ea4b9d8537d2ce2f1e731a5` |
 | Commit files reachable at pin | `README.md` 200, `comparator.json` 200, `formalization.yaml` 200, `lean-toolchain` 200, `AxiomAudit.lean` 200 |
 | Role | Logically required (all theorems) |
 | Visible in paper | Yes (reproducibility paragraph, `sec:formalization`) |
@@ -83,14 +83,14 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
 - ZIP members (verified, `allowlist_matches: true`): `main.tex` (29753 B), `references.bib` (5723 B), `main.bbl` (3603 B). No build debris, no PDF, no code, no Lean sources, no audits.
-- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 8 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 8 pages, 23470 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
+- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 12 pages, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 12 pages, 23470 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `5ecfa011712d0c9957d762ecd850b4f80fcac2de3d35fb40a58d620b757ca907`.
+- ZIP SHA-256: `aeda31232690df06ab3c5bca9186bba1b86092f179bd0dc414f1f26fdd9ceea5`.
 
 ## 12. Rendered-PDF audit
 
-8 pages, letter, selectable text, fonts embedded (`pdffonts` all `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (line ~237–241): **cosmetic** (a short line in a bullet list, badness 2080).
+12 pages, letter, selectable text, fonts embedded (`pdffonts` all `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (line ~237–241): **cosmetic** (a short line in a bullet list, badness 2080).
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
