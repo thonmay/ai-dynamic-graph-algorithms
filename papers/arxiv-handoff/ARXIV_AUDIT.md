@@ -86,7 +86,7 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 12 pages, 0 overfull, 1 underfull.
 - Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 12 pages, 23470 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `aeda31232690df06ab3c5bca9186bba1b86092f179bd0dc414f1f26fdd9ceea5`.
+- ZIP SHA-256: `a2d57278d668d964ff129951996dd915a53c285eee3f2bc25fc05f03b7ca504c`.
 
 ## 12. Rendered-PDF audit
 
