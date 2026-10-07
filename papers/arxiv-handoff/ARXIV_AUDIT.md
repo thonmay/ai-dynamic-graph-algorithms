@@ -54,15 +54,15 @@ Two `first` claims appear (abstract + conclusion): *first locality analysis of a
 
 ## 8. Citation work-level ledger
 
-14 keys, all field-verified against primary records (Crossref / Dagstuhl DRO / arXiv API), recorded in `references.bib` header comments:
+15 keys, all field-verified against primary records (Crossref / Dagstuhl DRO / arXiv API), recorded in `references.bib` header comments:
 
-`rose1976algorithmic`, `tarjan1984mcs`, `corneil2008unified`, `berry2004mcs`, `brandstadt1997lexbfs`, `ibarra2008dynamic`, `banerjee2018maintaining`, `mezzini2012fully`, `gueneau2019formal`, `even1981maintaining`, `baswana2016dynamic`, `ramalingam1996dynamic`, `lammich2015dfs`, `morse2026bfs`.
+`rose1976algorithmic`, `tarjan1984mcs`, `corneil2008unified`, `berry2004mcs`, `brandstadt1997lexbfs`, `ibarra2008dynamic`, `banerjee2018maintaining`, `mezzini2012fully`, `gueneau2019formal`, `even1981maintaining`, `baswana2016dynamic`, `ramalingam1996dynamic`, `lammich2015dfs`, `lammich2014gabow`, `morse2026bfs`.
 
 Zero missing keys, zero duplicate keys, zero uncited keys.
 
 ## 9. Citation occurrence-level ledger
 
-19 `\cite` occurrences across the 14 works; each attribution checked against the source's hypotheses and scope. No retractions/corrections outstanding. The Corneil–Krueger incomparability claim and the brute-force witness (204/204, symmetric difference 40) are reproduced in the artifact README.
+20 `\cite` occurrences across the 15 works; each attribution checked against the source's hypotheses and scope. No retractions/corrections outstanding. The Corneil–Krueger incomparability claim and the brute-force witness (204/204, symmetric difference 40) are reproduced in the artifact README.
 
 ## 10. External-artifact manifest (live verification, 2026-10-04)
 
@@ -81,11 +81,11 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (46503 B), `references.bib` (7452 B), `main.bbl` (4848 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (46589 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 12 pages, 0 overfull, 1 underfull.
 - Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 12 pages, 23470 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `dd680d441803c4b64d71d3b35e1b0c0252841396c12996d601da72c6dea01d0d`.
+- ZIP SHA-256: `e0d20fa636a8ee12ea33200892587c2141c902b45e780eebb6c9c1b9a864761b`.
 
 ## 12. Rendered-PDF audit
 
@@ -99,7 +99,7 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 
 ## 14. Checksums
 
-`main-upload.zip` SHA-256 above; `clean-build.bbl` and the in-ZIP `main.bbl` byte-identical (4848 B). Recompute after any further change.
+`main-upload.zip` SHA-256 above; `clean-build.bbl` and the in-ZIP `main.bbl` byte-identical (5225 B). Recompute after any further change.
 
 ## 15. Exact edits made this session
 
