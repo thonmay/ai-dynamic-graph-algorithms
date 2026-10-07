@@ -40,13 +40,12 @@ One raw `\iffalse` / `\fi` region (`ARXIV-METADATA-BEGIN` … `ARXIV-METADATA-EN
 ## 6. Category / classification decision
 
 - **Primary:** Data Structures and Algorithms (`cs.DS`) — the central contribution is dynamic graph-search ordering maintenance with an algorithmic update and complexity claims.
-- **Cross-list:** Combinatorics (`math.CO`) — MCS chordality, matching/star structure, and the P_4/triangle obstructions are combinatorial.
-- **Rejected:** `cs.LO` / `cs.PL` (the Lean artifact is evidence, not the contribution); `math.LO` (same reason).
-- **MSC:** 68Q25 (Primary) 05C85 (Secondary). **ACM:** F.2.2; G.2.2; F.3.2.
+- **Cross-list:** Combinatorics (`math.CO`) — MCS chordality, matching/star structure, and the P_4/triangle obstructions are combinatorial. Logic in Computer Science (`cs.LO`) — the machine-checked formalization is a first-class contribution and the paper is positioned for the formal-methods readership.
+- **MSC:** 68Q25 (Primary) 68V15, 68R10, 05C85 (Secondary). **ACM:** F.3.1; G.2.2; F.2.2 (F.3.1 = specifying, verifying and reasoning about programs).
 
 ## 7. Novelty / prior-open-status ledger
 
-Two `first` claims appear (abstract + conclusion): *first maintenance of an MCS ordering under edge updates* and *first machine-checked correctness proof of a maintained graph-search ordering*.
+Two `first` claims appear (abstract + conclusion): *first locality analysis of an MCS ordering under edge updates* and *first machine-checked incremental repair of a graph-search ordering*.
 
 - Nearest prior art: Ibarra 2008 (dynamic chordal, clique-tree, not the MCS ordering); Banerjee–Raman–Satti 2018 (PEO under deletions, different window, cell-probe lower bound); Mezzini 2012 (O(1) query / O(n²) update chordal). None maintains the MCS ordering itself; none machine-checked.
 - Morse–Kozsik 2026 (dynamic BFS in directed graphs) is the closest dynamic-search-ordering result; it is BFS in directed graphs, not MCS in undirected graphs, and is not machine-checked.
@@ -55,15 +54,15 @@ Two `first` claims appear (abstract + conclusion): *first maintenance of an MCS 
 
 ## 8. Citation work-level ledger
 
-10 keys, all field-verified against primary records (Crossref / Dagstuhl DRO / arXiv API) 2026-10-04, recorded in `references.bib` header comments:
+14 keys, all field-verified against primary records (Crossref / Dagstuhl DRO / arXiv API), recorded in `references.bib` header comments:
 
-`rose1976algorithmic`, `tarjan1984mcs`, `corneil2008unified`, `berry2004mcs`, `brandstadt1997lexbfs`, `ibarra2008dynamic`, `banerjee2018maintaining`, `mezzini2012fully`, `gueneau2019formal`, `morse2026bfs`.
+`rose1976algorithmic`, `tarjan1984mcs`, `corneil2008unified`, `berry2004mcs`, `brandstadt1997lexbfs`, `ibarra2008dynamic`, `banerjee2018maintaining`, `mezzini2012fully`, `gueneau2019formal`, `even1981maintaining`, `baswana2016dynamic`, `ramalingam1996dynamic`, `lammich2015dfs`, `morse2026bfs`.
 
 Zero missing keys, zero duplicate keys, zero uncited keys.
 
 ## 9. Citation occurrence-level ledger
 
-13 `\cite` occurrences across the 10 works; each attribution checked against the source's hypotheses and scope. No retractions/corrections outstanding. The Corneil–Krueger incomparability claim and the brute-force witness (204/204, symmetric difference 40) are reproduced in the artifact README.
+19 `\cite` occurrences across the 14 works; each attribution checked against the source's hypotheses and scope. No retractions/corrections outstanding. The Corneil–Krueger incomparability claim and the brute-force witness (204/204, symmetric difference 40) are reproduced in the artifact README.
 
 ## 10. External-artifact manifest (live verification, 2026-10-04)
 
@@ -71,8 +70,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 |---|---|
 | Repository | https://github.com/thonmay/thesis-lean |
 | Public (unauth) | HTTP 200 |
-| Pin | annotated tag `mcs-arxiv-v2` (Lean proof) |
-| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v3^{}` → `afcc911405e9bb7e7ea4b9d8537d2ce2f1e731a5` |
+| Pin | annotated tag `mcs-arxiv-v3` (Lean proof + docs + `scripts/stab.c`) |
+| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v3^{}` → `53ce492cb94ae6e3164b8e12c078ad68ab5022ef` |
 | Commit files reachable at pin | `README.md` 200, `comparator.json` 200, `formalization.yaml` 200, `lean-toolchain` 200, `AxiomAudit.lean` 200 |
 | Role | Logically required (all theorems) |
 | Visible in paper | Yes (reproducibility paragraph, `sec:formalization`) |
@@ -82,11 +81,11 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (29753 B), `references.bib` (5723 B), `main.bbl` (3603 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (46503 B), `references.bib` (7452 B), `main.bbl` (4848 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 12 pages, 0 overfull, 1 underfull.
 - Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 12 pages, 23470 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `a2d57278d668d964ff129951996dd915a53c285eee3f2bc25fc05f03b7ca504c`.
+- ZIP SHA-256: `dd680d441803c4b64d71d3b35e1b0c0252841396c12996d601da72c6dea01d0d`.
 
 ## 12. Rendered-PDF audit
 
@@ -100,7 +99,7 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 
 ## 14. Checksums
 
-`main-upload.zip` SHA-256 above; `clean-build.bbl` and the in-ZIP `main.bbl` byte-identical (3603 B). Recompute after any further change.
+`main-upload.zip` SHA-256 above; `clean-build.bbl` and the in-ZIP `main.bbl` byte-identical (4848 B). Recompute after any further change.
 
 ## 15. Exact edits made this session
 
