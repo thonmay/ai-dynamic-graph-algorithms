@@ -81,15 +81,16 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (46589 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (46929 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 12 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 12 pages, 23470 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 12 pages, 38957 selectable-text chars, fonts embedded, 0 overfull, 1 underfull, 0 undefined citations after run 1.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `e0d20fa636a8ee12ea33200892587c2141c902b45e780eebb6c9c1b9a864761b`.
+- ZIP SHA-256: `43d1859df49f82928868728c7e1e13bd1d280282f237d7fe4599d0fe59fb3efc`.
+- `archive-built.pdf` SHA-256: `4037625361b11f5a5cc71a0c4c34c974935ad9d23536ebcdfb4146f106ae3646`.
 
 ## 12. Rendered-PDF audit
 
-12 pages, letter, selectable text, fonts embedded (`pdffonts` all `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (line ~237–241): **cosmetic** (a short line in a bullet list, badness 2080).
+12 pages, letter, selectable text, fonts embedded (`pdffonts` all `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 485–491, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
@@ -108,6 +109,7 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 3. Added a visible `Artifact and reproducibility` paragraph with the public repo URL, tag, commit, and role distinction.
 4. (Earlier) Comparator count 36 → 37; online corollary promoted from observation to `Corollary` (`common_order_extends_prefix`); contributions bullet updated.
 5. Created and pushed annotated tags `mcs-arxiv-v1` (on `a872fdd`, session 1) and `mcs-arxiv-v2` (on `a92df35`, adds the public verification scripts).
+6. (Supervisor-feedback pass, 2026-10-13) Section 7: stated that the no-break insertion bound $|\mathrm{pos}(u)-\mathrm{pos}(v)|$ includes the later endpoint's position, which the executable probe checks but Lemma `no_break_at_laterPos` shows never fires, so the proved bound is one unit above the open-window optimum. Cost-model paragraph (Sec. 1) and Sec. 7: a cost unit is "superconstant, up to $\Theta(n^3)$" rather than "$\Theta(n^3)$". Artifact unchanged (still `mcs-arxiv-v3` = `53ce492`).
 
 ## 16. Official policy sources
 
