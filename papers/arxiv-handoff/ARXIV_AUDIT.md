@@ -70,8 +70,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 |---|---|
 | Repository | https://github.com/thonmay/thesis-lean |
 | Public (unauth) | HTTP 200 |
-| Pin | annotated tag `mcs-arxiv-v3` (Lean proof + docs + `scripts/stab.c`) |
-| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v3^{}` → `53ce492cb94ae6e3164b8e12c078ad68ab5022ef` |
+| Pin | annotated tag `mcs-arxiv-v4` (Lean proof + docs + `scripts/stab.c`) |
+| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v4^{}` → `c4c2c0fb15adf42b8b584e4fc83d5cbe643d5819` |
 | Commit files reachable at pin | `README.md` 200, `comparator.json` 200, `formalization.yaml` 200, `lean-toolchain` 200, `AxiomAudit.lean` 200 |
 | Role | Logically required (all theorems) |
 | Visible in paper | Yes (reproducibility paragraph, `sec:formalization`) |
@@ -81,12 +81,12 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (46929 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (47053 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 12 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 12 pages, 38957 selectable-text chars, fonts embedded, 0 overfull, 1 underfull, 0 undefined citations after run 1.
+- Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 12 pages, 39081 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `43d1859df49f82928868728c7e1e13bd1d280282f237d7fe4599d0fe59fb3efc`.
-- `archive-built.pdf` SHA-256: `4037625361b11f5a5cc71a0c4c34c974935ad9d23536ebcdfb4146f106ae3646`.
+- ZIP SHA-256: `9ebb9b2fc199e270fa1e31438bec6563ad08595d6bcc00c1e3eced483a36484a`.
+- `archive-built.pdf` SHA-256: `768e1db7d8310d359a3003fd5c54ca821ec15ea996deb6071e9b9dc9e4df5afb`.
 
 ## 12. Rendered-PDF audit
 
@@ -110,6 +110,7 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 4. (Earlier) Comparator count 36 → 37; online corollary promoted from observation to `Corollary` (`common_order_extends_prefix`); contributions bullet updated.
 5. Created and pushed annotated tags `mcs-arxiv-v1` (on `a872fdd`, session 1) and `mcs-arxiv-v2` (on `a92df35`, adds the public verification scripts).
 6. (Supervisor-feedback pass, 2026-10-13) Section 7: stated that the no-break insertion bound $|\mathrm{pos}(u)-\mathrm{pos}(v)|$ includes the later endpoint's position, which the executable probe checks but Lemma `no_break_at_laterPos` shows never fires, so the proved bound is one unit above the open-window optimum. Cost-model paragraph (Sec. 1) and Sec. 7: a cost unit is "superconstant, up to $\Theta(n^3)$" rather than "$\Theta(n^3)$". Artifact unchanged (still `mcs-arxiv-v3` = `53ce492`).
+7. (Palomar review `f4c1ed17`, 2026-10-14) `common_order_extends_prefix` re-proved under the prefix-only bounds of `exists_common_ordering_prefix` (previously every-subset bounds). Corollary 1 and the contributions bullet now say "under the same hypothesis". Artifact re-pinned to `mcs-arxiv-v4` = `c4c2c0f` (lake build, defs-sync, axiom audit, leanchecker on all 20 modules, CI green).
 
 ## 16. Official policy sources
 
