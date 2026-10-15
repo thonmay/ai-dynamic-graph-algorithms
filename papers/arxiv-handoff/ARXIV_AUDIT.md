@@ -81,12 +81,12 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (47473 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (47778 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 13 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 13 pages, 39457 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 13 pages, 39489 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `549d801206edccdffa9db663b6fab345335d59dabb4b7812bfa0fa62f8d2eb68`.
-- `archive-built.pdf` SHA-256: `bf799bbbbeecb82a1c32e0f70652c8c715339180f41dc54b44d107445534fe4a`.
+- ZIP SHA-256: `7e7940f5cb5e939e5ab737c9216ada8536743b8944f6ef288b5769207a5c19b8`.
+- `archive-built.pdf` SHA-256: `e2118daaa37bf2ead92b0baa8aefc151af643353b7ca60d975fc8003bceac7ae`.
 
 ## 12. Rendered-PDF audit
 
@@ -114,6 +114,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 8. (Draft review, 2026-10-14) New title ("How rigid is maximum cardinality search? ...") and a stability-first abstract (1456 chars); the unhedged "first locality analysis / first machine-checked" sentence is dropped. Palomar paragraph rewritten: the audit-surface phrase is a v1 *trust reason*, not a review warning; v1 is from ancestor `a872fdd` (37 of 41 names, every-subset online corollary); v2 of `c4c2c0f` submitted, registration pending. Intro and conclusion no longer claim every theorem is in Lean (the sublinear probe bound is a paper proof). Theorem 1 says "proper" prefix; Theorem 7 also cites `legal_upto_earlierPos`; `exists_common_ordering` now cited in Sec. 3 (makes the "9 in Section 3" count and the table row correct); deletion described as a parallel procedure, not a specialization; unsourced "~90% / ~96%" win-regime figures removed. Page count 12 → 13.
 
 9. (Palomar v2 registered, 2026-10-15T01:03:25Z) Sec. 7 and the reproducibility paragraph now cite version 2 (pinned commit `c4c2c0f`, outcome `neutral`, no review warnings, trust `high`, 742 Challenge lines) as the registered record, superseding v1 from ancestor `a872fdd`; footnote URLs point to `version=2` / `-v2.json` (both HTTP 200).
+
+10. (Style pass, 2026-10-15) Prose of the introduction, contributions, cost-model paragraph, formalization and artifact paragraphs, related work and conclusion reworded by hand, using rewrites proposed by the self-hosted Humanizer 12B model as suggestions; theorem statements, proofs, Lean names, numbers and the abstract were not passed through it. The model is now named in the AI disclosure (visible text and metadata, identical). The artifact paragraph now also excepts the paper-level probe bound from "every positive statement is a theorem".
 
 ## 16. Official policy sources
 
