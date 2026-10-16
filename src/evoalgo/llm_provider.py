@@ -64,9 +64,40 @@ class LLMProvider:
             Graphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.
             A legal update flips exactly one matrix entry.
         """).strip()
+        brief = self._pack_brief()
+        if brief:
+            prompt += f"\n\nRESEARCH BRIEF:\n{brief.strip()}"
         if self.hint:
             prompt += f"\n\nRESEARCHER HINT: {self.hint}"
         return prompt
+
+    def _pack_brief(self) -> str | None:
+        """Return the configured pack's brief.md text, or None.
+
+        Loaded lazily and cached; a missing/invalid pack yields no brief
+        rather than breaking prompt building (config.validate() already
+        reports pack errors before a run starts).
+        """
+        if not getattr(self.config, "pack", None):
+            return None
+        if not hasattr(self, "_pack_brief_cache"):
+            self._pack_brief_cache: tuple[str, str | None] = (
+                self.config.pack, self._load_pack_brief(self.config.pack)
+            )
+        if self._pack_brief_cache[0] != self.config.pack:
+            self._pack_brief_cache = (
+                self.config.pack, self._load_pack_brief(self.config.pack)
+            )
+        return self._pack_brief_cache[1]
+
+    @staticmethod
+    def _load_pack_brief(pack_name_or_path: str) -> str | None:
+        try:
+            from .packs import resolve_pack
+            return resolve_pack(pack_name_or_path).brief
+        except Exception as e:
+            logger.warning("Could not load pack brief for %r: %s", pack_name_or_path, e)
+            return None
 
     def generate(
         self,

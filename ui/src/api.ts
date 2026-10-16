@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { applyEvents, describeCommand, initialState, type RunState } from './state'
-import type { Command, RunEvent } from './types'
+import { describeCommand, initialState, reduce } from './state'
+import type { Command, PendingCmd, RunEvent } from './types'
 
 /** Fetch JSON from the evoalgo server (paths are relative to the page). */
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -21,10 +21,11 @@ const FLUSH_MS = 60
 /**
  * Live event stream for one run. Reconnects with backoff and resumes from the
  * last event received, so a dropped connection never loses or repeats events.
+ * The server sends unacknowledged commands first on every connect, so a
+ * reload still shows "pausing" while the engine finishes its current call.
  */
 export function useRunStream(runId: string) {
-  const [state, dispatch] = useReducer(
-    (s: RunState, events: RunEvent[]) => applyEvents(s, events), undefined, initialState)
+  const [state, dispatch] = useReducer(reduce, undefined, initialState)
   const [connected, setConnected] = useState(false)
   const [notice, setNotice] = useState<Notice | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -40,7 +41,7 @@ export function useRunStream(runId: string) {
       flushTimer = undefined
       const batch = buffer
       buffer = []
-      if (batch.length) dispatch(batch)
+      if (batch.length) dispatch({ kind: 'events', events: batch })
     }
 
     const connect = () => {
@@ -59,14 +60,32 @@ export function useRunStream(runId: string) {
         } catch {
           return
         }
-        if (msg?.type === 'queued') {
-          setNotice({ id: Date.now(), tone: 'ok', text: `${describeCommand(msg)} queued · next generation` })
-        } else if (msg?.type === 'error') {
-          setNotice({ id: Date.now(), tone: 'error', text: String(msg.reason ?? 'rejected') })
-        } else if (typeof msg?.seq === 'number') {
+        if (typeof msg?.seq === 'number') {
           lastSeq.current = Math.max(lastSeq.current, msg.seq)
           buffer.push(msg as RunEvent)
           flushTimer ??= window.setTimeout(flush, FLUSH_MS)
+          return
+        }
+        // Apply buffered events first so control messages see current state.
+        flush()
+        clearTimeout(flushTimer)
+        flushTimer = undefined
+        switch (msg?.type) {
+          case 'pending':
+            dispatch({ kind: 'pending', commands: (msg.commands ?? []) as PendingCmd[] })
+            break
+          case 'engine':
+            dispatch({ kind: 'engine', state: msg.state })
+            break
+          case 'queued': {
+            const cmd: PendingCmd = { id: msg.cmd_id, cmd: msg.cmd, text: msg.text, field: msg.field, value: msg.value }
+            dispatch({ kind: 'queued', cmd })
+            setNotice({ id: Date.now(), tone: 'ok', text: `${describeCommand(cmd)} · queued` })
+            break
+          }
+          case 'error':
+            setNotice({ id: Date.now(), tone: 'error', text: String(msg.reason ?? 'rejected') })
+            break
         }
       }
       ws.onclose = () => {

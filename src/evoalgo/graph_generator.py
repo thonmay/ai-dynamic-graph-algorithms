@@ -1,22 +1,29 @@
 """Graph generation for the bounded test universe.
 
-For n <= exhaustive_cap: enumerate all labeled simple loop-free graphs on n
-  vertices. Labeled enumeration is more thorough than nauty's non-isomorphic
-  classes since it tests every possible edge configuration (including
-  label-handling bugs). Cost: 2^(n(n-1)/2) undirected, 2^(n(n-1)) directed,
-  so exhaustive is capped at n=4 directed and n=5 undirected.
+Directed problems (BFS, DFS, SCC, reachability) default to an
+exhaustive-up-to-isomorphism universe built from the nauty data files in
+``data/nauty/`` (``directed_n<n>.d6`` = all non-isomorphic loop-free digraphs
+on n vertices, OEIS A000273; ``rooted_n<n>.d6`` = one representative per
+(digraph, root-orbit) class with the root relabeled to vertex 0, OEIS A353996).
+For each class we also apply k deterministic random relabelings (vertex
+permutations) to catch label-dependent bugs such as id tie-breaks. For
+rooted problems the base classes are the rooted files (one case per root
+orbit); for unrooted problems they are the unrooted files.
 
-If a nauty data file exists for a size n (src/evoalgo/data/nauty/undirected_n<n>.g6,
-  graph6 format, generated offline with geng), those non-isomorphic graphs
-  replace random sampling for that size. This gives an exhaustive-up-to-
-  isomorphism universe at n=5..7 where labeled enumeration is too costly.
+Undirected problems (MCS) keep the previous behaviour: all labeled graphs for
+n <= exhaustive_cap (5), then non-isomorphic ``geng`` representatives from
+``undirected_n<n>.g6`` for larger n, then seeded random samples when no data
+file exists.
 
-For sizes with no nauty data: seeded random graphs from a stated distribution.
+``universe="labeled"`` reproduces the old directed behaviour (all labeled
+digraphs for n <= 4, random samples beyond) and is kept only for comparison.
+
+nauty data provenance, counts, and generation commands: see
+``data/nauty/README.md``.
 """
 
 from __future__ import annotations
 
-import itertools
 import random
 from pathlib import Path
 from typing import Iterator
@@ -25,6 +32,10 @@ import numpy as np
 
 NAUTY_DATA_DIR = Path(__file__).parent / "data" / "nauty"
 
+
+# ---------------------------------------------------------------------------
+# Labeled enumeration (old mode, kept for comparison)
+# ---------------------------------------------------------------------------
 
 def enumerate_digraphs(n: int) -> Iterator[np.ndarray]:
     """Yield all labeled loop-free digraphs on n vertices as adjacency matrices.
@@ -92,6 +103,10 @@ def sample_undirected_graphs(n: int, count: int, seed: int, p: float = 0.3) -> l
     return graphs
 
 
+# ---------------------------------------------------------------------------
+# nauty encodings
+# ---------------------------------------------------------------------------
+
 def decode_graph6(line: str) -> tuple[int, np.ndarray]:
     """Decode one graph6 string (nauty format) into (n, adjacency matrix).
 
@@ -125,8 +140,119 @@ def decode_graph6(line: str) -> tuple[int, np.ndarray]:
     return n, mat
 
 
+def decode_digraph6(line: str) -> tuple[int, list[int]]:
+    """Decode one digraph6 line (nauty format) into (n, rows).
+
+    digraph6 packs the full n x n adjacency matrix (row by row, arc i->j is
+    bit j of row i) into 6-bit characters (offset 63). The first character is
+    ``&`` (38); the next encodes n (n<=62: single byte n+63). ``rows[i]`` is
+    the out-arc bitmask of vertex i (bit j set iff arc i->j exists).
+
+    Long headers (``~``) for n>62 are not needed for the committed data
+    (n<=5) and raise if encountered.
+    """
+    s = line.strip()
+    if not s or s[0] != "&":
+        raise ValueError(f"not digraph6: {line!r}")
+    rest = s[1:]
+    if not rest or rest[0] == "~":
+        raise ValueError(f"digraph6 long header (n>62) not supported: {line!r}")
+    n = ord(rest[0]) - 63
+    if n < 1:
+        raise ValueError(f"invalid digraph6 header: {line!r}")
+    bits = []
+    for c in rest[1:]:
+        v = ord(c) - 63
+        if v < 0 or v > 63:
+            raise ValueError(f"invalid digraph6 body: {line!r}")
+        for b in range(5, -1, -1):  # big-endian: first bit of group is MSB
+            bits.append((v >> b) & 1)
+    if len(bits) < n * n:
+        raise ValueError(f"truncated digraph6 line: {line!r}")
+    rows = []
+    for i in range(n):
+        row = 0
+        for j in range(n):
+            if bits[i * n + j]:
+                row |= (1 << j)
+        rows.append(row)
+    return n, rows
+
+
+def encode_digraph6(n: int, rows: list[int]) -> str:
+    """Inverse of :func:`decode_digraph6`: (n, rows) -> digraph6 string.
+
+    Used only for round-trip self-tests.
+    """
+    bits = []
+    for i in range(n):
+        for j in range(n):
+            bits.append((rows[i] >> j) & 1)
+    while len(bits) % 6:
+        bits.append(0)
+    out = ["&", chr(n + 63)]
+    for g in range(0, len(bits), 6):
+        v = 0
+        for b in range(5, -1, -1):
+            v = (v << 1) | bits[g + (5 - b)]
+        out.append(chr(v + 63))
+    return "".join(out)
+
+
+def digraph_rows_to_matrix(n: int, rows: list[int]) -> np.ndarray:
+    """Convert digraph6 out-arc bitmasks to an n x n 0/1 adjacency matrix."""
+    return np.array([[(rows[i] >> j) & 1 for j in range(n)] for i in range(n)], dtype=int)
+
+
+def relabel_digraph(graph: np.ndarray, perm: tuple[int, ...]) -> np.ndarray:
+    """Apply a vertex permutation to a digraph adjacency matrix.
+
+    ``perm[i]`` is the new label of old vertex i. Arc i->j becomes
+    perm[i]->perm[j]. The result is isomorphic to ``graph``; when ``perm`` is
+    the identity it is unchanged. Used to produce deterministic label
+    variants of a nauty representative so the verifier also exercises
+    label-dependent behaviour (e.g. id tie-breaks).
+    """
+    n = graph.shape[0]
+    out = np.zeros((n, n), dtype=int)
+    for i in range(n):
+        for j in range(n):
+            if graph[i, j]:
+                out[perm[i], perm[j]] = 1
+    return out
+
+
+def _relabel_permutations(n: int, seed: int, k: int) -> list[tuple[int, ...]]:
+    """Return up to k distinct non-identity vertex permutations of range(n).
+
+    Deterministic in (seed, n, k): the same call always yields the same
+    permutations, so the test universe is reproducible across runs.
+    """
+    if k <= 0:
+        return []
+    rng = random.Random(seed * 1_000_003 + n)
+    identity = tuple(range(n))
+    perms: list[tuple[int, ...]] = []
+    seen: set[tuple[int, ...]] = set()
+    attempts = 0
+    while len(perms) < k and attempts < 1000:
+        attempts += 1
+        p = list(range(n))
+        rng.shuffle(p)
+        p = tuple(p)
+        if p == identity or p in seen:
+            continue
+        seen.add(p)
+        perms.append(p)
+    return perms
+
+
+# ---------------------------------------------------------------------------
+# nauty loaders
+# ---------------------------------------------------------------------------
+
 def load_nauty_graphs(n: int) -> list[np.ndarray] | None:
-    """Load non-isomorphic graphs of size n from the nauty data file.
+    """Load non-isomorphic undirected graphs of size n from the nauty data file.
 
     Returns None if no data file exists for that size (caller falls back to
     random sampling). Files are graph6, one graph per line, produced by
@@ -147,21 +273,74 @@ def load_nauty_graphs(n: int) -> list[np.ndarray] | None:
     return graphs
 
 
+def _load_nauty_digraphs(n: int, prefix: str) -> list[np.ndarray] | None:
+    """Load digraph6 representatives of size n from ``<prefix>_n<n>.d6``.
+
+    ``prefix`` is ``directed`` (unrooted, OEIS A000273) or ``rooted`` (one
+    representative per (digraph, root-orbit) class with the root at vertex 0,
+    OEIS A353996). Returns None if no data file exists for that size.
+    """
+    path = NAUTY_DATA_DIR / f"{prefix}_n{n}.d6"
+    if not path.exists():
+        return None
+    graphs = []
+    for line in path.read_text().splitlines():
+        if line.strip():
+            dn, rows = decode_digraph6(line)
+            if dn != n:
+                raise ValueError(f"{path.name}: expected n={n}, got n={dn}")
+            graphs.append(digraph_rows_to_matrix(n, rows))
+    if not graphs:
+        raise ValueError(f"{path} exists but contains no digraphs")
+    return graphs
+
+
+def load_nauty_digraphs(n: int) -> list[np.ndarray] | None:
+    """All non-isomorphic loop-free digraphs of size n (unrooted reps)."""
+    return _load_nauty_digraphs(n, "directed")
+
+
+def load_nauty_rooted_digraphs(n: int) -> list[np.ndarray] | None:
+    """One representative per (digraph, root-orbit) class of size n.
+
+    The distinguished vertex (root) is relabeled to vertex 0 in each
+    representative, so a rooted problem can fix its source at 0 and still
+    cover every root orbit exactly once.
+    """
+    return _load_nauty_digraphs(n, "rooted")
+
+
+# ---------------------------------------------------------------------------
+# Universe assembly
+# ---------------------------------------------------------------------------
+
 def generate_test_graphs(
     n_max: int,
     n_random: int,
     seed: int,
     directed: bool,
     exhaustive_cap: int | None = None,
+    universe: str = "nauty",
+    rooted: bool = False,
+    relabels_per_class: int = 2,
 ) -> list[tuple[int, np.ndarray]]:
     """Generate the bounded test universe of base graphs.
 
-    Returns list of (n, adjacency_matrix) pairs.
+    Returns a list of (n, adjacency_matrix) pairs.
 
-    For n <= exhaustive_cap (default: 4 directed, 5 undirected): all labeled
-    graphs (exhaustive).
-    For larger n with a nauty data file: all non-isomorphic graphs.
-    For larger n without data: n_random seeded random samples.
+    Directed, ``universe="nauty"`` (default): for each n with a data file,
+    every non-isomorphic representative (rooted files for rooted problems,
+    unrooted otherwise) plus ``relabels_per_class`` deterministic random
+    relabelings of each representative. For n with no data file, seeded
+    random samples. This is the exhaustive-up-to-isomorphism universe.
+
+    Directed, ``universe="labeled"`` (comparison only): all labeled digraphs
+    for n <= exhaustive_cap (4), random samples beyond.
+
+    Undirected (any universe): all labeled graphs for n <= exhaustive_cap
+    (5), then non-isomorphic ``geng`` representatives from the data files for
+    larger n, then seeded random samples when no data file exists. This path
+    is unchanged from the original so MCS behaviour is preserved.
     """
     if exhaustive_cap is None:
         exhaustive_cap = 4 if directed else 5
@@ -170,16 +349,28 @@ def generate_test_graphs(
 
     for n in range(2, n_max + 1):
         if directed:
-            if n <= exhaustive_cap:
-                for g in enumerate_digraphs(n):
+            if universe == "labeled":
+                if n <= exhaustive_cap:
+                    for g in enumerate_digraphs(n):
+                        result.append((n, g))
+                else:
+                    for g in sample_digraphs(n, min(n_random, 200), rng_seed):
+                        result.append((n, g))
+                    rng_seed += 1
+            else:  # "nauty"
+                loader = load_nauty_rooted_digraphs if rooted else load_nauty_digraphs
+                reps = loader(n)
+                if reps is None:
+                    for g in sample_digraphs(n, min(n_random, 200), rng_seed):
+                        result.append((n, g))
+                    rng_seed += 1
+                    continue
+                for g in reps:
                     result.append((n, g))
-            else:
-                # Sample for larger n
-                count = min(n_random, 200)
-                for g in sample_digraphs(n, count, rng_seed):
-                    result.append((n, g))
-                rng_seed += 1
+                    for perm in _relabel_permutations(n, seed, relabels_per_class):
+                        result.append((n, relabel_digraph(g, perm)))
         else:
+            # Undirected: preserve the original labelled/nauty/sampled mix.
             if n <= exhaustive_cap:
                 for g in enumerate_undirected_graphs(n):
                     result.append((n, g))
@@ -189,8 +380,7 @@ def generate_test_graphs(
                     for g in nauty:
                         result.append((n, g))
                 else:
-                    count = min(n_random, 200)
-                    for g in sample_undirected_graphs(n, count, rng_seed):
+                    for g in sample_undirected_graphs(n, min(n_random, 200), rng_seed):
                         result.append((n, g))
                     rng_seed += 1
 

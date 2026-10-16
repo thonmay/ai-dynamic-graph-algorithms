@@ -58,6 +58,10 @@ export type RunEvent =
   | (Base & { type: 'candidate_reflected'; id: string; gen: number; reflection_path?: string | null })
   | (Base & { type: 'candidates_discarded'; gen: number; ids: string[] })
   | (Base & { type: 'agent_failed'; gen: number; id: string; role?: string })
+  | (Base & { type: 'agent_call_start'; gen: number; role: string; id: string; agent?: string | null; model?: string | null })
+  | (Base & { type: 'agent_call_end'; gen: number; role: string; id: string; ok: boolean; duration_s: number })
+  | (Base & { type: 'paused'; gen: number; before: { role: string; id: string } | null })
+  | (Base & { type: 'resumed'; gen: number })
   | (Base & {
       type: 'gen_committed'
       gen: number
@@ -87,10 +91,22 @@ export type Command =
   | { cmd: 'hint'; text: string }
   | { cmd: 'set'; field: 'model_call_budget' | 'population_size'; value: number }
 
+/** A control command the engine has not acknowledged yet. */
+export interface PendingCmd {
+  id: string
+  cmd: string
+  text?: string
+  field?: string
+  value?: number
+}
+
+export type EngineState = 'alive' | 'gone' | 'none'
+
 export interface RunSummary {
   run_id: string
   has_events: boolean
-  state: 'no_events' | 'empty' | 'running' | 'paused' | 'done'
+  engine?: EngineState
+  state: 'no_events' | 'empty' | 'running' | 'paused' | 'done' | 'interrupted'
   problem?: string | null
   model?: string | null
   max_generations?: number | null

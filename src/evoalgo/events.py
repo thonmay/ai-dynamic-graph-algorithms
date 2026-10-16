@@ -26,6 +26,8 @@ from typing import Any, Callable, Iterator
 
 EVENTS_FILE = "events.jsonl"
 CONTROL_FILE = "control.jsonl"
+# Written by a running engine ({pid, host, started}), removed when it exits.
+ENGINE_FILE = "engine.json"
 
 # Commands a UI may send. "set" changes one steerable field.
 COMMANDS = {"pause", "resume", "stop", "hint", "set"}
@@ -98,6 +100,15 @@ def send_command(run_dir: Path | str, cmd: str, **args: Any) -> dict[str, Any]:
     record = {"id": uuid.uuid4().hex[:12], "ts": _now(), "cmd": cmd, **args}
     _append_line(Path(run_dir) / CONTROL_FILE, record)
     return record
+
+
+def pending_commands(run_dir: Path | str) -> list[dict[str, Any]]:
+    """Commands in control.jsonl that the engine has not acknowledged yet."""
+    run_dir = Path(run_dir)
+    handled = {e["cmd_id"] for e in read_events(run_dir)
+               if e.get("type") in ("control_ack", "control_reject") and "cmd_id" in e}
+    return [c for c in _read_complete_lines(run_dir / CONTROL_FILE)
+            if c.get("id") and c["id"] not in handled]
 
 
 def validate_command(command: dict[str, Any]) -> str | None:

@@ -16,6 +16,8 @@ import argparse
 import json
 import logging
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 from .config import RunConfig, Bound, VALID_PROBLEMS
@@ -103,7 +105,19 @@ def main(argv: list[str] | None = None) -> int:
     # verify (self-test)
     p_verify = subparsers.add_parser("verify", help="run verifier self-test (FR-VER-08)")
     p_verify.add_argument("--problem", choices=sorted(VALID_PROBLEMS), default="dynamic_bfs")
-    p_verify.add_argument("--n-max", type=int, default=4, help="max graph size for self-test")
+    p_verify.add_argument("--n-max", type=int, default=None,
+                          help="max graph size for self-test (default 5 for BFS/DFS)")
+    p_verify.add_argument("--relabels", type=int, default=0,
+                          help="deterministic relabels per nauty class (default 0; "
+                               "use 2 for the full documented universe)")
+    p_verify.add_argument("--chunk-size", type=int, default=None,
+                          help="base graphs per sandbox subprocess (default: auto "
+                               "-- 2000 serial, 1000 when parallelizing)")
+    p_verify.add_argument("--workers", type=int, default=None,
+                          help="parallel chunk workers (default: min(8, cpu); "
+                               "1 = serial, reproduces the original path)")
+    p_verify.add_argument("--timeout", type=int, default=120,
+                          help="per-chunk wall-clock seconds (default 120)")
 
     # formalize (Lean proof of a PASS candidate)
     p_formalize = subparsers.add_parser(
@@ -467,77 +481,165 @@ def cmd_history(args) -> int:
 
 
 def cmd_verify(args) -> int:
-    """Run verifier self-test (FR-VER-08).
+    """Run the verifier self-test (FR-VER-08).
 
-    Tests the verifier against:
-    (a) a known-good reference algorithm (offline algorithm wrapped as candidate)
-    (b) a known-bad mutation (deliberately faulty)
+    For the rooted problems with a fault corpus (``dynamic_bfs``,
+    ``dynamic_dfs``) this runs the full exhaustive self-test:
+      - the known-good reference (validate-or-rebuild, Yang Lemma-1 informed)
+        must PASS,
+      - every seeded real fault must be REJECTED (FAIL or CRASH),
+      - every equivalent control (a valid variant) must be ACCEPTED (PASS).
+    and prints a compact summary table plus the zero-false-negative verdict.
+    Exit code 0 only if all of the above hold.
+
+    For other problems it falls back to the legacy smoke test (one known-good
+    that must PASS and one known-bad that must be rejected).
     """
     from .problem_definitions import get_problem
-    from .sandbox import Sandbox
-    from .verifier import Verifier
-    from .candidate import Candidate
 
-    print(f"Verifier self-test for problem: {args.problem}")
-    print(f"  n_max={args.n_max}")
+    # Default n_max: 5 for the rooted corpus problems (the documented bound),
+    # 4 otherwise.
+    corpus_problems = ("dynamic_bfs", "dynamic_dfs")
+    n_max = args.n_max if args.n_max is not None else (5 if args.problem in corpus_problems else 4)
 
     problem = get_problem(args.problem)
-    sandbox = Sandbox(timeout_seconds=30, directed=problem.directed)
-    verifier = Verifier(
+    if args.problem in corpus_problems:
+        return _cmd_verify_corpus(problem, n_max, args, tmpdir=Path(tempfile.mkdtemp(prefix="evoalgo_verify_")))
+    return _cmd_verify_smoke(problem, n_max, args, tmpdir=Path(tempfile.mkdtemp(prefix="evoalgo_verify_")))
+
+
+def _make_selftest_verifier(problem, n_max: int, args) -> Verifier:
+    from .sandbox import Sandbox
+    from .verifier import Verifier
+
+    sandbox = Sandbox(timeout_seconds=args.timeout, directed=problem.directed)
+    return Verifier(
         problem=problem,
         sandbox=sandbox,
-        bound_n_max=args.n_max,
-        bound_n_random=5,
+        bound_n_max=n_max,
+        bound_n_random=0,
         bound_seq_len_max=10,
         bound_seq_count=3,
         bound_seed=42,
+        use_offline=False,
+        relabels_per_class=args.relabels,
+        chunk_size=args.chunk_size,
+        workers=args.workers,
     )
 
-    # Write a known-good candidate (wraps the offline algorithm)
-    import tempfile
-    tmpdir = Path(tempfile.mkdtemp(prefix="evoalgo_verify_"))
 
-    good_code = _generate_known_good_candidate(args.problem)
-    good_path = tmpdir / "known_good.py"
-    good_path.write_text(good_code)
+def _run_candidate(verifier: "Verifier", code: str, name: str, tmpdir: Path) -> tuple:
+    """Write ``code`` to a temp candidate file, verify it, return
+    (state, fitness, wall_seconds)."""
+    from .candidate import Candidate
 
-    bad_code = _generate_known_bad_candidate(args.problem)
-    bad_path = tmpdir / "known_bad.py"
-    bad_path.write_text(bad_code)
+    path = tmpdir / f"{name}.py"
+    path.write_text(code)
+    cand = Candidate(id=name, code_path=str(path), generation=0)
+    t0 = time.time()
+    result = verifier.verify(cand)
+    wall = time.time() - t0
+    return cand.state.value, result.fitness, wall
+
+
+def _cmd_verify_corpus(problem, n_max: int, args, tmpdir: Path) -> int:
+    """Full exhaustive self-test for a rooted corpus problem (BFS/DFS)."""
+    from .selftest.references import reference_code
+    from .selftest.faults import (
+        compose_fault_code,
+        equivalent_controls,
+        real_faults,
+    )
+
+    print(f"Verifier self-test for problem: {problem.name}")
+    print(f"  n_max={n_max}  relabels/class={args.relabels}  "
+          f"chunk_size={args.chunk_size or 'auto'}  workers={args.workers or 'auto'}  "
+          f"per-chunk timeout={args.timeout}s")
+
+    verifier = _make_selftest_verifier(problem, n_max, args)
+    counts = verifier.test_counts()
+    print(f"  base test graphs per n: {counts}  (total {sum(counts.values())})")
+
+    rows: list[tuple[str, str, str, float, bool]] = []  # (name, kind, state, wall, ok)
+
+    def record(name, kind, code, expect):
+        state, fitness, wall = _run_candidate(verifier, code, name, tmpdir)
+        if expect == "PASS":
+            ok = state == "PASS"
+        else:  # expect FAIL/CRASH
+            ok = state in ("FAIL", "CRASH")
+        rows.append((name, kind, state, wall, ok))
+        print(f"  {name:<24} {kind:<10} state={state:<6} "
+              f"fitness={fitness:.3f} wall={wall:6.1f}s  {'OK' if ok else 'UNEXPECTED'}")
+
+    # 1. known-good reference must PASS
+    print("\n  [known-good] validate-or-rebuild reference (must PASS)")
+    record("known-good", "reference", reference_code(problem.name), "PASS")
+
+    # 2. every real fault must be REJECTED (FAIL/CRASH)
+    print("\n  [faults] seeded real faults (must FAIL/CRASH)")
+    for fault in real_faults(problem.name):
+        record(f"fault_{fault['id']}", "fault", compose_fault_code(problem.name, fault), "FAIL")
+
+    # 3. every equivalent control must be ACCEPTED (PASS)
+    print("\n  [controls] equivalent valid variants (must PASS)")
+    for ctrl in equivalent_controls(problem.name):
+        record(f"control_{ctrl['id']}", "control", compose_fault_code(problem.name, ctrl), "PASS")
+
+    # Summary table
+    print("\n  Summary:")
+    print(f"  {'candidate':<24} {'kind':<10} {'state':<6} {'wall(s)':>8}  expected")
+    print("  " + "-" * 64)
+    for name, kind, state, wall, ok in rows:
+        expected = "PASS" if kind in ("reference", "control") else "FAIL/CRASH"
+        mark = "ok" if ok else "** UNEXPECTED **"
+        print(f"  {name:<24} {kind:<10} {state:<6} {wall:>8.1f}  {expected}  {mark}")
+
+    # Zero-false-negative verdict: every real fault rejected.
+    real_fault_rows = [r for r in rows if r[1] == "fault"]
+    rejected = sum(1 for r in real_fault_rows if r[4])
+    n_real = len(real_fault_rows)
+    zero_fn = (rejected == n_real) and n_real > 0
+    known_good_ok = rows[0][4]
+    controls_ok = all(r[4] for r in rows if r[1] == "control")
+
+    print("\n  Zero-false-negative (n<=%d): %d/%d real faults rejected -> %s"
+          % (n_max, rejected, n_real, "PASS" if zero_fn else "FAIL"))
+    print(f"  Known-good accepted: {'PASS' if known_good_ok else 'FAIL'}")
+    print(f"  Equivalent controls accepted: {'PASS' if controls_ok else 'FAIL'}")
+
+    all_ok = zero_fn and known_good_ok and controls_ok
+    print("\n  Verifier self-test: " + ("ALL PASS" if all_ok else "FAILED"))
+    return 0 if all_ok else 1
+
+
+def _cmd_verify_smoke(problem, n_max: int, args, tmpdir: Path) -> int:
+    """Legacy smoke test for problems without a fault corpus."""
+    print(f"Verifier self-test (smoke) for problem: {problem.name}")
+    print(f"  n_max={n_max}")
+
+    verifier = _make_selftest_verifier(problem, n_max, args)
 
     results: list[tuple[str, bool, str]] = []
+    good_code = _generate_known_good_candidate(problem.name)
+    good_state, good_fit, _ = _run_candidate(verifier, good_code, "known_good", tmpdir)
+    results.append(("known-good", good_state == "PASS", good_state))
+    print(f"  known-good: state={good_state} fitness={good_fit:.2f}")
 
-    # Test known-good
-    print("\n  Testing known-good candidate...")
-    good_candidate = Candidate(id="test_good", code_path=str(good_path), generation=0)
-    good_result = verifier.verify(good_candidate)
-    good_pass = good_candidate.state.value == "PASS"
-    results.append(("known-good", good_pass, good_candidate.state.value))
-    print(f"    State: {good_candidate.state.value}, Fitness: {good_result.fitness:.2f}")
+    bad_code = _generate_known_bad_candidate(problem.name)
+    bad_state, bad_fit, _ = _run_candidate(verifier, bad_code, "known_bad", tmpdir)
+    results.append(("known-bad", bad_state in ("FAIL", "CRASH"), bad_state))
+    print(f"  known-bad:  state={bad_state} fitness={bad_fit:.2f}")
 
-    # Test known-bad
-    print("  Testing known-bad candidate...")
-    bad_candidate = Candidate(id="test_bad", code_path=str(bad_path), generation=0)
-    bad_result = verifier.verify(bad_candidate)
-    bad_rejected = bad_candidate.state.value in ("FAIL", "CRASH")
-    results.append(("known-bad", bad_rejected, bad_candidate.state.value))
-    print(f"    State: {bad_candidate.state.value}, Fitness: {bad_result.fitness:.2f}")
-
-    # Summary
     print("\n  Results:")
     all_pass = True
     for name, passed, state in results:
-        status = "PASS" if passed else "FAIL"
-        print(f"    {name}: {status} (state={state})")
+        print(f"    {name}: {'PASS' if passed else 'FAIL'} (state={state})")
         if not passed:
             all_pass = False
 
-    if all_pass:
-        print("\n  Verifier self-test: ALL PASS")
-        return 0
-    else:
-        print("\n  Verifier self-test: FAILED")
-        return 1
+    print("\n  Verifier self-test: " + ("ALL PASS" if all_pass else "FAILED"))
+    return 0 if all_pass else 1
 
 
 def _generate_known_good_candidate(problem_name: str) -> str:

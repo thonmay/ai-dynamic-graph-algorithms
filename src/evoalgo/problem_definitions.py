@@ -142,7 +142,44 @@ def offline_compute(graph, root):
             if distances.get(v, -1) != distances.get(p, -1) + 1:
                 return False
 
+        # (4) The candidate's own reported distances must be the true BFS
+        #     distances. The documented candidate state is
+        #     {"parent": {...}, "distances": {...}} (see the offline oracle and
+        #     the skill's invariant spec), so a candidate that keeps a valid
+        #     parent tree but corrupts its distance field is still wrong and
+        #     must be rejected. Previously only `parent` was certified, so a
+        #     distances-only fault (e.g. dist[v] = dist[u] + 2) slipped through.
+        cand_dist = self._extract_distances(state)
+        if cand_dist is not None:
+            for v in range(n):
+                if distances.get(v, -1) == -1:
+                    # Unreachable: candidate must not report a distance
+                    if cand_dist.get(v, -1) != -1:
+                        return False
+                elif cand_dist.get(v, -1) != distances[v]:
+                    return False
+
         return True
+
+    def _extract_distances(self, state: Any) -> dict[int, int] | None:
+        """Extract the candidate's reported BFS distances, or None if absent.
+
+        Returns None when the state carries no distance field (so the check is
+        skipped, matching the parent-only fallback). Returns a dict when the
+        field is present, so it is validated against the oracle.
+        """
+        if not isinstance(state, dict):
+            return None
+        d = state.get("distances", state.get("dist"))
+        if d is None:
+            return None
+        if isinstance(d, dict):
+            return {int(k): int(v) for k, v in d.items()}
+        if isinstance(d, (list, tuple)):
+            return {i: int(x) for i, x in enumerate(d)}
+        if isinstance(d, np.ndarray):
+            return {i: int(d[i]) for i in range(len(d))}
+        return None
 
     def offline_compute(self, graph: np.ndarray, root: int | None) -> dict:
         return self._bfs_tree(graph, root)
@@ -830,11 +867,190 @@ def offline_compute(graph, root):
         return visited
 
 
+class DynamicLBFS(ProblemDefinition):
+    """Lexicographic BFS ordering (undirected) - open-problem tier.
+
+    Maintaining a LexBFS ordering under arbitrary edge flips has no known
+    efficient algorithm, so this is an open tier: the candidate must keep some
+    valid LexBFS ordering of the current graph, and the verifier accepts ANY
+    valid LexBFS ordering (no tie-break, any start). Correctness is certified
+    by the (LB) 4-point property of Corneil & Krueger (2008, "Lexicographic
+    Breadth First Search, Local Modules and the Expansion of Chordal Graph
+    Classes", SIAM J. Discrete Math., doi 10.1137/050623498): for all
+    positions a<b<c with ac in E and ab not in E, there exists d<a with db in
+    E and dc not in E. The offline oracle is the partition-refinement LexBFS
+    of Habib, McConnell, Paul & Viennot (2000, "Lexicographic Breadth-First
+    Search and Constant-Time Recognition of Chordal Graphs", SIAM J.
+    Comput.), started at vertex 0 with the minimum-id tie-break.
+    """
+
+    name = "dynamic_lbfs"
+    directed = False
+    needs_root = False
+
+    OFFLINE_SOURCE = '''
+def offline_compute(graph, root):
+    n = graph.shape[0]
+    start = 0
+    tiebreak = list(range(n))
+    cell = [start] + [v for v in tiebreak if v != start]
+    Pi = [cell]
+    order = []
+    while len(order) < n:
+        p = Pi[0][0]
+        order.append(p)
+        neigh = set()
+        for v in range(n):
+            if graph[p, v] == 1:
+                neigh.add(v)
+        newPi = []
+        for C in Pi:
+            C = [v for v in C if v != p]
+            if not C:
+                continue
+            a = [v for v in C if v in neigh]
+            b = [v for v in C if v not in neigh]
+            if a:
+                newPi.append(a)
+            if b:
+                newPi.append(b)
+        Pi = newPi
+    return order
+'''
+
+    @property
+    def offline_source(self) -> str:
+        return self.OFFLINE_SOURCE
+
+    def extract_result(self, state: Any) -> Any:
+        if isinstance(state, dict):
+            return state.get("ordering", state.get("order", state))
+        return state
+
+    def check_invariant(self, state: Any, graph: np.ndarray, root: int | None) -> bool:
+        """Check `ordering` is a valid LexBFS ordering of `graph`.
+
+        Accepts ANY valid LexBFS ordering (no tie-break, any start). The
+        certificate is the (LB) 4-point property, checked in O(n^3) after an
+        O(n^3) precompute of the earliest separating vertex per pair.
+        """
+        ordering = self._extract_ordering(state)
+        if ordering is None:
+            return False
+        n = graph.shape[0]
+        if len(ordering) != n:
+            return False
+        if set(ordering) != set(range(n)):
+            return False
+        return self._lb_violation(ordering, graph, n) is None
+
+    def offline_compute(self, graph: np.ndarray, root: int | None) -> list[int]:
+        n = graph.shape[0]
+        start = 0
+        tiebreak = list(range(n))
+        cell = [start] + [v for v in tiebreak if v != start]
+        Pi = [cell]
+        order = []
+        while len(order) < n:
+            p = Pi[0][0]
+            order.append(p)
+            neigh = set()
+            for v in range(n):
+                if graph[p, v] == 1:
+                    neigh.add(v)
+            newPi = []
+            for C in Pi:
+                C = [v for v in C if v != p]
+                if not C:
+                    continue
+                a = [v for v in C if v in neigh]
+                b = [v for v in C if v not in neigh]
+                if a:
+                    newPi.append(a)
+                if b:
+                    newPi.append(b)
+            Pi = newPi
+        return order
+
+    def baseline_work(self, graph: np.ndarray) -> int:
+        n = graph.shape[0]
+        return n * n  # O(n^2) partition-refinement LexBFS
+
+    def failing_context(self, state: Any, graph: np.ndarray, root: int | None) -> dict:
+        ordering = self._extract_ordering(state)
+        expected = self.offline_compute(graph, root)
+        ctx = {
+            "problem": self.name,
+            "result": str(ordering),
+            "expected": str(expected),
+            "graph_shape": list(graph.shape),
+        }
+        n = graph.shape[0]
+        if (
+            ordering is not None
+            and len(ordering) == n
+            and set(ordering) == set(range(n))
+        ):
+            violation = self._lb_violation(ordering, graph, n)
+            if violation is not None:
+                ctx["violation"] = violation
+        return ctx
+
+    def _extract_ordering(self, state: Any) -> list[int] | None:
+        if isinstance(state, dict):
+            order = state.get("ordering", state.get("order"))
+            if order is not None:
+                return [int(x) for x in order]
+        if isinstance(state, (list, tuple)):
+            return [int(x) for x in state]
+        return None
+
+    def _lb_violation(self, ordering: list[int], graph: np.ndarray, n: int):
+        """Return None if `ordering` satisfies (LB), else the first violation.
+
+        (LB): for all positions a<b<c with ac in E and ab not in E, there is
+        d<a with db in E and dc not in E. minD[b][c] precomputes the earliest
+        (in the ordering) such d, so the witness exists before a iff
+        minD[b][c] < pos[a].
+        """
+        pos = {v: i for i, v in enumerate(ordering)}
+        INF = 10**9
+        minD = [[INF] * n for _ in range(n)]
+        for b in range(n):
+            for c in range(n):
+                if b == c:
+                    continue
+                best = INF
+                for d in range(n):
+                    if d != b and d != c and graph[b, d] == 1 and graph[c, d] == 0:
+                        if pos[d] < best:
+                            best = pos[d]
+                minD[b][c] = best
+        for a in range(n):
+            pa = pos[a]
+            for b in range(n):
+                pb = pos[b]
+                if pb <= pa:
+                    continue
+                for c in range(n):
+                    pc = pos[c]
+                    if pc <= pb:
+                        continue
+                    if graph[a, c] == 1 and graph[a, b] == 0:
+                        if minD[b][c] >= pa:
+                            return {
+                                "a": a, "b": b, "c": c,
+                                "pos_a": pa, "minD": minD[b][c],
+                            }
+        return None
+
+
 # Registry
 PROBLEMS: dict[str, type[ProblemDefinition]] = {
     "dynamic_bfs": DynamicBFS,
     "dynamic_dfs": DynamicDFS,
     "dynamic_mcs": DynamicMCS,
+    "dynamic_lbfs": DynamicLBFS,
     "dynamic_scc": DynamicSCC,
     "reachability": Reachability,
 }

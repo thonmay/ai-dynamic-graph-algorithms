@@ -6,8 +6,11 @@ a non-local site are refused, so a web page open in the same browser cannot
 steer or launch runs.
 
 Websocket protocol (``/api/runs/{run_id}/ws?from=N``):
-  server -> client  every event from events.jsonl with seq >= N (backlog,
-                    then live), plus {"type": "queued"|"error", ...} replies
+  server -> client  first {"type": "pending", "commands": [...]} (commands not
+                    yet acknowledged), then every event from events.jsonl with
+                    seq >= N (backlog, then live), {"type": "engine",
+                    "state": "alive"|"gone"|"none"} at connect and on change,
+                    and {"type": "queued"|"error", ...} replies
   client -> server  a control command, e.g. {"cmd": "pause"},
                     {"cmd": "hint", "text": "..."},
                     {"cmd": "set", "field": "population_size", "value": 4}
@@ -19,6 +22,7 @@ import asyncio
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -31,7 +35,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import RunConfig
-from .events import EVENTS_FILE, read_events, send_command, validate_command
+from .events import (
+    ENGINE_FILE,
+    EVENTS_FILE,
+    pending_commands,
+    read_events,
+    send_command,
+    validate_command,
+)
 
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
 CANDIDATE_ID = re.compile(r"^gen\d{3}_c\d{2}$")
@@ -48,25 +59,48 @@ def _origin_ok(origin: str | None) -> bool:
     return urlsplit(origin).hostname in LOCAL_HOSTS
 
 
-def run_state(events: list[dict[str, Any]]) -> str:
+def engine_state(run_dir: Path) -> str:
+    """"alive" if the engine that wrote engine.json still runs on this host,
+    "gone" if engine.json is left behind by a dead process, "none" otherwise."""
+    try:
+        info = json.loads((run_dir / ENGINE_FILE).read_text())
+    except FileNotFoundError:
+        return "none"
+    except (OSError, json.JSONDecodeError):
+        return "gone"
+    if info.get("host") != socket.gethostname():
+        return "gone"  # ponytail: a run on another host is reported as gone
+    try:
+        os.kill(int(info["pid"]), 0)
+    except PermissionError:
+        return "alive"
+    except (OSError, KeyError, TypeError, ValueError):
+        return "gone"
+    return "alive"
+
+
+def run_state(events: list[dict[str, Any]], engine: str = "alive") -> str:
     if not events:
         return "empty"
     if events[-1].get("type") == "run_end":
         return "done"
+    if engine != "alive":
+        return "interrupted"
     paused = False
     for e in events:
-        if e.get("type") == "control_ack":
-            if e.get("cmd") == "pause":
-                paused = True
-            elif e.get("cmd") in ("resume", "stop"):
-                paused = False
+        if e.get("type") == "paused":
+            paused = True
+        elif e.get("type") == "resumed":
+            paused = False
     return "paused" if paused else "running"
 
 
 def summarize(run_dir: Path) -> dict[str, Any]:
     events = read_events(run_dir)
+    engine = engine_state(run_dir)
     summary: dict[str, Any] = {"run_id": run_dir.name, "has_events": bool(events),
-                               "state": run_state(events) if events else "no_events"}
+                               "engine": engine,
+                               "state": run_state(events, engine) if events else "no_events"}
     if not events:
         return summary
     start = next((e for e in events if e["type"] == "run_start"), {})
@@ -131,6 +165,7 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR) -> F
         run_dir = run_dir_for(run_id)
         summary = summarize(run_dir)
         summary["config"] = RunConfig.load(run_dir / "config.yaml").to_dict()
+        summary["pending"] = pending_commands(run_dir)
         return summary
 
     @app.get("/api/runs/{run_id}/candidates/{candidate_id}")
@@ -195,7 +230,9 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR) -> F
             await websocket.close(code=1008)
             return
         await websocket.accept()
-        tasks = [asyncio.create_task(_tail(websocket, run_dir / EVENTS_FILE, since)),
+        # Unacknowledged commands first, so a reconnecting UI shows "pausing" etc.
+        await websocket.send_json({"type": "pending", "commands": pending_commands(run_dir)})
+        tasks = [asyncio.create_task(_tail(websocket, run_dir, since)),
                  asyncio.create_task(_commands(websocket, run_dir))]
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -215,29 +252,58 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR) -> F
     return app
 
 
-async def _tail(ws: WebSocket, path: Path, since: int) -> None:
-    """Send events with seq >= since, then follow the file as it grows."""
+async def _tail(ws: WebSocket, run_dir: Path, since: int) -> None:
+    """Send events with seq >= since, then follow the file as it grows.
+
+    Also sends {"type": "engine"} on every liveness change, ordered so the UI
+    never sees a live run without a live engine: the engine writes
+    engine.json before its first event and removes it after its last one, so
+    "alive" goes out before the events it covers and a lost engine after the
+    final events it wrote.
+    """
+    path = run_dir / EVENTS_FILE
     offset, buf = 0, b""
-    while True:
+    last_engine: str | None = None
+
+    def read_new() -> list[dict[str, Any]]:
+        nonlocal offset, buf
         try:
             size = os.stat(path).st_size
         except FileNotFoundError:
             size = 0
         if size < offset:  # file was rebuilt (events backfill --force)
             offset, buf = 0, b""
-        if size > offset:
-            with open(path, "rb") as f:
-                f.seek(offset)
-                chunk = f.read(size - offset)
-            offset += len(chunk)
-            *lines, buf = (buf + chunk).split(b"\n")
-            for raw in lines:
-                try:
-                    event = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(event, dict) and event.get("seq", -1) >= since:
-                    await ws.send_json(event)
+        if size <= offset:
+            return []
+        with open(path, "rb") as f:
+            f.seek(offset)
+            chunk = f.read(size - offset)
+        offset += len(chunk)
+        *lines, buf = (buf + chunk).split(b"\n")
+        out = []
+        for raw in lines:
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and event.get("seq", -1) >= since:
+                out.append(event)
+        return out
+
+    while True:
+        events = read_new()
+        engine = engine_state(run_dir)
+        if engine != last_engine and engine == "alive":
+            await ws.send_json({"type": "engine", "state": engine})
+            last_engine = engine
+        for event in events:
+            await ws.send_json(event)
+        if engine != last_engine:
+            # The engine may have appended run_end just before it exited.
+            for event in read_new():
+                await ws.send_json(event)
+            await ws.send_json({"type": "engine", "state": engine})
+            last_engine = engine
         await asyncio.sleep(POLL_SECONDS)
 
 

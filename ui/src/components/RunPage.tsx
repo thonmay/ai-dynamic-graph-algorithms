@@ -1,16 +1,20 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useRunStream } from '../api'
-import { genAt, type Status } from '../state'
+import { deriveStatus, genAt, type Live } from '../state'
 import { duration, f3, pct } from '../format'
+import { Activity } from './Activity'
 import { Lineage, Spark, WorkRatioChart } from './charts'
 import { EventLog, Population, type LogFilter } from './panels'
 import { Drawer } from './Drawer'
 import { Steer } from './Steer'
 import { Toast } from './Toast'
 
-const LABEL: Record<Status, string> = {
-  connecting: 'waiting', running: 'running', paused: 'paused', done: 'done', stopped: 'stopped',
+const LABEL: Record<Live, string> = {
+  starting: 'starting', empty: 'no events', running: 'running', pausing: 'pausing', paused: 'paused',
+  resuming: 'resuming', stopping: 'stopping', stopped: 'stopped', done: 'done',
+  interrupted: 'interrupted', offline: 'offline',
 }
+const ACTIVE: Live[] = ['running', 'pausing', 'paused', 'resuming', 'stopping']
 
 const delay = (i: number) => ({ ['--i' as string]: i }) as CSSProperties
 
@@ -31,8 +35,9 @@ export function RunPage({ runId }: { runId: string }) {
   const viewGen = live ? Math.max(state.currentGen, lastGen) : popGen
   const gen = genAt(state, popGen)
   const shownGens = state.gens.filter((g) => g.gen <= popGen)
-  const active = state.status === 'running' || state.status === 'paused'
-  const canControl = connected && active
+  const status = deriveStatus(state, connected)
+  const active = ACTIVE.includes(status)
+  const canControl = active && status !== 'stopping'
 
   useEffect(() => {
     if (!playing) return
@@ -59,7 +64,6 @@ export function RunPage({ runId }: { runId: string }) {
 
   const startMs = state.firstTs ? Date.parse(state.firstTs) : NaN
   const endMs = active ? now : state.lastTs ? Date.parse(state.lastTs) : NaN
-  const statusClass = !connected && active ? 'offline' : state.status
 
   const pick = (g: number) => { setMode('replay'); setPlaying(false); setReplayGen(g) }
   const toReplay = () => { setMode('replay'); setPlaying(false); setReplayGen(Math.max(1, lastGen)) }
@@ -86,20 +90,30 @@ export function RunPage({ runId }: { runId: string }) {
             <button aria-pressed={!live} onClick={toReplay} disabled={!lastGen}>Replay</button>
           </div>
           <span className="sp" />
-          <span className={`status ${statusClass}`}>
-            <i className="dot" />{!connected && active ? 'offline' : LABEL[state.status]}
+          <span className={`status ${status}`}>
+            <i className="dot" /><span key={status} className="swap">{LABEL[status]}</span>
           </span>
           <span className="meta num">gen {viewGen}/{maxGen || '-'}</span>
           <span className="meta num hide-s">{duration(endMs - startMs)}</span>
           <div className="ctl">
-            <button className="btn" disabled={!canControl || state.status !== 'running'} onClick={() => send({ cmd: 'pause' })}>Pause</button>
-            <button className="btn" disabled={!canControl || state.status !== 'paused'} onClick={() => send({ cmd: 'resume' })}>Resume</button>
-            <button className="btn" disabled={!canControl} onClick={() => send({ cmd: 'stop' })}>Stop</button>
+            {status === 'paused' || status === 'resuming' ? (
+              <button className="btn" disabled={status === 'resuming'} onClick={() => send({ cmd: 'resume' })}>
+                {status === 'resuming' ? <><span className="spinner xs" />Resuming</> : 'Resume'}
+              </button>
+            ) : (
+              <button className="btn" disabled={status !== 'running'} onClick={() => send({ cmd: 'pause' })}>
+                {status === 'pausing' ? <><span className="spinner xs" />Pausing</> : 'Pause'}
+              </button>
+            )}
+            <button className="btn" disabled={!canControl} onClick={() => send({ cmd: 'stop' })}>
+              {status === 'stopping' ? <><span className="spinner xs" />Stopping</> : 'Stop'}
+            </button>
             <button className="btn primary" disabled={!canControl} aria-expanded={steerOpen}
                     onClick={() => setSteerOpen((o) => !o)}>Steer</button>
           </div>
         </div>
       </nav>
+      {live && <Activity state={state} status={status} runId={runId} now={now} />}
       <Steer open={steerOpen} onClose={() => setSteerOpen(false)} activeHint={state.activeHint} send={send} />
 
       <main className="wrap">

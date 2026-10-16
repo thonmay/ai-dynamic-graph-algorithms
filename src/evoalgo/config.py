@@ -3,6 +3,9 @@
 Config schema (config.yaml):
   problem: dynamic_mcs          # one of: dynamic_bfs, dynamic_dfs, dynamic_mcs,
                                 #   dynamic_scc, dynamic_lbfs, reachability
+  pack: null                    # optional problem-pack name or path; when set,
+                                #   the problem (checker) comes from the pack
+                                #   and overrides `problem`
   provider: enlcode             # LLM provider adapter name
   model: null                   # model id (null = provider default)
   generator_agent: algorithm-generator
@@ -42,7 +45,7 @@ except ImportError:
 
 VALID_PROBLEMS = {
     "dynamic_bfs", "dynamic_dfs", "dynamic_mcs",
-    "dynamic_scc", "reachability",
+    "dynamic_scc", "dynamic_lbfs", "reachability",
 }
 
 VALID_PROVIDERS = {"enlcode"}
@@ -60,6 +63,7 @@ class Bound:
 @dataclass
 class RunConfig:
     problem: str = "dynamic_mcs"
+    pack: str | None = None
     provider: str = "enlcode"
     model: str | None = None
     generator_agent: str = "algorithm-generator"
@@ -93,6 +97,7 @@ class RunConfig:
     def to_dict(self) -> dict[str, Any]:
         d = {
             "problem": self.problem,
+            "pack": self.pack,
             "provider": self.provider,
             "model": self.model,
             "generator_agent": self.generator_agent,
@@ -123,6 +128,18 @@ class RunConfig:
 
     def validate(self) -> list[str]:
         errors: list[str] = []
+        if self.pack:
+            # A problem pack takes over: resolve it and adopt its checker as
+            # the problem. Old configs without a pack are unaffected.
+            from .packs import PackError, resolve_pack
+            try:
+                pack = resolve_pack(self.pack)
+            except PackError as e:
+                errors.append(str(e))
+            except NotImplementedError as e:
+                errors.append(str(e))
+            else:
+                self.problem = pack.checker
         if self.problem not in VALID_PROBLEMS:
             errors.append(f"problem must be one of {VALID_PROBLEMS}, got '{self.problem}'")
         if self.provider not in VALID_PROVIDERS:

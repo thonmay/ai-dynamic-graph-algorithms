@@ -13,7 +13,9 @@ work_ratio (candidate_work / offline_work).
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,25 @@ from .graph_generator import (
 from .problem_definitions import ProblemDefinition
 from .sandbox import Sandbox, SandboxResult
 
+# Default number of base graphs per sandbox subprocess. A chunk must finish
+# within the per-chunk timeout for a correct candidate, while a candidate that
+# loops forever on one case hits the timeout and fails fast. 2000 base graphs
+# is ~10-15 s for the slowest correct candidates (recompute-always BFS,
+# validate-or-rebuild DFS) at n<=5, well under a 30-60 s per-chunk timeout.
+#
+# When chunks are evaluated in parallel (workers > 1) the default chunk size is
+# halved (1000) so the work is split across more, smaller chunks: this balances
+# load across workers and keeps each chunk's wall time (and therefore its
+# per-chunk timeout) small, so a candidate that loops forever still fails fast.
+DEFAULT_CHUNK_SIZE = 2000
+DEFAULT_PARALLEL_CHUNK_SIZE = 1000
+
+
+def _default_workers() -> int:
+    """Default worker count: modest on a shared build server (80 cores)."""
+    cpu = os.cpu_count() or 1
+    return max(1, min(8, cpu))
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,23 +56,32 @@ def _exhaustive_flip_sequences(
     n: int,
     graph: np.ndarray,
     directed: bool,
+    include_twins: bool = False,
 ) -> list[list[tuple[str, tuple[int, int]]]]:
-    """Deterministic short update sequences covering the update space for small n.
+    """Deterministic short update sequences covering the update space.
 
-    Returns all legal single-edge flips (each as a length-1 sequence) plus a
-    compact set of length-2 paths (flip one edge, then flip each other edge).
-    This closes the coverage hole left by random sequences: a reachable
-    counterexample at n<=exhaustive_flip_n_max is now hit deterministically.
+    Always returns all legal single-edge flips (each as a length-1 sequence):
+    this is "every possible edge operation" on the base graph. When
+    ``include_twins`` is True it additionally returns a compact set of length-2
+    paths (flip one edge, then flip each other edge).
+
+    The twins are O(n^4) per graph (380 at n=5) and are kept only for the small
+    labeled comparison universe, where they close the coverage hole left by
+    random sequences. For the nauty (non-isomorphic) universe the singles alone
+    already give exhaustive single-edge coverage, and the twins would make the
+    n=5 universe prohibitively expensive, so they default to off.
     """
     pairs = [(u, v) for u in range(n) for v in range(n) if u != v and (directed or u < v)]
     single: list[list[tuple[str, tuple[int, int]]]] = []
-    twins: list[list[tuple[str, tuple[int, int]]]] = []
     for u, v in pairs:
         if graph[u, v]:
             single.append([("delete", (u, v))])
         else:
             single.append([("insert", (u, v))])
+    if not include_twins:
+        return single
     # length-2 paths: first flip (u,v), then flip (u',v') in the resulting graph
+    twins: list[list[tuple[str, tuple[int, int]]]] = []
     for u, v in pairs:
         flipped = graph.copy()
         if flipped[u, v]:
@@ -103,19 +133,57 @@ class Verifier:
         bound_seq_count: int = 10,
         bound_seed: int = 1337,
         exhaustive_flip_n_max: int = 5,
+        chunk_size: int | None = None,
+        use_offline: bool = True,
+        universe: str = "nauty",
+        relabels_per_class: int = 2,
+        workers: int | None = None,
+        update_mode: str = "mixed",
     ):
         self.problem = problem
         self.sandbox = sandbox
+        # update_mode restricts which edge operations the test sequences use:
+        # "mixed" (default, unchanged behaviour), "insert_only", "delete_only".
+        if update_mode not in ("mixed", "insert_only", "delete_only"):
+            raise ValueError(
+                f"update_mode must be 'mixed', 'insert_only', or 'delete_only', "
+                f"got {update_mode!r}"
+            )
+        self.update_mode = update_mode
         self.n_max = bound_n_max
         self.n_random = bound_n_random
         self.seq_len_max = bound_seq_len_max
         self.seq_count = bound_seq_count
         self.seed = bound_seed
         self.exhaustive_flip_n_max = exhaustive_flip_n_max
+        # Worker count for parallel chunk evaluation. workers=None -> a modest
+        # default (min(8, cpu)); workers=1 reproduces the original serial path
+        # exactly.
+        self.workers = _default_workers() if workers is None else max(1, workers)
+        # Chunk size: an explicit value is honored verbatim. None auto-tunes --
+        # the serial default (2000) for workers=1, or smaller chunks
+        # (DEFAULT_PARALLEL_CHUNK_SIZE) when parallelizing, so load balances
+        # across workers and the per-chunk timeout stays tight.
+        if chunk_size is not None:
+            self.chunk_size = chunk_size
+        elif self.workers > 1:
+            self.chunk_size = DEFAULT_PARALLEL_CHUNK_SIZE
+        else:
+            self.chunk_size = DEFAULT_CHUNK_SIZE
+        # The offline baseline is only needed for work_ratio; the self-test
+        # (known-good / faults / controls) skips it to keep wall time low.
+        self.use_offline = use_offline
+        self.universe = universe
+        self.relabels_per_class = relabels_per_class
+        # Exhaustive length-2 flip paths (twins) are O(n^4)/graph and are only
+        # affordable on the small labeled comparison universe. The nauty
+        # universe already covers every single-edge flip via the singles.
+        self.use_twins = (universe == "labeled")
 
         # Cache test graphs (they don't change between candidates)
         self._test_graphs: list[tuple[int, np.ndarray]] | None = None
         self._test_sequences: dict[int, list[list[tuple[str, tuple[int, int]]]]] = {}
+        self._test_counts: dict[int, int] | None = None
 
     @property
     def test_graphs(self) -> list[tuple[int, np.ndarray]]:
@@ -123,11 +191,24 @@ class Verifier:
             self._test_graphs = generate_test_graphs(
                 self.n_max, self.n_random, self.seed,
                 directed=self.problem.directed,
+                universe=self.universe,
+                rooted=self.problem.needs_root,
+                relabels_per_class=self.relabels_per_class,
             )
-            logger.info("Generated %d test graphs (n=2..%d, %s)",
+            counts: dict[int, int] = {}
+            for n, _g in self._test_graphs:
+                counts[n] = counts.get(n, 0) + 1
+            self._test_counts = counts
+            logger.info("Generated %d test graphs (n=2..%d, %s, universe=%s): %s",
                         len(self._test_graphs), self.n_max,
-                        "directed" if self.problem.directed else "undirected")
+                        "directed" if self.problem.directed else "undirected",
+                        self.universe, counts)
         return self._test_graphs
+
+    def test_counts(self) -> dict[int, int]:
+        """Number of base test graphs per n (computed lazily with test_graphs)."""
+        self.test_graphs
+        return self._test_counts or {}
 
     def get_sequences(self, n: int, graph: np.ndarray) -> list[list[tuple[str, tuple[int, int]]]]:
         key = (n, graph.tobytes())
@@ -136,15 +217,58 @@ class Verifier:
                 n, graph, self.seq_len_max, self.seq_count, self.seed + n,
                 directed=self.problem.directed,
             )
-            # Deterministic exhaustive short sequences for small n: every
-            # single-edge flip plus a compact set of 2-flip paths. Random
-            # sequences alone missed reachable counterexamples (e.g. a single
-            # insert breaking dynamic MCS at n=3), so close that gap for the
-            # sizes where exhaustive coverage is cheap.
+            # Deterministic exhaustive single-edge flips for small n (and, on
+            # the labeled comparison universe, a compact set of 2-flip paths).
+            # Random sequences alone missed reachable counterexamples (e.g. a
+            # single insert breaking dynamic MCS at n=3), so close that gap
+            # for the sizes where exhaustive coverage is cheap.
             if n <= self.exhaustive_flip_n_max:
-                seqs = seqs + _exhaustive_flip_sequences(n, graph, self.problem.directed)
+                seqs = seqs + _exhaustive_flip_sequences(
+                    n, graph, self.problem.directed, include_twins=self.use_twins,
+                )
+            seqs = self._filter_sequences_for_mode(seqs, graph)
             self._test_sequences[key] = seqs
         return self._test_sequences[key]
+
+    def _filter_sequences_for_mode(
+        self,
+        seqs: list[list[tuple[str, tuple[int, int]]]],
+        graph: np.ndarray,
+    ) -> list[list[tuple[str, tuple[int, int]]]]:
+        """Restrict sequences to the configured ``update_mode``.
+
+        "mixed" (the default) returns them unchanged. For "insert_only" /
+        "delete_only" each sequence is replayed on a copy of the base graph and
+        only the legal ops of the allowed type are kept, so the result is a
+        sequence that is still legal on the evolving graph. This is what lets a
+        pack declare a semi-dynamic (incremental or decremental-only) problem
+        without touching the sequence generators.
+        """
+        if self.update_mode == "mixed":
+            return seqs
+        allowed = "insert" if self.update_mode == "insert_only" else "delete"
+        filtered: list[list[tuple[str, tuple[int, int]]]] = []
+        for seq in seqs:
+            current = graph.copy()
+            out: list[tuple[str, tuple[int, int]]] = []
+            for op_type, (u, v) in seq:
+                if op_type != allowed:
+                    continue
+                if allowed == "insert":
+                    if current[u, v]:
+                        continue
+                    current[u, v] = 1
+                    if not self.problem.directed:
+                        current[v, u] = 1
+                else:  # delete
+                    if not current[u, v]:
+                        continue
+                    current[u, v] = 0
+                    if not self.problem.directed:
+                        current[v, u] = 0
+                out.append((op_type, (u, v)))
+            filtered.append(out)
+        return filtered
 
     def _offline_src(self) -> str:
         """Return the offline baseline source for the sandbox subprocess.
@@ -157,11 +281,24 @@ class Verifier:
     def verify(self, candidate: Candidate) -> VerifyResult:
         """Run a candidate through the full test universe.
 
-        All test cases are batched into a single sandbox subprocess to
-        avoid per-call subprocess overhead (~160ms/call). The runner
-        executes every (graph, sequence) pair and returns per-sequence
-        results. We then process results in order, stopping at the
-        first failure for fitness scoring.
+        The test universe is split into chunks of ``chunk_size`` base graphs,
+        each executed in its own sandbox subprocess with its own wall-clock
+        timeout. This keeps a correct candidate's per-chunk run well under the
+        timeout (so the whole n<=5 universe passes), while a candidate that
+        loops forever on one case still hits the per-chunk timeout and fails
+        fast.
+
+        Chunks are evaluated in parallel (``workers`` process pool) when
+        ``workers > 1``. Each worker is trusted code: it runs the sandbox
+        subprocess for its chunk (the candidate stays isolated in its own
+        subprocess, so the trust boundary is unchanged) and checks that
+        chunk's invariants, returning a compact partial result. The parent
+        merges the partials deterministically in chunk order, stopping at the
+        first failing chunk: totals are the sum over all chunks before the
+        first failing chunk plus that chunk's partial, and ``failing_case`` is
+        the first failure. Chunks after a known earlier failure are ignored.
+        ``workers == 1`` runs the exact serial path (one chunk at a time in
+        the parent), so the result is identical to the original implementation.
         """
         candidate.transition(CandidateState.TESTING)
 
@@ -175,10 +312,10 @@ class Verifier:
             candidate.error_message = result.error_message
             return result
 
-        offline_src = self._offline_src()
+        offline_src = self._offline_src() if self.use_offline else ""
         root = 0 if self.problem.needs_root else None
 
-        # Build all test cases for batched execution
+        # Build all test cases (graph + its sequences) in a stable order.
         test_cases: list[dict[str, Any]] = []
         graph_meta: list[tuple[int, int]] = []  # (n, num_sequences) per graph
         total_steps = 0
@@ -195,9 +332,9 @@ class Verifier:
             })
             graph_meta.append((n, len(sequences)))
 
-        # Adaptive REPEAT: keep total timed calls under a budget so the
-        # sandbox doesn't time out on large test universes. Target ~500K
-        # total calls (candidate + offline), minimum REPEAT=1.
+        # Adaptive REPEAT: keep total timed calls under a budget so timing
+        # stays meaningful without dominating wall time. Target ~500K total
+        # calls (candidate + offline), minimum REPEAT=1.
         TIMING_BUDGET = 500_000
         timing_multiplier = 2 if offline_src else 1
         if total_steps > 0:
@@ -206,163 +343,146 @@ class Verifier:
             adaptive_repeat = 20
         adaptive_repeat = min(adaptive_repeat, 20)  # cap at 20
 
-        # Single subprocess for all test cases
-        batch_result = self.sandbox.execute_batch(
-            code_path, test_cases, offline_src=offline_src, root=root,
-            repeat=adaptive_repeat,
-        )
+        # Split the test universe into chunks (each becomes one sandbox
+        # subprocess). chunk_args[i] = (i, chunk_start, chunk_cases, chunk_meta).
+        chunk_starts = list(range(0, len(test_cases), self.chunk_size)) or [0]
+        chunk_args = [
+            (i, chunk_start,
+             test_cases[chunk_start:chunk_start + self.chunk_size],
+             graph_meta[chunk_start:chunk_start + self.chunk_size])
+            for i, chunk_start in enumerate(chunk_starts)
+        ]
 
-        if batch_result.is_timeout:
-            result.timeout = True
-            result.state = CandidateState.FAIL
-            result.failing_case = {"operation": "timeout"}
-            candidate.transition(CandidateState.FAIL)
-            candidate.timeout = True
-            _update_candidate(candidate, result)
-            return result
+        # Running totals, accumulated in chunk order by _merge_partial.
+        acc = {"total": 0, "passed": 0, "cand_work": 0, "off_work": 0}
 
-        if batch_result.is_crash and not batch_result.all_results:
-            result.error_message = batch_result.error
-            result.failing_case = {"operation": "crash", "error": batch_result.error}
-            candidate.transition(CandidateState.CRASH)
-            candidate.error_message = batch_result.error
+        if self.workers == 1:
+            # Serial path: one chunk at a time in the parent, in order.
+            for i, chunk_start, chunk_cases, chunk_meta in chunk_args:
+                partial = _check_chunk_impl(
+                    self.problem, self.sandbox, code_path, chunk_cases, chunk_meta,
+                    chunk_start, root, offline_src, adaptive_repeat,
+                )
+                if self._merge_partial(result, partial, acc):
+                    break
+        else:
+            # Parallel path: a sliding window of ``workers`` chunks in flight.
+            # Sandbox subprocesses run concurrently; partials are merged in
+            # chunk order so the result is identical to the serial path.
+            ctx = {
+                "problem_name": self.problem.name,
+                "directed": self.problem.directed,
+                "root": root,
+                "offline_src": offline_src,
+                "adaptive_repeat": adaptive_repeat,
+                "code_path": str(code_path),
+                "timeout_seconds": self.sandbox.timeout,
+                "python_path": self.sandbox.python,
+            }
+            self._merge_parallel(result, chunk_args, ctx, acc)
+
+        result.tests_total = acc["total"]
+        result.tests_passed = acc["passed"]
+
+        if result.error_message:
             result.state = CandidateState.CRASH
-            _update_candidate(candidate, result)
-            return result
-
-        # Process results: iterate graphs and sequences in order
-        all_results = batch_result.all_results or []
-        total_tests = 0
-        passed_tests = 0
-        candidate_work = 0
-        offline_work = 0
-        found_failure = False
-
-        for g_idx, (n, num_seqs) in enumerate(graph_meta):
-            if found_failure:
-                break
-            graph_results = all_results[g_idx] if g_idx < len(all_results) else []
-            original_graph = self.test_graphs[g_idx][1]  # np.ndarray
-
-            for seq_idx in range(num_seqs):
-                total_tests += 1
-
-                seq_result = graph_results[seq_idx] if seq_idx < len(graph_results) else None
-                if seq_result is None:
-                    result.failing_case = {
-                        "graph_n": n, "sequence_idx": seq_idx,
-                        "operation": "missing result",
-                    }
-                    found_failure = True
-                    break
-
-                if seq_result.get("status") == "crash":
-                    result.error_message = seq_result.get("error")
-                    result.failing_case = {
-                        "graph_n": n, "sequence_idx": seq_idx,
-                        "operation": "crash",
-                        "error": seq_result.get("error"),
-                    }
-                    candidate.transition(CandidateState.CRASH)
-                    candidate.error_message = seq_result.get("error")
-                    result.state = CandidateState.CRASH
-                    result.tests_total = total_tests
-                    result.tests_passed = passed_tests
-                    result.fitness = passed_tests / total_tests if total_tests > 0 else 0.0
-                    _update_candidate(candidate, result)
-                    return result
-
-                # Use partial results if available (crash mid-sequence)
-                results = seq_result.get("results") or seq_result.get("partial_results") or []
-                candidate_times = seq_result.get("timings") or seq_result.get("partial_timings") or []
-                offline_times = seq_result.get("offline_timings") or seq_result.get("partial_offline_timings") or []
-
-                if not results:
-                    result.failing_case = {
-                        "graph_n": n, "sequence_idx": seq_idx,
-                        "operation": "no results from sandbox",
-                    }
-                    found_failure = True
-                    break
-
-                # Replay operations on a copy of the graph to check invariants
-                current_graph = original_graph.copy()
-                sequences = self.get_sequences(n, original_graph)
-                seq = sequences[seq_idx]
-
-                # Check init state
-                state = _deserialize_state(results[0]["state"])
-                if not self.problem.check_invariant(state, current_graph, root):
-                    result.failing_case = self.problem.failing_context(
-                        state, current_graph, root
-                    )
-                    result.failing_case["graph_n"] = n
-                    result.failing_case["sequence_idx"] = seq_idx
-                    result.failing_case["operation"] = "init"
-                    found_failure = True
-                    break
-
-                if candidate_times:
-                    candidate_work += candidate_times[0]
-                if offline_times:
-                    offline_work += offline_times[0]
-
-                # Check after each operation
-                for step_idx, (op_type, edge) in enumerate(seq):
-                    u, v = edge
-                    if op_type == "insert":
-                        current_graph[u, v] = 1
-                        if not self.problem.directed:
-                            current_graph[v, u] = 1
-                    elif op_type == "delete":
-                        current_graph[u, v] = 0
-                        if not self.problem.directed:
-                            current_graph[v, u] = 0
-
-                    step_result_idx = step_idx + 1
-                    if step_result_idx < len(results):
-                        state = _deserialize_state(results[step_result_idx]["state"])
-                        if not self.problem.check_invariant(state, current_graph, root):
-                            result.failing_case = self.problem.failing_context(
-                                state, current_graph, root
-                            )
-                            result.failing_case["graph_n"] = n
-                            result.failing_case["sequence_idx"] = seq_idx
-                            result.failing_case["operation"] = f"{op_type} {edge}"
-                            found_failure = True
-                            break
-
-                    if step_result_idx < len(candidate_times):
-                        candidate_work += candidate_times[step_result_idx]
-                    if step_result_idx < len(offline_times):
-                        offline_work += offline_times[step_result_idx]
-
-                if found_failure:
-                    break
-
-                passed_tests += 1
-
-        result.tests_total = total_tests
-        result.tests_passed = passed_tests
-
-        if found_failure and result.timeout:
+            candidate.transition(CandidateState.CRASH)
+            candidate.error_message = result.error_message
+        elif result.timeout:
             result.state = CandidateState.FAIL
             candidate.transition(CandidateState.FAIL)
             candidate.timeout = True
-        elif found_failure:
+        elif result.failing_case:
             result.state = CandidateState.FAIL
             candidate.transition(CandidateState.FAIL)
         else:
             result.state = CandidateState.PASS
             candidate.transition(CandidateState.PASS)
 
-        result.fitness = passed_tests / total_tests if total_tests > 0 else 0.0
-        if offline_work > 0:
-            result.work_ratio = candidate_work / offline_work
+        result.fitness = acc["passed"] / acc["total"] if acc["total"] > 0 else 0.0
+        if acc["off_work"] > 0:
+            result.work_ratio = acc["cand_work"] / acc["off_work"]
         # else: leave work_ratio as None (no offline baseline to ratio against)
 
         _update_candidate(candidate, result)
         return result
+
+    def _merge_partial(self, result: VerifyResult, partial: dict[str, Any],
+                       acc: dict[str, int]) -> bool:
+        """Merge one chunk's partial result into the running totals.
+
+        Returns True if verification should stop (this chunk timed out,
+        crashed, or found the first invariant failure). The merge is
+        deterministic in chunk order, so once it returns True, later chunks
+        cannot change the result and are ignored.
+        """
+        if partial["timeout"]:
+            result.timeout = True
+            result.failing_case = {
+                "operation": "timeout",
+                "chunk_start": partial["chunk_start"],
+            }
+            return True
+        if partial["chunk_crash"]:
+            result.error_message = partial["chunk_crash_error"]
+            result.failing_case = {"operation": "crash", "error": partial["chunk_crash_error"]}
+            return True
+        acc["total"] += partial["tests_total"]
+        acc["passed"] += partial["tests_passed"]
+        acc["cand_work"] += partial["candidate_work"]
+        acc["off_work"] += partial["offline_work"]
+        if partial["crash"]:
+            result.error_message = partial["crash_error"]
+            result.failing_case = partial["failing_case"]
+            return True
+        if partial["failing_case"] is not None:
+            result.failing_case = partial["failing_case"]
+            return True
+        return False
+
+    def _merge_parallel(self, result: VerifyResult, chunk_args: list, ctx: dict,
+                        acc: dict[str, int]) -> None:
+        """Evaluate chunks in a sliding window and merge in chunk order.
+
+        At most ``self.workers`` chunks are in flight at once. As chunks
+        complete (in wall-clock order) their partials are held until it is
+        their turn in chunk order, so the merge -- and therefore the result --
+        is identical to the serial path. Once a chunk fails, no further chunks
+        are submitted and the in-flight ones are drained and ignored.
+        """
+        n_chunks = len(chunk_args)
+        futures: dict[int, concurrent.futures.Future] = {}
+        pending: dict[int, dict[str, Any]] = {}
+        next_submit = 0
+        next_merge = 0
+        stopped = False
+
+        def fill() -> None:
+            nonlocal next_submit
+            while next_submit < n_chunks and len(futures) < self.workers and not stopped:
+                i, chunk_start, chunk_cases, chunk_meta = chunk_args[next_submit]
+                futures[i] = pool.submit(
+                    _worker_check_chunk, ctx, i, chunk_start, chunk_cases, chunk_meta,
+                )
+                next_submit += 1
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=self.workers) as pool:
+            fill()
+            while futures:
+                done, _ = concurrent.futures.wait(
+                    list(futures.values()),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for fut in done:
+                    idx = next(k for k, v in futures.items() if v is fut)
+                    del futures[idx]
+                    pending[idx] = fut.result()
+                # Merge in chunk order up to the first failure.
+                while next_merge in pending and not stopped:
+                    partial = pending.pop(next_merge)
+                    stopped = self._merge_partial(result, partial, acc)
+                    next_merge += 1
+                fill()
 
 
 class Evaluator:
@@ -377,6 +497,195 @@ class Evaluator:
             and result.work_ratio < 1.0
         )
         return result.fitness, result.work_ratio, is_improvement
+
+
+# ---------------------------------------------------------------------------
+# Per-chunk evaluation. Shared by the serial path (run in the parent) and the
+# parallel path (run in a worker process). The logic is the original serial
+# per-chunk loop, refactored so both paths produce byte-identical partial
+# results and therefore an identical merged VerifyResult.
+# ---------------------------------------------------------------------------
+
+def _worker_sandbox(ctx: dict[str, Any]) -> Sandbox:
+    """Rebuild a Sandbox in a worker process (the parent's is not picklable)."""
+    return Sandbox(
+        timeout_seconds=ctx["timeout_seconds"],
+        python_path=ctx["python_path"],
+        directed=ctx["directed"],
+    )
+
+
+def _worker_check_chunk(ctx: dict[str, Any], i: int, chunk_start: int,
+                        chunk_cases: list, chunk_meta: list) -> dict[str, Any]:
+    """Worker entry point: rebuild trusted objects and check one chunk.
+
+    Runs in a pool worker process. It rebuilds the problem (via
+    ``get_problem``) and the sandbox from plain picklable context, then runs
+    the same per-chunk logic as the serial path. The candidate stays isolated
+    in its own sandbox subprocess, so the trust boundary is unchanged.
+    """
+    from .problem_definitions import get_problem
+
+    problem = get_problem(ctx["problem_name"])
+    sandbox = _worker_sandbox(ctx)
+    return _check_chunk_impl(
+        problem, sandbox, ctx["code_path"], chunk_cases, chunk_meta,
+        chunk_start, ctx["root"], ctx["offline_src"], ctx["adaptive_repeat"],
+    )
+
+
+def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
+                      code_path, chunk_cases: list[dict[str, Any]],
+                      chunk_meta: list[tuple[int, int]], chunk_start: int,
+                      root: int | None, offline_src: str,
+                      adaptive_repeat: int) -> dict[str, Any]:
+    """Run one chunk's sandbox subprocess and check its invariants.
+
+    Returns a compact, picklable partial result:
+      - timeout: the whole chunk subprocess exceeded its wall-clock timeout
+      - chunk_crash: the subprocess crashed before producing any results
+      - tests_total / tests_passed: sequences accounted for / passed in this
+        chunk (counted up to the first failure, matching the serial loop)
+      - candidate_work / offline_work: summed timings for the counted sequences
+      - crash: a per-sequence crash was hit in this chunk
+      - failing_case: the first invariant failure (with its in-chunk position)
+        or the first crash; None if the chunk is fully clean
+    """
+    batch_result = sandbox.execute_batch(
+        code_path, chunk_cases, offline_src=offline_src, root=root,
+        repeat=adaptive_repeat,
+    )
+
+    if batch_result.is_timeout:
+        return {
+            "chunk_start": chunk_start, "timeout": True,
+            "tests_total": 0, "tests_passed": 0,
+            "candidate_work": 0, "offline_work": 0,
+            "crash": False, "chunk_crash": False,
+            "chunk_crash_error": None, "failing_case": None,
+        }
+
+    if batch_result.is_crash and not batch_result.all_results:
+        return {
+            "chunk_start": chunk_start, "timeout": False,
+            "tests_total": 0, "tests_passed": 0,
+            "candidate_work": 0, "offline_work": 0,
+            "crash": False, "chunk_crash": True,
+            "chunk_crash_error": batch_result.error, "failing_case": None,
+        }
+
+    all_results = batch_result.all_results or []
+    tests_total = 0
+    passed_tests = 0
+    candidate_work = 0
+    offline_work = 0
+    failing_case = None
+    crash = False
+    crash_error = None
+
+    for local_g_idx, (n, num_seqs) in enumerate(chunk_meta):
+        graph_results = all_results[local_g_idx] if local_g_idx < len(all_results) else []
+        original_graph = np.array(chunk_cases[local_g_idx]["graph"], dtype=int)
+
+        for seq_idx in range(num_seqs):
+            tests_total += 1
+
+            seq_result = graph_results[seq_idx] if seq_idx < len(graph_results) else None
+            if seq_result is None:
+                failing_case = {
+                    "graph_n": n, "sequence_idx": seq_idx,
+                    "operation": "missing result",
+                }
+                break
+
+            if seq_result.get("status") == "crash":
+                crash = True
+                crash_error = seq_result.get("error")
+                failing_case = {
+                    "graph_n": n, "sequence_idx": seq_idx,
+                    "operation": "crash",
+                    "error": seq_result.get("error"),
+                }
+                break
+
+            # Use partial results if available (crash mid-sequence)
+            results = seq_result.get("results") or seq_result.get("partial_results") or []
+            candidate_times = seq_result.get("timings") or seq_result.get("partial_timings") or []
+            offline_times = seq_result.get("offline_timings") or seq_result.get("partial_offline_timings") or []
+
+            if not results:
+                failing_case = {
+                    "graph_n": n, "sequence_idx": seq_idx,
+                    "operation": "no results from sandbox",
+                }
+                break
+
+            # Replay operations on a copy of the graph to check invariants.
+            # The sequence is recovered from the chunk's own test case (the
+            # ops list), so the worker needs no access to the parent's cache.
+            seq_ops = chunk_cases[local_g_idx]["sequences"][seq_idx]
+            current_graph = original_graph.copy()
+
+            # Check init state.
+            state = _deserialize_state(results[0]["state"])
+            if not problem.check_invariant(state, current_graph, root):
+                failing_case = problem.failing_context(state, current_graph, root)
+                failing_case["graph_n"] = n
+                failing_case["sequence_idx"] = seq_idx
+                failing_case["operation"] = "init"
+                break
+
+            if candidate_times:
+                candidate_work += candidate_times[0]
+            if offline_times:
+                offline_work += offline_times[0]
+
+            # Check after each operation.
+            found = False
+            for step_idx, op in enumerate(seq_ops):
+                op_type = op["type"]
+                u, v = op["edge"]
+                if op_type == "insert":
+                    current_graph[u, v] = 1
+                    if not problem.directed:
+                        current_graph[v, u] = 1
+                elif op_type == "delete":
+                    current_graph[u, v] = 0
+                    if not problem.directed:
+                        current_graph[v, u] = 0
+
+                step_result_idx = step_idx + 1
+                if step_result_idx < len(results):
+                    state = _deserialize_state(results[step_result_idx]["state"])
+                    if not problem.check_invariant(state, current_graph, root):
+                        failing_case = problem.failing_context(state, current_graph, root)
+                        failing_case["graph_n"] = n
+                        failing_case["sequence_idx"] = seq_idx
+                        failing_case["operation"] = f"{op_type} ({u}, {v})"
+                        found = True
+                        break
+
+                if step_result_idx < len(candidate_times):
+                    candidate_work += candidate_times[step_result_idx]
+                if step_result_idx < len(offline_times):
+                    offline_work += offline_times[step_result_idx]
+
+            if found:
+                break
+
+            passed_tests += 1
+
+        if failing_case is not None or crash:
+            break
+
+    return {
+        "chunk_start": chunk_start, "timeout": False,
+        "tests_total": tests_total, "tests_passed": passed_tests,
+        "candidate_work": candidate_work, "offline_work": offline_work,
+        "crash": crash, "crash_error": crash_error,
+        "chunk_crash": False, "chunk_crash_error": None,
+        "failing_case": failing_case,
+    }
 
 
 def _deserialize_state(raw: Any) -> Any:

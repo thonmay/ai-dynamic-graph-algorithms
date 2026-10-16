@@ -12,6 +12,7 @@ from evoalgo.cli import _generate_known_good_candidate
 from evoalgo.config import Bound, RunConfig
 from evoalgo.events import (
     CONTROL_FILE,
+    ENGINE_FILE,
     EVENTS_FILE,
     ControlChannel,
     EventLog,
@@ -183,6 +184,75 @@ def test_population_below_elitism_is_rejected(tmp_path):
     [reject] = [e for e in read_events(orch.run_dir) if e["type"] == "control_reject"]
     assert "elitism_k" in reject["reason"]
     assert orch.config.population_size == 2
+
+
+class HookProvider(FakeProvider):
+    """FakeProvider that runs a callback inside the n-th generate call."""
+
+    def __init__(self, problem, run_dir, on_call):
+        super().__init__(problem)
+        self.run_dir = run_dir
+        self.on_call = on_call
+
+    def generate(self, *args, **kwargs):
+        out = super().generate(*args, **kwargs)
+        self.on_call(self.call_count, self.run_dir)
+        return out
+
+
+def hooked(tmp_path, on_call, max_generations=1):
+    orch = make_orchestrator(tmp_path, max_generations=max_generations)
+    orch.provider = HookProvider(orch.config.problem, orch.run_dir, on_call)
+    orch.reflector.provider = orch.provider
+    return orch
+
+
+def test_pause_applies_before_next_agent_call(tmp_path):
+    def on_call(n, run_dir):
+        if n == 1:
+            send_command(run_dir, "pause")
+
+    orch = hooked(tmp_path, on_call)
+    orch.control.sleep = lambda _s: send_command(orch.run_dir, "resume")
+    orch.run()
+    seq = [(e["type"], e.get("id") or e.get("cmd")) for e in read_events(orch.run_dir)
+           if e["type"] in ("agent_call_start", "agent_call_end", "control_ack", "paused", "resumed")]
+    assert seq == [
+        ("agent_call_start", "gen001_c01"), ("agent_call_end", "gen001_c01"),
+        ("control_ack", "pause"), ("paused", None), ("control_ack", "resume"), ("resumed", None),
+        ("agent_call_start", "gen001_c02"), ("agent_call_end", "gen001_c02"),
+    ]
+    paused = next(e for e in read_events(orch.run_dir) if e["type"] == "paused")
+    assert paused["before"] == {"role": "seed", "id": "gen001_c02"} and paused["gen"] == 1
+
+
+def test_stop_mid_generation_commits_what_was_produced(tmp_path):
+    def on_call(n, run_dir):
+        if n == 1:
+            send_command(run_dir, "stop")
+
+    orch = hooked(tmp_path, on_call, max_generations=3)
+    summary = orch.run()
+    assert summary["stop_reason"] == "user_stop"
+    assert orch.provider.call_count == 1
+    events = read_events(orch.run_dir)
+    verified = [e["id"] for e in events if e["type"] == "candidate_verified"]
+    committed = [e["gen"] for e in events if e["type"] == "gen_committed"]
+    assert verified == ["gen001_c01"] and committed == [1]
+    assert events[-1]["type"] == "run_end" and events[-1]["stop_reason"] == "user_stop"
+
+
+def test_agent_calls_paired_and_engine_file_lifecycle(tmp_path):
+    seen = []
+    orch = hooked(tmp_path, lambda n, run_dir: seen.append((run_dir / ENGINE_FILE).exists()))
+    orch.run()
+    events = read_events(orch.run_dir)
+    starts = [(e["role"], e["id"]) for e in events if e["type"] == "agent_call_start"]
+    ends = [(e["role"], e["id"]) for e in events if e["type"] == "agent_call_end"]
+    assert starts == ends and len(starts) == orch.provider.call_count
+    assert all(e["ok"] and e["duration_s"] >= 0 for e in events if e["type"] == "agent_call_end")
+    assert seen and all(seen)
+    assert not (orch.run_dir / ENGINE_FILE).exists()
 
 
 # -- backfill ----------------------------------------------------------------

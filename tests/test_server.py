@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
+import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,7 +16,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from evoalgo import server  # noqa: E402
-from evoalgo.events import CONTROL_FILE, EventLog, backfill  # noqa: E402
+from evoalgo.events import CONTROL_FILE, ENGINE_FILE, EventLog, backfill, send_command  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 SRC_RUN = REPO / "runs" / "mcs_pressure_e2e"
@@ -65,28 +70,79 @@ def test_unknown_or_traversal_is_404(client, path):
     assert client.get(path).status_code == 404
 
 
+def next_event(ws):
+    """Next events.jsonl record, skipping pending/engine/reply messages."""
+    while True:
+        msg = ws.receive_json()
+        if "seq" in msg:
+            return msg
+
+
+def next_of(ws, *types):
+    while True:
+        msg = ws.receive_json()
+        if msg.get("type") in types:
+            return msg
+
+
 def test_websocket_backlog_from_offset_and_live(client, runs):
     with client.websocket_connect("/api/runs/mcs_pressure_e2e/ws?from=20") as ws:
-        first = ws.receive_json()
+        assert ws.receive_json() == {"type": "pending", "commands": []}
+        first = next_event(ws)
         assert first["seq"] == 20
-        rest = [ws.receive_json() for _ in range(5)]
+        rest = [next_event(ws) for _ in range(5)]
         assert rest[-1]["type"] == "run_end"
         EventLog(runs / "mcs_pressure_e2e").emit("note", text="live")
-        live = ws.receive_json()
+        live = next_event(ws)
         assert live["type"] == "note" and live["seq"] == 26
 
 
 def test_websocket_control(client, runs):
     with client.websocket_connect("/api/runs/bare/ws") as ws:
         ws.send_json({"cmd": "set", "field": "population_size", "value": 0})
-        assert ws.receive_json()["type"] == "error"
+        assert next_of(ws, "queued", "error")["type"] == "error"
         ws.send_text("not json")
-        assert ws.receive_json()["type"] == "error"
+        assert next_of(ws, "queued", "error")["type"] == "error"
         ws.send_json({"cmd": "hint", "text": "try lazy repair", "extra": "dropped"})
-        reply = ws.receive_json()
+        reply = next_of(ws, "queued", "error")
         assert reply["type"] == "queued" and reply["cmd"] == "hint"
     lines = (runs / "bare" / CONTROL_FILE).read_text().splitlines()
     assert len(lines) == 1 and '"extra"' not in lines[0]
+
+
+def test_pending_commands_sent_first(client, runs):
+    run = runs / "bare"
+    acked = send_command(run, "pause")
+    open_cmd = send_command(run, "hint", text="go lazy")
+    EventLog(run).emit("control_ack", cmd_id=acked["id"], gen=1, cmd="pause")
+    with client.websocket_connect("/api/runs/bare/ws") as ws:
+        first = ws.receive_json()
+    assert first["type"] == "pending"
+    assert [c["id"] for c in first["commands"]] == [open_cmd["id"]]
+    assert [c["id"] for c in client.get("/api/runs/bare").json()["pending"]] == [open_cmd["id"]]
+
+
+def _write_engine(run, pid):
+    (run / ENGINE_FILE).write_text(json.dumps({"pid": pid, "host": socket.gethostname()}))
+
+
+def test_engine_liveness_and_interrupted_state(client, runs):
+    run = runs / "bare"
+    EventLog(run).emit("run_start", run_id="bare", problem="dynamic_bfs")
+
+    def state():
+        r = next(r for r in client.get("/api/runs").json() if r["run_id"] == "bare")
+        return r["engine"], r["state"]
+
+    assert state() == ("none", "interrupted")
+    _write_engine(run, os.getpid())
+    assert state() == ("alive", "running")
+    with client.websocket_connect("/api/runs/bare/ws") as ws:
+        assert next_of(ws, "engine") == {"type": "engine", "state": "alive"}
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    _write_engine(run, child.pid)
+    assert state() == ("gone", "interrupted")
 
 
 def test_cross_site_origin_refused(client):

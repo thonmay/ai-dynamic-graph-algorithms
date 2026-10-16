@@ -17,17 +17,28 @@ Stop conditions:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import random
+import socket
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .candidate import Candidate, CandidateState
 from .checkpoint import Checkpoint
 from .config import RunConfig
 from .dashboard import Dashboard
-from .events import STEERABLE_FIELDS, ControlChannel, EventLog, read_events, validate_command
+from .events import (
+    ENGINE_FILE,
+    STEERABLE_FIELDS,
+    ControlChannel,
+    EventLog,
+    read_events,
+    validate_command,
+)
 from .llm_provider import LLMProvider
 from .population import Population
 from .problem_definitions import ProblemDefinition, get_problem
@@ -51,7 +62,12 @@ class Orchestrator:
         if errors:
             raise ValueError(f"Invalid config: {'; '.join(errors)}")
 
-        # Initialize components
+        # Initialize components. validate() already resolved config.problem
+        # from the pack; the pack adds update mode and the optional Lean step.
+        self.pack = None
+        if config.pack:
+            from .packs import resolve_pack
+            self.pack = resolve_pack(config.pack)
         self.problem: ProblemDefinition = get_problem(config.problem)
         self.sandbox = Sandbox(timeout_seconds=config.timeout_seconds,
                                directed=self.problem.directed)
@@ -63,6 +79,7 @@ class Orchestrator:
             bound_seq_len_max=config.bound.seq_len_max,
             bound_seq_count=config.bound.seq_count,
             bound_seed=config.bound.seed,
+            update_mode=self.pack.update_mode if self.pack else "mixed",
         )
         self.checkpoint = Checkpoint(self.run_dir)
         self.provider = LLMProvider(config=config, run_dir=self.run_dir)
@@ -103,7 +120,13 @@ class Orchestrator:
         logger.info("Starting run %s (problem=%s, pop=%d, max_gen=%d)",
                      self.run_id, self.config.problem,
                      self.config.population_size, self.config.max_generations)
+        self._write_engine_file()
+        try:
+            return self._run()
+        finally:
+            self._remove_engine_file()
 
+    def _run(self) -> dict[str, Any]:
         # Try to resume from checkpoint
         loaded = self._try_resume()
         # A hint set before a resume stays in effect.
@@ -133,6 +156,7 @@ class Orchestrator:
 
         # Final export
         summary = self._export_summary()
+        self._maybe_formalize(summary)
         self.events.emit(
             "run_end", stop_reason=self.stop_reason, generation=self.generation,
             best_candidate_id=summary["best_candidate_id"],
@@ -142,18 +166,87 @@ class Orchestrator:
         )
         return summary
 
-    def _apply_control(self) -> None:
-        """Apply pending control commands at a generation boundary.
+    def _maybe_formalize(self, summary: dict[str, Any]) -> None:
+        """Optional final step (pack ``lean: {enabled: true}``): ask the Lean
+        prover agent to prove the best correct candidate. Experimental: needs
+        the Lean project and an enlcode harness; never fails the run."""
+        best = summary.get("best_candidate_id")
+        if not (self.pack and self.pack.lean) or self.stop_reason == "user_stop":
+            return
+        if not best or summary.get("best_fitness") != 1.0:
+            self.events.emit("lean_skipped", reason="no fully correct candidate")
+            return
+        from .formalize import run_formalize
+        self.events.emit("lean_start", id=best)
+        started = time.monotonic()
+        try:
+            code = run_formalize(self.run_dir, best, model=self.config.model)
+        except Exception as e:  # experimental step must not lose the run
+            logger.exception("Lean step failed")
+            code, error = 1, str(e)[:500]
+        else:
+            error = None
+        self.events.emit("lean_end", id=best, result={0: "proved", 2: "skipped"}.get(code, "failed"),
+                         error=error, duration_s=round(time.monotonic() - started, 1))
 
-        Blocks while paused; a stop command ends the run with
-        stop_reason "user_stop".
+    def _apply_control(self) -> None:
+        """Control point at a generation boundary."""
+        self._control_point(None, self.generation + 1)
+
+    def _before_call(self, gen: int, role: str, cid: str) -> bool:
+        """Control point before an agent call. False means the run is stopping."""
+        self._control_point({"role": role, "id": cid}, gen)
+        return not self.stop_reason
+
+    def _control_point(self, before: dict[str, str] | None, gen: int) -> None:
+        """Apply pending commands; block while paused.
+
+        Called before every agent call and at generation boundaries, so a
+        pause or stop waits for at most one agent call.
         """
+        announced = False
         while True:
             for command in self.control.pending():
                 self._handle_command(command)
             if not self.paused or self.stop_reason:
-                return
+                break
+            if not announced:
+                self.events.emit("paused", gen=gen, before=before)
+                announced = True
             self.control.sleep(self.control.poll_interval)
+        if announced and not self.stop_reason:
+            self.events.emit("resumed", gen=gen)
+
+    @contextmanager
+    def _agent_call(self, gen: int, role: str, cid: str, agent: str,
+                    produced: Callable[[], bool]):
+        """Emit agent_call_start/end around one provider call."""
+        self.events.emit("agent_call_start", gen=gen, role=role, id=cid,
+                         agent=agent, model=self.config.model)
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            self.events.emit("agent_call_end", gen=gen, role=role, id=cid, ok=bool(produced()),
+                             duration_s=round(time.monotonic() - started, 1))
+
+    def _write_engine_file(self) -> None:
+        """Record the engine process so the UI can tell a live run from a crashed one."""
+        try:
+            tmp = self.run_dir / f"{ENGINE_FILE}.tmp"
+            tmp.write_text(json.dumps({
+                "pid": os.getpid(), "host": socket.gethostname(),
+                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }))
+            os.replace(tmp, self.run_dir / ENGINE_FILE)
+        except OSError as e:
+            logger.warning("Could not write %s: %s", ENGINE_FILE, e)
+
+    def _remove_engine_file(self) -> None:
+        try:
+            (self.run_dir / ENGINE_FILE).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Could not remove %s: %s", ENGINE_FILE, e)
 
     def _handle_command(self, command: dict[str, Any]) -> None:
         error = validate_command(command)
@@ -201,7 +294,9 @@ class Orchestrator:
         )
 
     def _reflect(self, candidate: Candidate, gen: int) -> None:
-        self.reflector.reflect(candidate, self.run_dir, gen)
+        with self._agent_call(gen, "reflect", candidate.id, self.config.reflector_agent,
+                              lambda: candidate.reflection_path is not None):
+            self.reflector.reflect(candidate, self.run_dir, gen)
         self.model_calls = self.provider.call_count
         self.events.emit("candidate_reflected", id=candidate.id, gen=gen,
                          reflection_path=candidate.reflection_path)
@@ -255,7 +350,8 @@ class Orchestrator:
         self.generation = 0
         self.events.emit("gen_start", gen=1)
 
-        # Generate N candidates with no parent (fresh)
+        # Generate N candidates with no parent (fresh). range() is evaluated
+        # once, so a population_size change applies from the next generation.
         new_candidates: list[Candidate] = []
 
         for i in range(self.config.population_size):
@@ -267,15 +363,19 @@ class Orchestrator:
             candidate_id = f"gen{self.generation + 1:03d}_c{i + 1:02d}"
             code_filename = f"{candidate_id}.py"
             code_path = self.run_dir / "candidates" / code_filename
+            if not self._before_call(1, "seed", candidate_id):
+                break
 
             # Call generator with no parent
-            self.provider.generate(
-                problem_name=self.config.problem,
-                parent_code=None,
-                candidate_filename=code_filename,
-                generation=self.generation + 1,
-                workdir=str(self.run_dir),
-            )
+            with self._agent_call(1, "seed", candidate_id, self.config.generator_agent,
+                                  code_path.exists):
+                self.provider.generate(
+                    problem_name=self.config.problem,
+                    parent_code=None,
+                    candidate_filename=code_filename,
+                    generation=self.generation + 1,
+                    workdir=str(self.run_dir),
+                )
             self.model_calls = self.provider.call_count
 
             if code_path.exists():
@@ -302,6 +402,8 @@ class Orchestrator:
                 if self.model_calls >= self.config.model_call_budget:
                     self.stop_reason = "model_call_budget_exhausted"
                     logger.warning("Model call budget exhausted during reflection")
+                    break
+                if not self._before_call(1, "reflect", candidate.id):
                     break
                 self._reflect(candidate, self.generation + 1)
 
@@ -368,16 +470,20 @@ class Orchestrator:
                 except Exception:
                     pass
 
-            self.provider.repair(
-                problem_name=self.config.problem,
-                failed_code=parent_code,
-                reflection=reflection_text,
-                candidate_filename=code_filename,
-                workdir=str(self.run_dir),
-            )
+            code_path = self.run_dir / "candidates" / code_filename
+            if not self._before_call(gen, "repair", candidate_id):
+                break
+            with self._agent_call(gen, "repair", candidate_id, self.config.repairer_agent,
+                                  code_path.exists):
+                self.provider.repair(
+                    problem_name=self.config.problem,
+                    failed_code=parent_code,
+                    reflection=reflection_text,
+                    candidate_filename=code_filename,
+                    workdir=str(self.run_dir),
+                )
             self.model_calls = self.provider.call_count
 
-            code_path = self.run_dir / "candidates" / code_filename
             if code_path.exists():
                 candidate = Candidate(
                     id=candidate_id,
@@ -414,16 +520,21 @@ class Orchestrator:
                 except Exception:
                     pass
 
-            self.provider.generate(
-                problem_name=self.config.problem,
-                parent_code=parent_code,
-                candidate_filename=code_filename,
-                generation=gen,
-                workdir=str(self.run_dir),
-            )
+            role = "mutate" if parent_ids else "fresh"
+            code_path = self.run_dir / "candidates" / code_filename
+            if not self._before_call(gen, role, candidate_id):
+                break
+            with self._agent_call(gen, role, candidate_id, self.config.generator_agent,
+                                  code_path.exists):
+                self.provider.generate(
+                    problem_name=self.config.problem,
+                    parent_code=parent_code,
+                    candidate_filename=code_filename,
+                    generation=gen,
+                    workdir=str(self.run_dir),
+                )
             self.model_calls = self.provider.call_count
 
-            code_path = self.run_dir / "candidates" / code_filename
             if code_path.exists():
                 candidate = Candidate(
                     id=candidate_id,
@@ -454,6 +565,8 @@ class Orchestrator:
                 if self.model_calls >= self.config.model_call_budget:
                     self.stop_reason = "model_call_budget_exhausted"
                     logger.warning("Model call budget exhausted during reflection")
+                    break
+                if not self._before_call(gen, "reflect", candidate.id):
                     break
                 self._reflect(candidate, gen)
 

@@ -228,6 +228,7 @@ class Sandbox:
         offline_src: str | None = None,
         root: int | None = None,
         repeat: int = 20,
+        timeout: int | None = None,
     ) -> SandboxResult:
         """Run a candidate against all test cases in a single subprocess.
 
@@ -238,6 +239,10 @@ class Sandbox:
             offline_src: source of the offline_compute baseline function
             root: root/source vertex for problems that need one
             repeat: REPEAT amplification for timing (fewer for large test sets)
+            timeout: per-call wall-clock seconds. Defaults to ``self.timeout``.
+                The verifier passes a per-chunk timeout so a candidate that
+                loops forever on one chunk still fails fast, while the whole
+                batch is split across several subprocesses.
 
         Returns:
             SandboxResult with all_results: list[per_graph: list[per_seq: dict]]
@@ -245,6 +250,7 @@ class Sandbox:
             (or status=crash with error/traceback + partial results)
         """
         module_path = Path(module_path)
+        call_timeout = self.timeout if timeout is None else timeout
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix="_runner.py", delete=False
@@ -267,7 +273,7 @@ class Sandbox:
                 input=json.dumps(input_data),
                 capture_output=True,
                 text=True,
-                timeout=self.timeout,
+                timeout=call_timeout,
                 env={
                     "HOME": os.environ.get("HOME", "/tmp"),
                     "PATH": "/usr/bin:/bin",
@@ -312,7 +318,7 @@ class Sandbox:
                 )
 
         except subprocess.TimeoutExpired:
-            return SandboxResult(status="timeout", error=f"Exceeded {self.timeout}s")
+            return SandboxResult(status="timeout", error=f"Exceeded {call_timeout}s")
         finally:
             Path(runner_path).unlink(missing_ok=True)
 

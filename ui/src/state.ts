@@ -1,7 +1,7 @@
 // Pure reducer: events.jsonl records -> UI state. Live view and replay both
 // run through applyEvents, so they cannot disagree.
 
-import type { FailingCase, PopEntry, RunEvent, RunStartEvent } from './types'
+import type { EngineState, FailingCase, PendingCmd, PopEntry, RunEvent, RunStartEvent } from './types'
 
 export interface Cand {
   id: string
@@ -62,6 +62,15 @@ export interface RunState {
   stopReason: string | null
   firstTs: string | null
   lastTs: string | null
+  /** Commands sent but not yet acknowledged, by command id. */
+  pending: Record<string, PendingCmd>
+  /** Command ids already acknowledged or rejected. */
+  handled: Record<string, true>
+  /** The agent call in progress, if any. */
+  call: { gen: number; role: string; id: string; ts: string } | null
+  pausedBefore: { role: string; id: string } | null
+  /** Engine process liveness from the server; null until known. */
+  engine: EngineState | null
 }
 
 export const LOG_LIMIT = 1000
@@ -70,8 +79,46 @@ export function initialState(): RunState {
   return {
     lastSeq: -1, meta: null, status: 'connecting', currentGen: 0, cands: {}, order: [],
     gens: [], log: [], activeHint: null, genHints: {}, modelCalls: 0, stopReason: null,
-    firstTs: null, lastTs: null,
+    firstTs: null, lastTs: null, pending: {}, handled: {}, call: null, pausedBefore: null,
+    engine: null,
   }
+}
+
+/** Everything the websocket delivers, as reducer actions. */
+export type Msg =
+  | { kind: 'events'; events: RunEvent[] }
+  | { kind: 'pending'; commands: PendingCmd[] }
+  | { kind: 'queued'; cmd: PendingCmd }
+  | { kind: 'engine'; state: EngineState }
+
+export function reduce(s: RunState, m: Msg): RunState {
+  switch (m.kind) {
+    case 'events':
+      return applyEvents(s, m.events)
+    case 'pending': // authoritative snapshot, sent on every (re)connect
+      return { ...s, pending: Object.fromEntries(
+        m.commands.filter((c) => c.id && !s.handled[c.id]).map((c) => [c.id, c])) }
+    case 'queued':
+      return s.handled[m.cmd.id] ? s : { ...s, pending: { ...s.pending, [m.cmd.id]: m.cmd } }
+    case 'engine':
+      return { ...s, engine: m.state }
+  }
+}
+
+export type Live =
+  | 'starting' | 'empty' | 'running' | 'pausing' | 'paused' | 'resuming' | 'stopping'
+  | 'stopped' | 'done' | 'interrupted' | 'offline'
+
+/** What the user should see right now, combining events, pending commands and liveness. */
+export function deriveStatus(s: RunState, connected: boolean): Live {
+  if (s.status === 'done' || s.status === 'stopped') return s.status
+  if (!connected) return s.lastSeq < 0 ? 'starting' : 'offline'
+  if (s.lastSeq < 0) return s.engine === 'none' || s.engine === 'gone' ? 'empty' : 'starting'
+  if (s.engine === 'none' || s.engine === 'gone') return 'interrupted'
+  const cmds = Object.values(s.pending).map((c) => c.cmd)
+  if (cmds.includes('stop')) return 'stopping'
+  if (s.status === 'paused') return cmds.includes('resume') ? 'resuming' : 'paused'
+  return cmds.includes('pause') ? 'pausing' : 'running'
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
@@ -93,7 +140,12 @@ function newCand(id: string, gen: number, parents: string[] = [], role = 'mutate
 export function applyEvents(prev: RunState, events: RunEvent[]): RunState {
   const s: RunState = {
     ...prev, cands: { ...prev.cands }, order: [...prev.order], gens: [...prev.gens],
-    log: [...prev.log], genHints: { ...prev.genHints },
+    log: [...prev.log], genHints: { ...prev.genHints }, pending: { ...prev.pending },
+    handled: { ...prev.handled },
+  }
+  const settle = (cmdId: string) => {
+    delete s.pending[cmdId]
+    s.handled[cmdId] = true
   }
   const upsert = (c: Cand) => {
     if (!(c.id in s.cands)) s.order.push(c.id)
@@ -150,6 +202,23 @@ export function applyEvents(prev: RunState, events: RunEvent[]): RunState {
       case 'agent_failed':
         log('agent', 'fail', `${e.role ?? 'agent'} ${e.id}: no candidate written`)
         break
+      case 'agent_call_start':
+        s.call = { gen: e.gen, role: e.role, id: e.id, ts: e.ts }
+        break
+      case 'agent_call_end':
+        if (s.call?.id === e.id && s.call.role === e.role) s.call = null
+        log('agent', e.ok ? 'muted' : 'fail', `${e.role} ${e.id} · ${e.duration_s.toFixed(1)} s`, e.id)
+        break
+      case 'paused':
+        s.status = 'paused'
+        s.pausedBefore = e.before
+        log('control', 'accent', e.before ? `paused before ${e.before.role} ${e.before.id}` : 'paused')
+        break
+      case 'resumed':
+        s.status = 'running'
+        s.pausedBefore = null
+        log('control', 'accent', 'resumed')
+        break
       case 'gen_committed': {
         const wrs = e.population.map((p) => p.work_ratio).filter(isNum)
         const info: GenInfo = {
@@ -174,15 +243,19 @@ export function applyEvents(prev: RunState, events: RunEvent[]): RunState {
         break
       }
       case 'control_ack':
-        if (e.cmd === 'pause') s.status = 'paused'
-        else if (e.cmd === 'resume') s.status = 'running'
-        else if (e.cmd === 'hint') s.activeHint = (e.text ?? '').trim() || null
-        log('control', 'accent', `${describeCommand(e)} · applied at gen ${e.gen}`)
+        // Paused/running state follows the engine's paused/resumed events,
+        // not the acknowledgement, so "pausing" lasts until the engine waits.
+        settle(e.cmd_id)
+        if (e.cmd === 'hint') s.activeHint = (e.text ?? '').trim() || null
+        log('control', 'accent', `${describeCommand(e)} · applied`)
         break
       case 'control_reject':
+        settle(e.cmd_id)
         log('control', 'fail', `${e.cmd ?? 'command'} rejected: ${e.reason}`)
         break
       case 'run_end':
+        s.call = null
+        s.pausedBefore = null
         s.stopReason = e.stop_reason
         s.status = e.stop_reason === 'user_stop' ? 'stopped' : 'done'
         if (isNum(e.model_calls)) s.modelCalls = e.model_calls
