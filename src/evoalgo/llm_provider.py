@@ -44,6 +44,8 @@ class LLMProvider:
         self.log_dir = self.run_dir / "prompt_logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.call_count = 0
+        # Researcher hint set through the control channel; added to every task.
+        self.hint: str | None = None
 
     def _build_problem_prompt(self, problem_name: str) -> str:
         """Build the problem definition section of the prompt."""
@@ -53,7 +55,7 @@ class LLMProvider:
         directed = "directed" if problem.directed else "undirected"
         needs_root = "yes" if problem.needs_root else "no"
 
-        return textwrap.dedent(f"""
+        prompt = textwrap.dedent(f"""
             PROBLEM: {problem.name}
             Graph mode: {directed}
             Needs root/source: {needs_root}
@@ -62,6 +64,9 @@ class LLMProvider:
             Graphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.
             A legal update flips exactly one matrix entry.
         """).strip()
+        if self.hint:
+            prompt += f"\n\nRESEARCHER HINT: {self.hint}"
+        return prompt
 
     def generate(
         self,

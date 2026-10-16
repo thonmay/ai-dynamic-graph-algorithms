@@ -78,6 +78,28 @@ def main(argv: list[str] | None = None) -> int:
     p_history = subparsers.add_parser("history", help="list previous runs")
     p_history.add_argument("--workdir", default="runs", help="run directory root")
 
+    # control (steer a running run between generations)
+    p_control = subparsers.add_parser("control", help="pause/resume/stop or steer a running run")
+    p_control.add_argument("run_dir", help="path to run directory")
+    p_control.add_argument("cmd", choices=["pause", "resume", "stop", "hint", "set"])
+    p_control.add_argument("args", nargs="*",
+                           help="hint: TEXT ('' clears it); set: FIELD VALUE "
+                                "(model_call_budget, population_size)")
+
+    # ui (web server)
+    p_ui = subparsers.add_parser("ui", help="serve the web UI (launch, monitor, steer, replay)")
+    p_ui.add_argument("--runs", default="runs", help="run directory root")
+    p_ui.add_argument("--host", default="127.0.0.1",
+                      help="bind address (default loopback; the UI has no authentication)")
+    p_ui.add_argument("--port", type=int, default=8765)
+
+    # events (event log maintenance)
+    p_events = subparsers.add_parser("events", help="event log tools")
+    p_events.add_argument("action", choices=["backfill"],
+                          help="backfill: build events.jsonl from generation checkpoints")
+    p_events.add_argument("run_dirs", nargs="+", help="run directories")
+    p_events.add_argument("--force", action="store_true", help="rebuild an existing events.jsonl")
+
     # verify (self-test)
     p_verify = subparsers.add_parser("verify", help="run verifier self-test (FR-VER-08)")
     p_verify.add_argument("--problem", choices=sorted(VALID_PROBLEMS), default="dynamic_bfs")
@@ -115,6 +137,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_export(args)
     elif args.command == "history":
         return cmd_history(args)
+    elif args.command == "control":
+        return cmd_control(args)
+    elif args.command == "events":
+        return cmd_events(args)
+    elif args.command == "ui":
+        return cmd_ui(args)
     elif args.command == "verify":
         return cmd_verify(args)
     elif args.command == "formalize":
@@ -191,6 +219,71 @@ def cmd_start(args) -> int:
         print(f"  Best candidate: {summary['best_candidate_id']}")
     print(f"  Model calls: {summary['model_calls']}")
     return 0
+
+
+def cmd_control(args) -> int:
+    from .events import send_command, validate_command
+
+    run_dir = Path(args.run_dir)
+    if not (run_dir / "config.yaml").exists():
+        print(f"Not a run directory: {run_dir}")
+        return 1
+    extra: dict = {}
+    if args.cmd == "hint":
+        extra["text"] = " ".join(args.args)
+    elif args.cmd == "set":
+        if len(args.args) != 2:
+            print("usage: evoalgo control RUN set FIELD VALUE")
+            return 2
+        try:
+            extra = {"field": args.args[0], "value": int(args.args[1])}
+        except ValueError:
+            print(f"VALUE must be an integer, got {args.args[1]!r}")
+            return 2
+    elif args.args:
+        print(f"{args.cmd} takes no arguments")
+        return 2
+    error = validate_command({"cmd": args.cmd, **extra})
+    if error:
+        print(error)
+        return 2
+    record = send_command(run_dir, args.cmd, **extra)
+    print(f"Queued {args.cmd} ({record['id']}); applied at the next generation boundary.")
+    return 0
+
+
+def cmd_ui(args) -> int:
+    try:
+        import uvicorn
+        from .server import create_app
+    except ImportError:
+        print("The UI needs the 'ui' extra: pip install -e '.[ui]'")
+        return 1
+    runs = Path(args.runs)
+    if not runs.is_dir():
+        print(f"Run directory root not found: {runs}")
+        return 1
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"WARNING: binding to {args.host}. The UI has no authentication; anyone who "
+              "can reach this port can launch and steer runs.")
+    print(f"evoalgo UI on http://{args.host}:{args.port}  (runs: {runs.resolve()})")
+    uvicorn.run(create_app(runs), host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
+def cmd_events(args) -> int:
+    from .events import backfill
+
+    status = 0
+    for d in args.run_dirs:
+        try:
+            n = backfill(Path(d), force=args.force)
+        except FileExistsError as e:
+            print(f"skip {d}: {e}")
+            status = 1
+            continue
+        print(f"{d}: {n} events" if n else f"{d}: no generation checkpoints, nothing written")
+    return status
 
 
 def cmd_status(args) -> int:

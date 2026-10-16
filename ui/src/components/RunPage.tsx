@@ -1,0 +1,164 @@
+import { useEffect, useState, type CSSProperties } from 'react'
+import { useRunStream } from '../api'
+import { genAt, type Status } from '../state'
+import { duration, f3, pct } from '../format'
+import { Lineage, Spark, WorkRatioChart } from './charts'
+import { EventLog, Population, type LogFilter } from './panels'
+import { Drawer } from './Drawer'
+import { Steer } from './Steer'
+import { Toast } from './Toast'
+
+const LABEL: Record<Status, string> = {
+  connecting: 'waiting', running: 'running', paused: 'paused', done: 'done', stopped: 'stopped',
+}
+
+const delay = (i: number) => ({ ['--i' as string]: i }) as CSSProperties
+
+export function RunPage({ runId }: { runId: string }) {
+  const { state, connected, notice, send } = useRunStream(runId)
+  const [mode, setMode] = useState<'live' | 'replay'>('live')
+  const [replayGen, setReplayGen] = useState(1)
+  const [playing, setPlaying] = useState(false)
+  const [selected, setSelected] = useState<string | null>(null)
+  const [steerOpen, setSteerOpen] = useState(false)
+  const [filter, setFilter] = useState<LogFilter>('all')
+  const [now, setNow] = useState(Date.now())
+
+  const lastGen = state.gens.at(-1)?.gen ?? 0
+  const maxGen = state.meta?.max_generations ?? lastGen
+  const live = mode === 'live'
+  const popGen = live ? lastGen : Math.min(replayGen, lastGen)
+  const viewGen = live ? Math.max(state.currentGen, lastGen) : popGen
+  const gen = genAt(state, popGen)
+  const shownGens = state.gens.filter((g) => g.gen <= popGen)
+  const active = state.status === 'running' || state.status === 'paused'
+  const canControl = connected && active
+
+  useEffect(() => {
+    if (!playing) return
+    if (replayGen >= lastGen) { setPlaying(false); return }
+    const t = setTimeout(() => setReplayGen((g) => g + 1), 900)
+    return () => clearTimeout(t)
+  }, [playing, replayGen, lastGen])
+
+  useEffect(() => {
+    if (!active) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [active])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (steerOpen) setSteerOpen(false)
+      else setSelected(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [steerOpen])
+
+  const startMs = state.firstTs ? Date.parse(state.firstTs) : NaN
+  const endMs = active ? now : state.lastTs ? Date.parse(state.lastTs) : NaN
+  const statusClass = !connected && active ? 'offline' : state.status
+
+  const pick = (g: number) => { setMode('replay'); setPlaying(false); setReplayGen(g) }
+  const toReplay = () => { setMode('replay'); setPlaying(false); setReplayGen(Math.max(1, lastGen)) }
+  const play = () => {
+    if (replayGen >= lastGen) setReplayGen(1)
+    setPlaying(true)
+  }
+
+  const kpis = [
+    { label: 'best fitness', value: f3(gen?.bestFitness), series: shownGens.map((g) => g.bestFitness) },
+    { label: 'best work ratio', value: f3(gen?.bestWorkRatio), series: shownGens.map((g) => g.bestWorkRatio) },
+    { label: 'pass rate', value: gen ? pct(gen.passRate) : '-', series: shownGens.map((g) => g.passRate) },
+    { label: 'model calls', value: String(gen?.modelCalls ?? state.modelCalls), series: shownGens.map((g) => g.modelCalls) },
+  ]
+
+  return (
+    <>
+      <nav className="top">
+        <div className="bar">
+          <a className="word" href="#/">evoalgo</a>
+          <span className="runid mono">{runId}</span>
+          <div className="seg" role="group" aria-label="View">
+            <button aria-pressed={live} onClick={() => { setMode('live'); setPlaying(false) }}>Live</button>
+            <button aria-pressed={!live} onClick={toReplay} disabled={!lastGen}>Replay</button>
+          </div>
+          <span className="sp" />
+          <span className={`status ${statusClass}`}>
+            <i className="dot" />{!connected && active ? 'offline' : LABEL[state.status]}
+          </span>
+          <span className="meta num">gen {viewGen}/{maxGen || '-'}</span>
+          <span className="meta num hide-s">{duration(endMs - startMs)}</span>
+          <div className="ctl">
+            <button className="btn" disabled={!canControl || state.status !== 'running'} onClick={() => send({ cmd: 'pause' })}>Pause</button>
+            <button className="btn" disabled={!canControl || state.status !== 'paused'} onClick={() => send({ cmd: 'resume' })}>Resume</button>
+            <button className="btn" disabled={!canControl} onClick={() => send({ cmd: 'stop' })}>Stop</button>
+            <button className="btn primary" disabled={!canControl} aria-expanded={steerOpen}
+                    onClick={() => setSteerOpen((o) => !o)}>Steer</button>
+          </div>
+        </div>
+      </nav>
+      <Steer open={steerOpen} onClose={() => setSteerOpen(false)} activeHint={state.activeHint} send={send} />
+
+      <main className="wrap">
+        {state.meta && (
+          <p className="caption">
+            {state.meta.problem} · {state.meta.model ?? state.meta.provider ?? 'default model'}
+            {state.activeHint && <> · <span className="hint-tag">hint</span> {state.activeHint}</>}
+            {state.stopReason && <> · {state.stopReason.replaceAll('_', ' ')}</>}
+          </p>
+        )}
+
+        <section className="panel kpis" style={delay(0)}>
+          {kpis.map((k) => (
+            <div className="kpi" key={k.label}>
+              <div key={k.value} className="v num tick">{k.value}</div>
+              <div className="l">{k.label}</div>
+              <Spark values={k.series} />
+            </div>
+          ))}
+        </section>
+
+        <div className="main">
+          <div className="stack">
+            <section className="panel" style={delay(1)}>
+              <div className="ph">
+                <h3>Work ratio</h3>
+                <span className="legend"><span><i className="best" />best</span><span><i className="mean" />mean</span></span>
+              </div>
+              <WorkRatioChart gens={shownGens} maxGen={maxGen} viewGen={popGen} onPick={pick} />
+            </section>
+            <section className="panel" style={delay(2)}>
+              <div className="ph"><h3>Lineage</h3><span className="meta">{state.order.length} candidates</span></div>
+              <Lineage state={state} viewGen={viewGen} bestGen={popGen} selected={selected} onSelect={setSelected} />
+            </section>
+          </div>
+          <section className="panel events" style={delay(3)}>
+            <EventLog entries={state.log} filter={filter} setFilter={setFilter}
+                      maxGen={live ? Infinity : popGen} onPick={setSelected} />
+          </section>
+        </div>
+
+        <section className="panel" style={delay(4)}>
+          <div className="ph"><h3>Population</h3><span className="meta num">{gen ? `gen ${gen.gen}` : ''}</span></div>
+          <Population gen={gen} cands={state.cands} selected={selected} onSelect={setSelected} />
+        </section>
+      </main>
+
+      {!live && lastGen > 0 && (
+        <div className="scrubber" role="group" aria-label="Replay">
+          <button className="btn round" onClick={playing ? () => setPlaying(false) : play}
+                  aria-label={playing ? 'Pause replay' : 'Play replay'}>{playing ? '❚❚' : '▶'}</button>
+          <input type="range" min={1} max={lastGen} value={popGen}
+                 onChange={(e) => { setPlaying(false); setReplayGen(Number(e.target.value)) }} aria-label="Generation" />
+          <span className="num mono">g{popGen}</span>
+        </div>
+      )}
+
+      <Drawer runId={runId} id={selected} cands={state.cands} onClose={() => setSelected(null)} />
+      <Toast notice={notice} />
+    </>
+  )
+}

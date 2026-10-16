@@ -27,6 +27,7 @@ from .candidate import Candidate, CandidateState
 from .checkpoint import Checkpoint
 from .config import RunConfig
 from .dashboard import Dashboard
+from .events import STEERABLE_FIELDS, ControlChannel, EventLog, read_events, validate_command
 from .llm_provider import LLMProvider
 from .population import Population
 from .problem_definitions import ProblemDefinition, get_problem
@@ -84,6 +85,11 @@ class Orchestrator:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         config.save(self.run_dir / "config.yaml")
 
+        # Event log (monitoring/replay) and control channel (steering)
+        self.events = EventLog(self.run_dir)
+        self.control = ControlChannel(self.run_dir, self.events)
+        self.paused = False
+
     def _generate_run_id(self) -> str:
         ts = time.strftime("%Y%m%d_%H%M%S")
         rand = random.randint(0, 999)
@@ -100,11 +106,26 @@ class Orchestrator:
 
         # Try to resume from checkpoint
         loaded = self._try_resume()
+        # A hint set before a resume stays in effect.
+        for e in read_events(self.run_dir):
+            if e.get("type") == "control_ack" and e.get("cmd") == "hint":
+                self.provider.hint = (e.get("text") or "").strip() or None
+        self.events.emit(
+            "run_start", run_id=self.run_id, problem=self.config.problem,
+            provider=self.config.provider, model=self.config.model,
+            population_size=self.config.population_size,
+            max_generations=self.config.max_generations,
+            model_call_budget=self.config.model_call_budget,
+            resumed=loaded, generation=self.generation,
+        )
         if not loaded:
             # Seed: generate initial population from scratch
-            self._seed_initial_population()
+            self._apply_control()
+            if not self.stop_reason:
+                self._seed_initial_population()
 
         while self.generation < self.config.max_generations:
+            self._apply_control()
             if self.stop_reason:
                 break
 
@@ -112,7 +133,78 @@ class Orchestrator:
 
         # Final export
         summary = self._export_summary()
+        self.events.emit(
+            "run_end", stop_reason=self.stop_reason, generation=self.generation,
+            best_candidate_id=summary["best_candidate_id"],
+            best_fitness=summary["best_fitness"],
+            best_work_ratio=summary["best_work_ratio"],
+            model_calls=self.model_calls,
+        )
         return summary
+
+    def _apply_control(self) -> None:
+        """Apply pending control commands at a generation boundary.
+
+        Blocks while paused; a stop command ends the run with
+        stop_reason "user_stop".
+        """
+        while True:
+            for command in self.control.pending():
+                self._handle_command(command)
+            if not self.paused or self.stop_reason:
+                return
+            self.control.sleep(self.control.poll_interval)
+
+    def _handle_command(self, command: dict[str, Any]) -> None:
+        error = validate_command(command)
+        cmd = command.get("cmd")
+        if error is None and cmd == "set" and command["field"] == "population_size" \
+                and command["value"] < self.config.elitism_k:
+            error = f"population_size cannot be below elitism_k ({self.config.elitism_k})"
+        if error is not None:
+            self.control.reject(command, self.generation, error)
+            return
+
+        if cmd == "pause":
+            self.paused = True
+        elif cmd == "resume":
+            self.paused = False
+        elif cmd == "stop":
+            self.paused = False
+            self.stop_reason = "user_stop"
+        elif cmd == "hint":
+            # An empty hint clears the current one.
+            self.provider.hint = command["text"].strip() or None
+        elif cmd == "set":
+            field, value = command["field"], command["value"]
+            assert field in STEERABLE_FIELDS
+            setattr(self.config, field, value)
+            if field == "population_size":
+                self.population.max_size = value
+            # Persist so a later resume continues with the steered value.
+            self.config.save(self.run_dir / "config.yaml")
+        self.control.ack(command, self.generation)
+        logger.info("Control %s applied at generation %d", cmd, self.generation)
+
+    def _emit_candidate(self, candidate: Candidate, role: str) -> None:
+        self.events.emit("candidate_generated", id=candidate.id, gen=candidate.generation,
+                         parent_ids=candidate.parent_ids, role=role)
+
+    def _emit_verified(self, candidate: Candidate) -> None:
+        self.events.emit(
+            "candidate_verified", id=candidate.id, gen=candidate.generation,
+            state=candidate.state.value, fitness=candidate.fitness,
+            work_ratio=candidate.work_ratio, timeout=candidate.timeout,
+            tests_passed=candidate.tests_passed, tests_total=candidate.tests_total,
+            failing_case=candidate.failing_case,
+            error=(candidate.error_message or "")[:500] or None,
+        )
+
+    def _reflect(self, candidate: Candidate, gen: int) -> None:
+        self.reflector.reflect(candidate, self.run_dir, gen)
+        self.model_calls = self.provider.call_count
+        self.events.emit("candidate_reflected", id=candidate.id, gen=gen,
+                         reflection_path=candidate.reflection_path)
 
     def _try_resume(self) -> bool:
         """Try to resume from the last checkpoint. Returns True if resumed."""
@@ -161,6 +253,7 @@ class Orchestrator:
         """Generate the first batch of candidates from scratch."""
         logger.info("Seeding initial population (size=%d)", self.config.population_size)
         self.generation = 0
+        self.events.emit("gen_start", gen=1)
 
         # Generate N candidates with no parent (fresh)
         new_candidates: list[Candidate] = []
@@ -193,12 +286,15 @@ class Orchestrator:
                     parent_ids=[],
                 )
                 new_candidates.append(candidate)
+                self._emit_candidate(candidate, "seed")
             else:
                 logger.warning("Generator did not produce %s", code_path)
+                self.events.emit("agent_failed", gen=1, id=candidate_id, role="seed")
 
         # Verify all new candidates
         for candidate in new_candidates:
             self.verifier.verify(candidate)
+            self._emit_verified(candidate)
 
         # Reflect on failures
         for candidate in new_candidates:
@@ -207,8 +303,7 @@ class Orchestrator:
                     self.stop_reason = "model_call_budget_exhausted"
                     logger.warning("Model call budget exhausted during reflection")
                     break
-                self.reflector.reflect(candidate, self.run_dir, self.generation + 1)
-                self.model_calls = self.provider.call_count
+                self._reflect(candidate, self.generation + 1)
 
         # Add to population
         for candidate in new_candidates:
@@ -224,6 +319,7 @@ class Orchestrator:
         self.generation += 1
         gen = self.generation
         logger.info("=== Generation %d ===", gen)
+        self.events.emit("gen_start", gen=gen)
 
         new_candidates: list[Candidate] = []
 
@@ -290,6 +386,9 @@ class Orchestrator:
                     parent_ids=[parent.id],
                 )
                 new_candidates.append(candidate)
+                self._emit_candidate(candidate, "repair")
+            else:
+                self.events.emit("agent_failed", gen=gen, id=candidate_id, role="repair")
 
         # Fresh generation phase
         for i in range(fresh_count):
@@ -333,6 +432,10 @@ class Orchestrator:
                     parent_ids=parent_ids,
                 )
                 new_candidates.append(candidate)
+                self._emit_candidate(candidate, "mutate" if parent_ids else "fresh")
+            else:
+                self.events.emit("agent_failed", gen=gen, id=candidate_id,
+                                 role="mutate" if parent_ids else "fresh")
 
         if not new_candidates:
             logger.warning("Generation %d produced no candidates", gen)
@@ -343,6 +446,7 @@ class Orchestrator:
         # Verify all new candidates
         for candidate in new_candidates:
             self.verifier.verify(candidate)
+            self._emit_verified(candidate)
 
         # Reflect on failures
         for candidate in new_candidates:
@@ -351,8 +455,7 @@ class Orchestrator:
                     self.stop_reason = "model_call_budget_exhausted"
                     logger.warning("Model call budget exhausted during reflection")
                     break
-                self.reflector.reflect(candidate, self.run_dir, gen)
-                self.model_calls = self.provider.call_count
+                self._reflect(candidate, gen)
 
         # Add to population
         for candidate in new_candidates:
@@ -362,6 +465,7 @@ class Orchestrator:
         discarded = self.population.cull()
         if discarded:
             logger.info("Discarded %d candidates", len(discarded))
+            self.events.emit("candidates_discarded", gen=gen, ids=[c.id for c in discarded])
 
         # Check stop conditions before committing so the checkpoint
         # captures the updated counter/reason atomically.
@@ -395,6 +499,16 @@ class Orchestrator:
             consecutive_all_failed=self.consecutive_all_failed,
             fitness_history=self.fitness_history,
             stop_reason=self.stop_reason,
+        )
+        top = self.population.best_candidate
+        self.events.emit(
+            "gen_committed", gen=self.generation,
+            population=[{"id": c.id, "parent_ids": c.parent_ids, "state": c.state.value,
+                         "fitness": c.fitness, "work_ratio": c.work_ratio}
+                        for c in self.population.candidates],
+            best_id=top.id if top else None, best_fitness=best,
+            best_work_ratio=top.work_ratio if top else None,
+            model_calls=self.model_calls, stop_reason=self.stop_reason,
         )
         logger.info("Generation %d committed: best_fitness=%.2f, pop_size=%d",
                      self.generation, best, self.population.size)
