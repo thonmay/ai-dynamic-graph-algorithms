@@ -93,6 +93,13 @@ class Toolbox:
             return target
         return None
 
+    def _is_allowed_dir(self, folder: Path) -> bool:
+        """True if folder is one of the readable roots or inside one."""
+        roots = [self.pack_dir, (self.task.run_dir / "candidates").resolve(),
+                 (self.task.run_dir / "reflections").resolve()]
+        folder = folder.resolve()
+        return any(r is not None and (folder == r or r in folder.parents) for r in roots)
+
     def call(self, name: str, raw_args: str | None) -> str:
         try:
             args = json.loads(raw_args or "{}")
@@ -113,6 +120,13 @@ class Toolbox:
         if target is None:
             return "error: path not allowed; use candidates/..., reflections/... or pack/..."
         if not target.is_file():
+            # List what exists so the model stops guessing file names.
+            folder = target if target.is_dir() else target.parent
+            if folder.is_dir() and self._is_allowed_dir(folder):
+                prefix = str(path).rstrip("/") if target.is_dir() else str(path).rsplit("/", 1)[0]
+                names = sorted(p.name for p in folder.iterdir() if p.is_file())[:30]
+                return (f"error: no such file: {path}; files in {prefix}/: "
+                        + (", ".join(names) or "(none)"))
             return f"error: no such file: {path}"
         return target.read_text(errors="replace")[:MAX_FILE_CHARS]
 

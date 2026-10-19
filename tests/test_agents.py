@@ -46,6 +46,28 @@ def test_tool_paths_are_confined(tmp_path):
     assert rt.call("write_candidate", json.dumps({"code": "x"})).startswith("error: unknown tool")
 
 
+def test_missing_pack_file_lists_existing(tmp_path):
+    pack = tmp_path / "pk"
+    pack.mkdir()
+    (pack / "brief.md").write_text("b")
+    (pack / "problem.yaml").write_text("p")
+    (tmp_path / "secret.txt").write_text("s")
+    tb = Toolbox(task(tmp_path), pack_dir=pack)
+    out = tb.call("read_file", json.dumps({"path": "pack/spec.md"}))
+    assert out.startswith("error: no such file") and "brief.md, problem.yaml" in out
+    assert "secret" not in tb.call("read_file", json.dumps({"path": "pack/../secret.txt"}))
+    # reflections/ not created yet: must not fall back to listing the run dir
+    run = Toolbox(task(tmp_path), pack_dir=None).call("read_file", json.dumps({"path": "reflections"}))
+    assert "secret" not in run and "candidates" not in run.split("files in")[-1]
+
+
+def test_problem_prompt_has_state_contract(tmp_path):
+    from evoalgo.llm_provider import LLMProvider
+    cfg = RunConfig(problem="dynamic_dfs", provider="mock")
+    text = LLMProvider(cfg, tmp_path)._build_problem_prompt("dynamic_dfs")
+    assert "STATE CONTRACT" in text and "'finish'" in text
+
+
 def test_write_edit_and_examples(tmp_path):
     t = task(tmp_path)
     tb = Toolbox(t, pack_dir=None)
@@ -200,3 +222,50 @@ def test_mock_run_end_to_end(tmp_path):
     search_total = next(e["tests_total"] for e in events
                         if e["type"] == "candidate_verified" and e["id"] == final["id"])
     assert final["tests_total"] > search_total
+
+
+# A plain BFS that skips vertex 2 entirely: right for n <= 2, wrong for n = 3.
+_SMALL_ONLY_BFS = '''
+from collections import deque
+
+def init(graph):
+    n = len(graph)
+    parent = [None] * n
+    dist = [-1] * n
+    dist[0] = 0
+    q = deque([0])
+    while q:
+        u = q.popleft()
+        for v in range(min(n, 2)):
+            if graph[u][v] and dist[v] < 0:
+                dist[v] = dist[u] + 1
+                parent[v] = u
+                q.append(v)
+    return {"parent": parent, "distances": dist}
+
+def insert_edge(graph, edge, state):
+    return init(graph)
+
+def delete_edge(graph, edge, state):
+    return init(graph)
+'''
+
+
+def test_final_grade_tries_next_passing(tmp_path, monkeypatch):
+    """A search PASS that fails the full bound does not end the final grade."""
+    cfg = RunConfig(problem="dynamic_bfs", provider="mock", population_size=2, max_generations=1,
+                    elitism_k=1, early_stop_on_success=False,
+                    mock_script=["code:" + _SMALL_ONLY_BFS, "good"],
+                    bound=Bound(n_max=3, n_random=0, seq_len_max=2, seq_count=1, seed=1),
+                    search_n_max=2, search_seq_count=1, workdir=str(tmp_path))
+    from evoalgo import orchestrator as orch_mod
+    # Rank the small-only candidate first regardless of measured work.
+    monkeypatch.setattr(orch_mod, "_rank_key", lambda c: (c.id != "gen001_c01",))
+    summary = Orchestrator(cfg, run_id="fb").run()
+    events = read_events(tmp_path / "fb")
+    verified = {e["id"]: e["state"] for e in events if e["type"] == "candidate_verified"}
+    assert verified == {"gen001_c01": "PASS", "gen001_c02": "PASS"}
+    graded = [(e["id"], e["state"]) for e in events if e["type"] == "final_graded"]
+    assert graded == [("gen001_c01", "FAIL"), ("gen001_c02", "PASS")]
+    assert summary["final_grade"]["id"] == "gen001_c02"
+    assert summary["final_grade"]["state"] == "PASS"

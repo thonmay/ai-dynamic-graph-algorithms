@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../api'
-import type { LaunchBody, PackInfo, RunSummary } from '../types'
+import type { AgentOptions, EndpointId, LaunchBody, PackInfo, RunSummary } from '../types'
 
 type Step = 1 | 2 | 3 | 4
 const STEPS: { n: Step; label: string }[] = [
@@ -31,6 +31,8 @@ interface Form {
   pop: number
   budget: number
   model: string
+  /** An endpoint id (agent loop runs here, model over that API) or 'enlcode' (local harness). */
+  agent: EndpointId | 'enlcode'
   nMax: number
   stopAtFirst: boolean
   runId: string
@@ -46,14 +48,19 @@ function remembered(): Partial<Form> {
   }
 }
 
+const AGENT_IDS: Form['agent'][] = ['ericai', 'openrouter', 'openai', 'enlcode']
+
 function initialForm(prefill: Partial<Form>): Form {
   const std = PRESETS[1]
   const mem = remembered()
-  return {
+  const f: Form = {
     pack: '', goal: '', preset: mem.preset ?? std.id, gens: mem.gens ?? std.gens, pop: mem.pop ?? std.pop,
-    budget: mem.budget ?? std.budget, model: mem.model ?? '', nMax: 5, stopAtFirst: false, runId: '',
+    budget: mem.budget ?? std.budget, model: mem.model ?? '', agent: mem.agent ?? 'ericai', nMax: 5, stopAtFirst: false, runId: '',
     ...(mem.pack ? { pack: mem.pack } : {}), ...prefill,
   }
+  // A stale localStorage value, or a run from mock / a custom URL, has no menu entry.
+  if (!AGENT_IDS.includes(f.agent)) f.agent = 'ericai'
+  return f
 }
 
 /** Prefill from "#/new?from=<run_id>" (Run again). */
@@ -69,6 +76,8 @@ function useFromRun(): { prefill: Partial<Form> | null; source: string | null } 
           // Runs from before packs existed only have `problem`; packs share its name.
           pack: c.pack ?? c.problem ?? '', goal: c.research_goal ?? '', gens: c.max_generations, pop: c.population_size,
           budget: c.model_call_budget, model: c.model ?? '', nMax: c.bound?.n_max ?? 5,
+          agent: c.provider === 'api' && ['ericai', 'openrouter', 'openai'].includes(c.api_base_url)
+            ? c.api_base_url : c.provider === 'enlcode' ? 'enlcode' : 'ericai',
           stopAtFirst: !!c.early_stop_on_success, preset: 'custom',
         })
       })
@@ -80,7 +89,8 @@ function useFromRun(): { prefill: Partial<Form> | null; source: string | null } 
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/
 
 /** Inline validation for the review step: blocking errors stop Launch, notes only inform. */
-export function reviewIssues(f: Form, pack: PackInfo | undefined): { blocking: string[]; notes: string[] } {
+export function reviewIssues(f: Form, pack: PackInfo | undefined,
+                             agents?: AgentOptions | null): { blocking: string[]; notes: string[] } {
   const blocking: string[] = []
   const notes: string[] = []
   const inRange = (v: number, lo: number, hi: number) => Number.isInteger(v) && v >= lo && v <= hi
@@ -90,6 +100,13 @@ export function reviewIssues(f: Form, pack: PackInfo | undefined): { blocking: s
   if (!inRange(f.budget, 1, 100000)) blocking.push('Call budget must be 1 to 100000')
   if (!inRange(f.nMax, 2, 8)) blocking.push('Verifier n max must be 2 to 8')
   if (f.runId.trim() && !RUN_ID.test(f.runId.trim())) blocking.push('Run id: letters, digits, . _ - only')
+  if (f.agent !== 'enlcode') {
+    const ep = agents?.endpoints.find((e) => e.id === f.agent)
+    if (!f.model.trim()) blocking.push('Choose a model for the API endpoint')
+    if (ep && !ep.key_set) blocking.push(`Key not set: export ${ep.key_env} before starting evoalgo ui`)
+  } else if (agents && !agents.harness.available) {
+    blocking.push('enlcode not found on this machine')
+  }
   if (!f.goal.trim()) notes.push('No goal set')
   // One generate call per slot, plus reflection on failures: a rough floor.
   if (blocking.length === 0 && f.budget < f.gens * f.pop) notes.push('Call budget may stop the run early')
@@ -114,10 +131,12 @@ export function NewRunPage() {
   const [step, setStep] = useState<Step>(1)
   const [busy, setBusy] = useState(false)
   const [briefOpen, setBriefOpen] = useState(false)
+  const [agents, setAgents] = useState<AgentOptions | null>(null)
   const goalRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     api<PackInfo[]>('api/packs').then(setPacks).catch((e) => setError(e.message))
+    api<AgentOptions>('api/agents').then(setAgents).catch(() => setAgents(null))
   }, [])
 
   useEffect(() => {
@@ -133,6 +152,21 @@ export function NewRunPage() {
   const pack = useMemo(() => packs?.find((p) => p.name === form?.pack), [packs, form?.pack])
   const set = (patch: Partial<Form>) => setForm((f) => (f ? { ...f, ...patch } : f))
   const custom = (patch: Partial<Form>) => set({ ...patch, preset: 'custom' })
+  const endpoint = agents?.endpoints.find((e) => e.id === form?.agent)
+  const suggestedModel = (agent: Form['agent']) => agents?.endpoints.find((e) => e.id === agent)?.model ?? ''
+  const chooseAgent = (agent: Form['agent']) => {
+    // Swap the model only if it is empty or still the previous suggestion.
+    if (!form) return
+    const keep = form.model.trim() && form.model !== suggestedModel(form.agent)
+    set({ agent, ...(keep ? {} : { model: suggestedModel(agent) }) })
+  }
+  // First load: an empty model takes the endpoint's suggestion.
+  useEffect(() => {
+    if (agents && form && !form.model.trim()) {
+      const m = agents.endpoints.find((e) => e.id === form.agent)?.model
+      if (m) set({ model: m })
+    }
+  }, [agents, form === null]) // once both have loaded; later edits are the user's
 
   const launch = async () => {
     if (!form || !pack) return
@@ -141,12 +175,14 @@ export function NewRunPage() {
     const body: LaunchBody = {
       pack: pack.name, research_goal: form.goal.trim() || undefined, max_generations: form.gens,
       population_size: form.pop, model_call_budget: form.budget, model: form.model.trim() || undefined,
+      ...(form.agent === 'enlcode' ? { provider: 'enlcode' } : { provider: 'api', endpoint: form.agent }),
       n_max: form.nMax, early_stop_on_success: form.stopAtFirst, run_id: form.runId.trim() || undefined,
     }
     try {
       const r = await api<{ run_id: string }>('api/runs', { method: 'POST', body: JSON.stringify(body) })
       localStorage.setItem(MEMORY_KEY, JSON.stringify({
         pack: form.pack, preset: form.preset, gens: form.gens, pop: form.pop, budget: form.budget, model: form.model,
+        agent: form.agent,
       }))
       location.hash = `#/run/${encodeURIComponent(r.run_id)}`
     } catch (e) {
@@ -156,7 +192,7 @@ export function NewRunPage() {
   }
 
   const canNext = step !== 1 || !!pack
-  const issues = form ? reviewIssues(form, pack) : { blocking: [], notes: [] }
+  const issues = form ? reviewIssues(form, pack, agents) : { blocking: [], notes: [] }
 
   return (
     <>
@@ -251,11 +287,22 @@ export function NewRunPage() {
                     <input type="number" min={1} max={100000} value={form.budget}
                            onChange={(e) => custom({ budget: Number(e.target.value) })} /></label>
                 </div>
+                <div className="grid3 agents-row">
+                  <label className="field"><span>Agents</span>
+                    <select value={form.agent} onChange={(e) => chooseAgent(e.target.value as Form['agent'])}>
+                      {(agents?.endpoints ?? [{ id: 'ericai', label: 'EricAI', key_set: true }]).map((e) => (
+                        <option key={e.id} value={e.id}>{e.label} API{e.key_set ? '' : ' (no key)'}</option>
+                      ))}
+                      <option value="enlcode">enlcode harness{agents && !agents.harness.available ? ' (not found)' : ''}</option>
+                    </select></label>
+                  <label className="field span2"><span>Model</span>
+                    <input value={form.model} spellCheck={false}
+                           placeholder={form.agent === 'enlcode' ? 'harness default' : endpoint?.model ?? 'model id'}
+                           onChange={(e) => set({ model: e.target.value })} /></label>
+                </div>
                 <details className="adv">
                   <summary>Advanced</summary>
                   <div className="grid3">
-                    <label className="field"><span>Model</span>
-                      <input value={form.model} placeholder="provider default" onChange={(e) => set({ model: e.target.value })} /></label>
                     <label className="field"><span>Verifier n max</span>
                       <input type="number" min={2} max={8} value={form.nMax} onChange={(e) => set({ nMax: Number(e.target.value) })} /></label>
                     <label className="field"><span>Run id</span>
@@ -296,8 +343,9 @@ export function NewRunPage() {
                   <span className="rv-edit">Edit</span>
                 </div>
                 <div className="rv-row" onClick={() => setStep(3)}>
-                  <span className="rv-k">Model</span>
-                  <span className="rv-v mono">{form.model.trim() || 'provider default'}</span>
+                  <span className="rv-k">Agents</span>
+                  <span className="rv-v"><span className="mono">{form.model.trim() || 'harness default'}</span>
+                    <span className="muted"> · {form.agent === 'enlcode' ? 'enlcode harness' : `${endpoint?.label ?? form.agent} API`}</span></span>
                   <span className="rv-edit">Edit</span>
                 </div>
                 {(issues.blocking.length > 0 || issues.notes.some((n) => n !== 'No goal set')) && (

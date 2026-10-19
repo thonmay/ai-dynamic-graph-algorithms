@@ -140,8 +140,17 @@ export interface LaunchBody {
   population_size?: number
   model_call_budget?: number
   model?: string
+  provider?: 'api' | 'enlcode'
+  endpoint?: EndpointId
   n_max?: number
   early_stop_on_success?: boolean
+}
+
+export type EndpointId = 'ericai' | 'openrouter' | 'openai'
+
+export interface AgentOptions {
+  endpoints: { id: EndpointId; label: string; key_env: string; key_set: boolean; model: string | null }[]
+  harness: { id: 'enlcode'; available: boolean }
 }
 
 export interface PackInfo {

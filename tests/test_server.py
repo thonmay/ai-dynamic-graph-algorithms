@@ -217,3 +217,32 @@ def test_launch(client, runs, monkeypatch):
     saved = (runs / ".launch" / "new_run.yaml").read_text()
     assert "max_generations: 2" in saved
     assert all(r["run_id"] != ".launch" for r in client.get("/api/runs").json())
+
+
+def test_agent_options_never_leak_keys(client, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-secret-value")
+    r = client.get("/api/agents")
+    assert r.status_code == 200
+    assert "sk-secret-value" not in r.text
+    ep = {e["id"]: e for e in r.json()["endpoints"]}
+    assert set(ep) == {"ericai", "openrouter", "openai"}
+    assert ep["openrouter"]["key_set"] is True
+    assert ep["ericai"]["model"]
+
+
+def test_launch_with_api_endpoint(client, runs, monkeypatch):
+    monkeypatch.setattr(server.subprocess, "Popen", lambda cmd, **kw: type("P", (), {"pid": 1})())
+    body = {"pack": "dynamic_bfs", "run_id": "api_run", "provider": "api", "endpoint": "openrouter",
+            "model": "qwen/qwen3-coder"}
+    assert client.post("/api/runs", json=body).status_code == 201
+    from evoalgo.config import RunConfig
+    cfg = RunConfig.load(runs / ".launch" / "api_run.yaml")
+    assert (cfg.provider, cfg.api_base_url, cfg.api_key_env, cfg.model) == \
+        ("api", "openrouter", None, "qwen/qwen3-coder")
+    # api without a model, an unknown endpoint, a free URL, or endpoint without api
+    for bad in ({"provider": "api", "endpoint": "ericai"},
+                {"provider": "api", "endpoint": "evil", "model": "m"},
+                {"provider": "api", "endpoint": "https://example.com/v1", "model": "m"},
+                {"provider": "enlcode", "endpoint": "ericai"},
+                {"provider": "mock"}):
+        assert client.post("/api/runs", json={"pack": "dynamic_bfs", **bad}).status_code == 422, bad

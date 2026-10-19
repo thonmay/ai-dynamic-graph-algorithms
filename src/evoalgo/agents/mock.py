@@ -3,8 +3,9 @@
 For tests and demos. ``generate`` and ``repair`` write a known-good recompute
 candidate for the run's problem (so a mock run always reaches fitness 1.0),
 and ``reflect`` writes a fixed three-section reflection. Set ``mock_script``
-in the config to a list of "good"/"bad"/"none" entries to script what each
-successive candidate call produces.
+in the config to a list of "good"/"bad"/"none" entries (or "code:<python
+source>" for an exact candidate) to script what each successive candidate
+call produces.
 """
 
 from __future__ import annotations
@@ -41,6 +42,9 @@ class MockBackend:
                 task.output_path.write_text(_generate_known_good_candidate(task.problem))
             elif kind == "bad":
                 task.output_path.write_text(_generate_known_bad_candidate(task.problem))
+            elif kind.startswith("code:"):
+                task.output_path.write_text(kind[len("code:"):])
+                kind = "code"
         ok = task.output_path.is_file()
         entry.update(ok=ok, scripted=kind, task_chars=len(task.problem_prompt))
         self.log.write(entry)

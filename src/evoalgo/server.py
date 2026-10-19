@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -141,6 +141,11 @@ class LaunchRequest(BaseModel):
     population_size: int | None = Field(None, ge=1, le=50)
     model_call_budget: int | None = Field(None, ge=1, le=100_000)
     model: str | None = Field(None, max_length=200)
+    # Named endpoints only: a free URL plus a free key-variable name would let
+    # anyone who reaches this unauthenticated port send a token elsewhere.
+    # Custom URLs stay available through config YAML.
+    provider: Literal["api", "enlcode"] | None = None
+    endpoint: Literal["ericai", "openrouter", "openai"] | None = None
     n_max: int | None = Field(None, ge=2, le=8)
     early_stop_on_success: bool | None = None
 
@@ -148,6 +153,26 @@ class LaunchRequest(BaseModel):
 # Defaults for a pack launch; a pack has no config template of its own.
 PACK_DEFAULTS = {"max_generations": 10, "population_size": 4, "model_call_budget": 200,
                  "elitism_k": 1, "early_stop_on_success": False}
+
+
+ENDPOINT_LABELS = {"ericai": "EricAI", "openrouter": "OpenRouter", "openai": "OpenAI"}
+# A model known to work with the tool loop on each endpoint (None: user picks).
+SUGGESTED_MODELS = {"ericai": "Qwen/Qwen3.8-27B-FP8", "openrouter": None, "openai": None}
+
+
+def agent_options() -> dict[str, Any]:
+    """What the new-run page may offer: endpoints with key presence, harness binary.
+
+    Only says whether a key is present; never returns it.
+    """
+    from .agents.api import ENDPOINTS, _read_key
+    from .agents.harness import EnlcodeBackend
+    endpoints = [{"id": name, "label": ENDPOINT_LABELS[name], "key_env": env,
+                  "key_set": bool(_read_key(env)), "model": SUGGESTED_MODELS[name]}
+                 for name, (_url, env) in ENDPOINTS.items() if name in ENDPOINT_LABELS]
+    harness = EnlcodeBackend.find_bin(None)
+    return {"endpoints": endpoints,
+            "harness": {"id": "enlcode", "available": bool(harness and os.access(harness, os.X_OK))}}
 
 
 def pack_info(pack: Pack) -> dict[str, Any]:
@@ -219,6 +244,10 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
         return sorted((pack_info(p) for p in find_packs(packs_root)),
                       key=lambda p: (tiers.get(p["tier"], 9), p["name"]))
 
+    @app.get("/api/agents")
+    def list_agents() -> dict[str, Any]:
+        return agent_options()
+
     @app.post("/api/runs", status_code=201)
     def launch(req: LaunchRequest, request: Request) -> dict[str, Any]:
         if not _origin_ok(request.headers.get("origin")):
@@ -243,6 +272,13 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
             value = getattr(req, field)
             if value is not None:
                 setattr(config, field, value)
+        if req.provider is not None:
+            config.provider = req.provider
+        if req.endpoint is not None:
+            if config.provider != "api":
+                raise HTTPException(422, "endpoint is only used with provider 'api'")
+            # The endpoint's own key variable; a template's override is dropped.
+            config.api_base_url, config.api_key_env, config.api_ca_cert = req.endpoint, None, None
         if req.n_max is not None:
             config.bound.n_max = req.n_max
         goal = (req.research_goal or "").strip()

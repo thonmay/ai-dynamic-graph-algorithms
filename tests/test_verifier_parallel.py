@@ -160,3 +160,24 @@ def test_malformed_state_fails_cleanly(tmp_path, workers):
     cand = Candidate(id="malformed", code_path=str(path), generation=0)
     _make_verifier(workers, 10, 30).verify(cand)
     assert cand.state.value == "FAIL"
+
+
+def test_dfs_requires_finish():
+    """Without finish only a weak replay check exists; it accepts forward-cross edges."""
+    import numpy as np
+    p = get_problem("dynamic_dfs")
+    g = np.array([[0, 1, 1], [0, 0, 1], [0, 0, 0]])
+    assert not p.check_invariant({"parent": [None, 0, 0], "discover": [0, 1, 2]}, g, 0)
+    good = {"parent": [None, 0, 1], "discover": [0, 1, 2], "finish": [5, 4, 3]}
+    assert p.check_invariant(good, g, 0)
+
+
+def test_failing_context_survives_malformed_state():
+    import numpy as np
+    from evoalgo.verifier import _failing_context, _invariant_holds
+    p = get_problem("dynamic_lbfs")
+    g = np.zeros((3, 3), dtype=int)
+    bad = {"ordering": ["a", 1, 2]}
+    assert not _invariant_holds(p, bad, g, None)
+    ctx = _failing_context(p, bad, g, None)
+    assert "checker_error" in ctx

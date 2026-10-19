@@ -61,6 +61,8 @@ class LLMProvider:
             Graphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.
             A legal update flips exactly one matrix entry.
         """).strip()
+        if problem.STATE_CONTRACT:
+            prompt += f"\n\nSTATE CONTRACT (what the verifier reads):\n{problem.STATE_CONTRACT}"
         brief = self._pack_brief()
         if brief:
             prompt += f"\n\nRESEARCH BRIEF:\n{brief.strip()}"

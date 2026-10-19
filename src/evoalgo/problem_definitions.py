@@ -26,6 +26,9 @@ class ProblemDefinition(ABC):
     name: str = "abstract"
     directed: bool = True
     needs_root: bool = True  # BFS, DFS, reachability need a root/source
+    # What the verifier reads from the returned state, shown to the agents.
+    # Must match check_invariant; a candidate that keeps other names fails.
+    STATE_CONTRACT: str = ""
 
     @abstractmethod
     def extract_result(self, state: Any) -> Any:
@@ -74,6 +77,11 @@ class DynamicBFS(ProblemDefinition):
     name = "dynamic_bfs"
     directed = True
     needs_root = True
+    STATE_CONTRACT = (
+        "Return a dict with 'parent' and 'distances' (lists indexed by vertex, or dicts).\n"
+        "parent[root] = None; parent[v] = None for unreachable v.\n"
+        "distances[v] = BFS distance from the root; -1 or None for unreachable v.\n"
+        "Other keys are allowed and ignored.")
 
     OFFLINE_SOURCE = '''
 def offline_compute(graph, root):
@@ -271,6 +279,16 @@ class DynamicDFS(ProblemDefinition):
     name = "dynamic_dfs"
     directed = True
     needs_root = True
+    STATE_CONTRACT = (
+        "Return a dict with 'parent', 'discover' and 'finish' (lists indexed by vertex, or dicts).\n"
+        "parent[root] = None; for every vertex reachable from the root, parent[v] is a tree\n"
+        "in-neighbor discovered before v. Unreachable vertices are not checked.\n"
+        "discover/finish are DFS entry/exit times from one shared counter (e.g. root\n"
+        "discover 0); for every edge u->v between reachable vertices with\n"
+        "discover[u] < discover[v], v must be a descendant of u:\n"
+        "discover[u] < discover[v] < finish[v] < finish[u]. Any valid DFS order is accepted.\n"
+        "All three fields are required.\n"
+        "Other keys are allowed and ignored.")
 
     OFFLINE_SOURCE = '''
 def offline_compute(graph, root):
@@ -318,7 +336,9 @@ def offline_compute(graph, root):
         parent = state.get("parent")
         discover = state.get("discover", state.get("disc"))
         finish = state.get("finish")
-        if parent is None or discover is None:
+        # finish is required: without it only the weaker _replay_dfs check
+        # could run, and that accepts trees with a forward-cross edge.
+        if parent is None or discover is None or finish is None:
             return False
 
         # Normalize to dicts
@@ -487,6 +507,10 @@ class DynamicMCS(ProblemDefinition):
     name = "dynamic_mcs"
     directed = False
     needs_root = False
+    STATE_CONTRACT = (
+        "Return a dict with 'ordering': a list of all n vertices. Each vertex, when\n"
+        "it is chosen, must have the maximum number of already-chosen neighbors among\n"
+        "the unchosen vertices (any tie-break). Other keys are allowed and ignored.")
 
     OFFLINE_SOURCE = '''
 def offline_compute(graph, root):
@@ -638,6 +662,10 @@ class DynamicSCC(ProblemDefinition):
     name = "dynamic_scc"
     directed = True
     needs_root = False
+    STATE_CONTRACT = (
+        "Return a dict with 'components': a list of lists (or sets) of vertices, the\n"
+        "strongly connected components, every vertex in exactly one. Order does not\n"
+        "matter. Other keys are allowed and ignored.")
 
     OFFLINE_SOURCE = '''
 def offline_compute(graph, root):
@@ -824,6 +852,9 @@ class Reachability(ProblemDefinition):
     name = "reachability"
     directed = True
     needs_root = True
+    STATE_CONTRACT = (
+        "Return a dict with 'reachable': a set or list of the vertices reachable from\n"
+        "the root, including the root. Other keys are allowed and ignored.")
 
     OFFLINE_SOURCE = '''
 def offline_compute(graph, root):
@@ -912,6 +943,9 @@ class DynamicLBFS(ProblemDefinition):
     name = "dynamic_lbfs"
     directed = False
     needs_root = False
+    STATE_CONTRACT = (
+        "Return a dict with 'ordering': a list of all n vertices forming a valid LexBFS\n"
+        "ordering (any start vertex, any tie-break). Other keys are allowed and ignored.")
 
     OFFLINE_SOURCE = '''
 def offline_compute(graph, root):

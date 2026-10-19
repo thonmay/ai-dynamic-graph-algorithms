@@ -40,7 +40,7 @@ from .events import (
     validate_command,
 )
 from .llm_provider import LLMProvider
-from .population import Population
+from .population import Population, _rank_key
 from .problem_definitions import ProblemDefinition, get_problem
 from .reflector import Reflector
 from .sandbox import Sandbox
@@ -179,40 +179,52 @@ class Orchestrator:
         )
         return summary
 
-    def _final_grade(self) -> None:
-        """Grade the best search-passing candidate on the full bound.
+    FINAL_GRADE_TRIES = 3
 
-        Runs once, after the search, unless the run was stopped by the user.
-        The result is recorded in a ``final_graded`` event and in
-        ``self.final`` for the summary; the candidate's search grade is kept.
+    def _final_grade(self) -> None:
+        """Grade search-passing candidates on the full bound, best first.
+
+        Runs after the search unless the run was stopped by the user. The
+        search grade is smaller, so a search PASS can fail here; then the
+        next-best search-passing candidate is tried, up to FINAL_GRADE_TRIES.
+        Each attempt emits a ``final_graded`` event; ``self.final`` is the
+        first PASS, else the best candidate's result. Search grades are kept.
         """
         self.final: dict[str, Any] | None = None
-        best = self.population.best_candidate
-        if (not self.config.final_grade or self.stop_reason == "user_stop"
-                or best is None or not best.is_passing):
+        if not self.config.final_grade or self.stop_reason == "user_stop":
             return
-        probe = Candidate(id=best.id, code_path=best.code_path, generation=best.generation)
-        self.events.emit("final_grade_start", id=best.id, n_max=self.config.bound.n_max)
-        started = time.monotonic()
-        result = self.final_verifier.verify(probe)
-        self.final = {
-            "id": best.id, "state": result.state.value, "fitness": result.fitness,
-            "work_ratio": result.work_ratio, "tests_passed": result.tests_passed,
-            "tests_total": result.tests_total, "timeout": result.timeout,
-            "failing_case": result.failing_case, "n_max": self.config.bound.n_max,
-            "duration_s": round(time.monotonic() - started, 1),
-        }
-        self.events.emit("final_graded", **self.final)
+        ranked = sorted((c for c in self.population.candidates if c.is_passing), key=_rank_key)
+        for cand in ranked[:self.FINAL_GRADE_TRIES]:
+            probe = Candidate(id=cand.id, code_path=cand.code_path, generation=cand.generation)
+            self.events.emit("final_grade_start", id=cand.id, n_max=self.config.bound.n_max)
+            started = time.monotonic()
+            result = self.final_verifier.verify(probe)
+            graded = {
+                "id": cand.id, "state": result.state.value, "fitness": result.fitness,
+                "work_ratio": result.work_ratio, "tests_passed": result.tests_passed,
+                "tests_total": result.tests_total, "timeout": result.timeout,
+                "failing_case": result.failing_case, "n_max": self.config.bound.n_max,
+                "duration_s": round(time.monotonic() - started, 1),
+            }
+            self.events.emit("final_graded", **graded)
+            if self.final is None or graded["state"] == "PASS":
+                self.final = graded
+            if graded["state"] == "PASS":
+                return
 
     def _maybe_formalize(self, summary: dict[str, Any]) -> None:
         """Optional final step (pack ``lean: {enabled: true}``): ask the Lean
         prover agent to prove the best correct candidate. Experimental: needs
         the Lean project and an enlcode harness; never fails the run."""
-        best = summary.get("best_candidate_id")
         if not (self.pack and self.pack.lean) or self.stop_reason == "user_stop":
             return
         final = summary.get("final_grade")
-        if not best or summary.get("best_fitness") != 1.0 or (final and final["state"] != "PASS"):
+        if final:
+            # Prove what passed the full bound, which may not be the search-best.
+            best = final["id"] if final["state"] == "PASS" else None
+        else:  # final grade disabled: fall back to the search result
+            best = summary.get("best_candidate_id") if summary.get("best_fitness") == 1.0 else None
+        if not best:
             self.events.emit("lean_skipped", reason="no candidate passed the final grade")
             return
         from .formalize import run_formalize

@@ -144,7 +144,7 @@ def run():
                 except Exception as e:
                     graph_results.append({
                         "status": "crash",
-                        "error": str(e),
+                        "error": _describe(e, module_path),
                         "traceback": traceback.format_exc(),
                         "partial_results": results,
                         "partial_timings": timings,
@@ -155,9 +155,21 @@ def run():
 
         return {"status": "ok", "all_results": all_results}
     except Exception as e:
-        return {"status": "crash", "error": str(e),
+        return {"status": "crash", "error": _describe(e, module_path),
                 "traceback": traceback.format_exc(),
                 "partial_all_results": all_results}
+
+def _describe(e, module_path=None):
+    """Type, message and the candidate's failing line: str(KeyError(0)) is just '0'."""
+    try:
+        where = ""
+        for fs in reversed(traceback.extract_tb(e.__traceback__)):
+            if module_path and fs.filename == module_path:
+                where = " at line %d: %s" % (fs.lineno, (fs.line or "").strip())
+                break
+        return "%s: %s%s" % (type(e).__name__, e, where)
+    except Exception:
+        return type(e).__name__
 
 def _serialize(obj):
     import numpy as np

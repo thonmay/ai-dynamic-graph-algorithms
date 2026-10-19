@@ -77,8 +77,12 @@ class EnlcodeBackend(HarnessBackend):
 
     def __init__(self, config: Any, run_dir: Path):
         super().__init__(config, run_dir)
-        self.bin = (config.harness_bin or os.environ.get("ENLCODE_PATH")
-                    or shutil.which("enlcode") or str(Path.home() / ".enlcode" / "enlcode"))
+        self.bin = self.find_bin(config.harness_bin)
+
+    @staticmethod
+    def find_bin(override: str | None) -> str:
+        return (override or os.environ.get("ENLCODE_PATH")
+                or shutil.which("enlcode") or str(Path.home() / ".enlcode" / "enlcode"))
 
     def command(self, task: Task, prompt: str) -> list[str]:
         cmd = [self.bin, "run", "--format", "json", "--dir", str(self.run_dir)]
