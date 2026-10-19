@@ -67,6 +67,9 @@ class LLMProvider:
         brief = self._pack_brief()
         if brief:
             prompt += f"\n\nRESEARCH BRIEF:\n{brief.strip()}"
+        goal = (getattr(self.config, "research_goal", None) or "").strip()
+        if goal:
+            prompt += f"\n\nRESEARCH GOAL FOR THIS RUN: {goal}"
         if self.hint:
             prompt += f"\n\nRESEARCHER HINT: {self.hint}"
         return prompt

@@ -135,6 +135,7 @@ class Orchestrator:
                 self.provider.hint = (e.get("text") or "").strip() or None
         self.events.emit(
             "run_start", run_id=self.run_id, problem=self.config.problem,
+            pack=self.config.pack, research_goal=self.config.research_goal,
             provider=self.config.provider, model=self.config.model,
             population_size=self.config.population_size,
             max_generations=self.config.max_generations,

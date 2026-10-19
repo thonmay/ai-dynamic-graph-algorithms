@@ -28,6 +28,8 @@ export type RunStartEvent = Base & {
   type: 'run_start'
   run_id?: string
   problem?: string | null
+  pack?: string | null
+  research_goal?: string | null
   provider?: string | null
   model?: string | null
   population_size?: number | null
@@ -109,6 +111,8 @@ export interface RunSummary {
   state: 'no_events' | 'empty' | 'running' | 'paused' | 'done' | 'interrupted'
   problem?: string | null
   model?: string | null
+  pack?: string | null
+  research_goal?: string | null
   max_generations?: number | null
   generation?: number
   best_id?: string | null
@@ -128,9 +132,27 @@ export interface CandidateFile {
 }
 
 export interface LaunchBody {
-  config: string
+  pack?: string
+  config?: string
+  research_goal?: string
   run_id?: string
   max_generations?: number
   population_size?: number
+  model_call_budget?: number
   model?: string
+  n_max?: number
+  early_stop_on_success?: boolean
+}
+
+export interface PackInfo {
+  name: string
+  title: string
+  tier: 'calibration' | 'core' | 'open'
+  directed: boolean
+  needs_root: boolean
+  checker: string
+  update_mode: string
+  lean: boolean
+  question: string | null
+  brief: string
 }

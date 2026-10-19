@@ -34,7 +34,8 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocket
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .config import RunConfig
+from .config import MAX_GOAL_CHARS, RunConfig
+from .packs import Pack, PackError, find_packs, resolve_pack
 from .events import (
     ENGINE_FILE,
     EVENTS_FILE,
@@ -108,6 +109,7 @@ def summarize(run_dir: Path) -> dict[str, Any]:
     last = commits[-1] if commits else {}
     summary.update(
         problem=start.get("problem"), model=start.get("model"),
+        pack=start.get("pack"), research_goal=start.get("research_goal"),
         max_generations=start.get("max_generations"),
         generation=last.get("gen", 0), best_id=last.get("best_id"),
         best_fitness=last.get("best_fitness"), best_work_ratio=last.get("best_work_ratio"),
@@ -127,15 +129,43 @@ def _read_capped(path: Path) -> str | None:
 
 
 class LaunchRequest(BaseModel):
-    config: str = Field(description="a config name returned by GET /api/configs")
+    """Start a run from a problem pack (UI) or a config template (CLI parity).
+
+    Exactly one of ``pack`` and ``config`` must be given.
+    """
+    pack: str | None = Field(None, description="a pack name returned by GET /api/packs")
+    config: str | None = Field(None, description="a config name returned by GET /api/configs")
+    research_goal: str | None = Field(None, max_length=MAX_GOAL_CHARS)
     run_id: str | None = None
     max_generations: int | None = Field(None, ge=1, le=1000)
     population_size: int | None = Field(None, ge=1, le=50)
+    model_call_budget: int | None = Field(None, ge=1, le=100_000)
     model: str | None = Field(None, max_length=200)
+    n_max: int | None = Field(None, ge=2, le=8)
+    early_stop_on_success: bool | None = None
 
 
-def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR) -> FastAPI:
+# Defaults for a pack launch; a pack has no config template of its own.
+PACK_DEFAULTS = {"max_generations": 10, "population_size": 4, "model_call_budget": 200,
+                 "elitism_k": 1, "early_stop_on_success": False}
+
+
+def pack_info(pack: Pack) -> dict[str, Any]:
+    question = next((line.split(":", 1)[1].strip() for line in pack.brief.splitlines()
+                     if line.lower().startswith("research question")), None)
+    return {
+        "name": pack.name, "title": pack.title, "tier": pack.tier,
+        "directed": pack.directed, "needs_root": pack.needs_root, "checker": pack.checker,
+        "update_mode": pack.update_mode, "lean": pack.lean, "objective": pack.objective,
+        "question": question, "brief": pack.brief,
+    }
+
+
+def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
+               packs_root: Path | str | None = None) -> FastAPI:
     root = Path(runs_root).resolve()
+    if packs_root is None:
+        from .packs import DEFAULT_PROBLEMS_ROOT as packs_root
     app = FastAPI(title="evoalgo", docs_url=None, redoc_url=None)
 
     def run_dir_for(run_id: str) -> Path:
@@ -183,18 +213,42 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR) -> F
     def list_configs() -> list[str]:
         return list(config_files())
 
+    @app.get("/api/packs")
+    def list_packs() -> list[dict[str, Any]]:
+        tiers = {"calibration": 0, "core": 1, "open": 2}
+        return sorted((pack_info(p) for p in find_packs(packs_root)),
+                      key=lambda p: (tiers.get(p["tier"], 9), p["name"]))
+
     @app.post("/api/runs", status_code=201)
     def launch(req: LaunchRequest, request: Request) -> dict[str, Any]:
         if not _origin_ok(request.headers.get("origin")):
             raise HTTPException(403, "cross-site request refused")
-        template = config_files().get(req.config)
-        if template is None:
-            raise HTTPException(404, "unknown config")
-        config = RunConfig.load(template)
-        for field in ("max_generations", "population_size", "model"):
+        if (req.pack is None) == (req.config is None):
+            raise HTTPException(422, "give exactly one of 'pack' or 'config'")
+        if req.pack is not None:
+            if not RUN_ID.match(req.pack):
+                raise HTTPException(404, "unknown pack")
+            try:
+                pack = resolve_pack(req.pack, packs_root)
+            except (PackError, NotImplementedError) as e:
+                raise HTTPException(404 if isinstance(e, PackError) else 422, str(e))
+            config = RunConfig(pack=pack.name, problem=pack.checker, **PACK_DEFAULTS)
+        else:
+            template = config_files().get(req.config)
+            if template is None:
+                raise HTTPException(404, "unknown config")
+            config = RunConfig.load(template)
+        for field in ("max_generations", "population_size", "model_call_budget", "model",
+                      "early_stop_on_success"):
             value = getattr(req, field)
             if value is not None:
                 setattr(config, field, value)
+        if req.n_max is not None:
+            config.bound.n_max = req.n_max
+        goal = (req.research_goal or "").strip()
+        if goal:
+            config.research_goal = goal
+        config.elitism_k = min(config.elitism_k, config.population_size)
         config.workdir = str(root)
         errors = config.validate()
         if errors:

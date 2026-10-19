@@ -156,6 +156,43 @@ def test_cross_site_origin_refused(client):
     assert r.status_code == 403
 
 
+def test_list_packs(client):
+    packs = client.get("/api/packs").json()
+    names = [p["name"] for p in packs]
+    assert {"dynamic_bfs", "dynamic_mcs", "dynamic_lbfs"} <= set(names)
+    tiers = [p["tier"] for p in packs]
+    assert tiers == sorted(tiers, key=["calibration", "core", "open"].index)
+    mcs = next(p for p in packs if p["name"] == "dynamic_mcs")
+    assert mcs["question"] and mcs["brief"] and mcs["directed"] is False
+
+
+def test_launch_from_pack(client, runs, monkeypatch):
+    calls = []
+
+    class FakePopen:
+        def __init__(self, cmd, **kw):
+            calls.append(cmd)
+            self.pid = 4243
+
+    monkeypatch.setattr(server.subprocess, "Popen", FakePopen)
+    body = {"pack": "dynamic_bfs", "run_id": "bfs_goal", "research_goal": "  avoid full recompute  ",
+            "max_generations": 3, "population_size": 2, "model_call_budget": 20, "n_max": 4}
+    r = client.post("/api/runs", json=body)
+    assert r.status_code == 201, r.text
+    from evoalgo.config import RunConfig
+    cfg = RunConfig.load(runs / ".launch" / "bfs_goal.yaml")
+    assert (cfg.pack, cfg.problem, cfg.research_goal) == ("dynamic_bfs", "dynamic_bfs", "avoid full recompute")
+    assert (cfg.max_generations, cfg.population_size, cfg.model_call_budget, cfg.bound.n_max) == (3, 2, 20, 4)
+    assert cfg.elitism_k <= cfg.population_size and cfg.early_stop_on_success is False
+    assert client.post("/api/runs", json={"pack": "nope"}).status_code == 404
+    assert client.post("/api/runs", json={"pack": "../dynamic_bfs"}).status_code == 404
+    assert client.post("/api/runs", json={}).status_code == 422
+    both = {"pack": "dynamic_bfs", "config": "bare/config.yaml"}
+    assert client.post("/api/runs", json=both).status_code == 422
+    long_goal = {"pack": "dynamic_bfs", "research_goal": "x" * 2001}
+    assert client.post("/api/runs", json=long_goal).status_code == 422
+
+
 def test_launch(client, runs, monkeypatch):
     calls = []
 

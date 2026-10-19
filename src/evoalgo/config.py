@@ -49,6 +49,7 @@ VALID_PROBLEMS = {
 }
 
 VALID_PROVIDERS = {"enlcode"}
+MAX_GOAL_CHARS = 2000
 
 
 @dataclass
@@ -64,6 +65,9 @@ class Bound:
 class RunConfig:
     problem: str = "dynamic_mcs"
     pack: str | None = None
+    # What the researcher wants to find out in this run; sent to every agent
+    # call together with the pack brief. Live hints are separate.
+    research_goal: str | None = None
     provider: str = "enlcode"
     model: str | None = None
     generator_agent: str = "algorithm-generator"
@@ -98,6 +102,7 @@ class RunConfig:
         d = {
             "problem": self.problem,
             "pack": self.pack,
+            "research_goal": self.research_goal,
             "provider": self.provider,
             "model": self.model,
             "generator_agent": self.generator_agent,
@@ -144,6 +149,8 @@ class RunConfig:
             errors.append(f"problem must be one of {VALID_PROBLEMS}, got '{self.problem}'")
         if self.provider not in VALID_PROVIDERS:
             errors.append(f"provider must be one of {VALID_PROVIDERS}, got '{self.provider}'")
+        if self.research_goal is not None and len(self.research_goal) > MAX_GOAL_CHARS:
+            errors.append(f"research_goal must be at most {MAX_GOAL_CHARS} characters")
         if not (1 <= self.population_size <= 50):
             errors.append(f"population_size must be 1-50, got {self.population_size}")
         if not (1 <= self.max_generations <= 1000):

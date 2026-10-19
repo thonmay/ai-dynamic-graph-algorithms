@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { NewRunPage } from './components/NewRunPage'
 import { RunPage } from './components/RunPage'
 import { RunsPage } from './components/RunsPage'
 
@@ -13,7 +14,10 @@ function useHash() {
 }
 
 export function App() {
-  const m = useHash().match(/^#\/run\/([^/?#]+)/)
+  const hash = useHash()
+  useEffect(() => { scrollTo({ top: 0 }) }, [hash.split('?')[0]])
+  if (hash.startsWith('#/new')) return <NewRunPage key={hash} />
+  const m = hash.match(/^#\/run\/([^/?#]+)/)
   if (!m) return <RunsPage />
   const runId = decodeURIComponent(m[1])
   return <RunPage key={runId} runId={runId} />

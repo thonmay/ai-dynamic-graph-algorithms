@@ -108,8 +108,10 @@ export function RunPage({ runId }: { runId: string }) {
             <button className="btn" disabled={!canControl} onClick={() => send({ cmd: 'stop' })}>
               {status === 'stopping' ? <><span className="spinner xs" />Stopping</> : 'Stop'}
             </button>
-            <button className="btn primary" disabled={!canControl} aria-expanded={steerOpen}
-                    onClick={() => setSteerOpen((o) => !o)}>Steer</button>
+            {active
+              ? <button className="btn primary" disabled={!canControl} aria-expanded={steerOpen}
+                        onClick={() => setSteerOpen((o) => !o)}>Steer</button>
+              : <a className="btn primary" href={`#/new?from=${encodeURIComponent(runId)}`}>Run again</a>}
           </div>
         </div>
       </nav>
@@ -118,11 +120,14 @@ export function RunPage({ runId }: { runId: string }) {
 
       <main className="wrap">
         {state.meta && (
-          <p className="caption">
-            {state.meta.problem} · {state.meta.model ?? state.meta.provider ?? 'default model'}
-            {state.activeHint && <> · <span className="hint-tag">hint</span> {state.activeHint}</>}
-            {state.stopReason && <> · {state.stopReason.replaceAll('_', ' ')}</>}
-          </p>
+          <div className="run-head">
+            <p className="caption">
+              {state.meta.pack ?? state.meta.problem} · {state.meta.model ?? state.meta.provider ?? 'default model'}
+              {state.activeHint && <> · <span className="hint-tag">hint</span> {state.activeHint}</>}
+              {state.stopReason && <> · {state.stopReason.replaceAll('_', ' ')}</>}
+            </p>
+            {state.meta.research_goal && <p className="goal-line"><span>Goal</span>{state.meta.research_goal}</p>}
+          </div>
         )}
 
         <section className="panel kpis" style={delay(0)}>
