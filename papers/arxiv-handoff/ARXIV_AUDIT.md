@@ -1,20 +1,22 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
-Manuscript: *Locality and stability of maximum cardinality search orderings under edge updates, with a machine-checked implementation*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), run 2026-10-04.
+Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-19 (`arxiv-r3/r3.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
 
-**CONDITIONALLY READY** — all machine-checkable gates pass; one accepted author deviation (`AI_MODE_MISSING`, a `STRICT PUBLICATION DEFAULT`, relaxed by explicit author decision) remains, plus two author-confirmation items (novelty ledger, and the arXiv web-form actions).
+**PENDING SUPERVISOR REVIEW** — 0 blockers, 4 warnings (`ABSTRACT_TRANSFORM_VERIFY`, `ARTIFACT_LIVE_VERIFY`, `NOVELTY_AUDIT_REQUIRED`, `PDF_UNDERFULL_BOX`), each classified below. Remaining before upload: the supervisor's next review round, Palomar v3 registration, and the arXiv web-form actions.
 
 ## 2. Blockers
 
-| ID | Basis | Status |
-|---|---|---|
-| `AI_MODE_MISSING` | STRICT PUBLICATION DEFAULT | **Accepted deviation.** The auditor requires an exact thinking/reasoning *mode* (e.g. "high thinking mode") for every named model. The harness ground truth (`~/.enlcode/config.json`) records only `reasoning: true` (interleaved chain-of-thought) with **no effort tier** for DeepSeek-V4-Flash-0731, Claude Opus 5.5, or Qwen3.8-27B-FP8. The human author chose to disclose provider + model + role only, and to make no mode claim. This is stricter-than-required local convention, not an arXiv policy rule, so it is recorded as an explicit author decision rather than a defect. |
+None. `AI_MODE_MISSING` is resolved: the visible disclosure now gives a thinking mode for every named model (author-confirmed 2026-10-19: Claude Opus 5.5 in high thinking mode; DeepSeek-V4-Flash-0731 and Qwen3.8-27B-FP8 with thinking mode on at default effort, since those harnesses expose no effort tier; Humanizer 12B no reasoning mode).
 
-No other blockers.
+Warnings, classified:
+- `ABSTRACT_TRANSFORM_VERIFY`: metadata abstract is the ASCII expansion of the visible one ($G\triangle F$ -> "the modified graph", `P_4`, `+1`); same claims.
+- `ARTIFACT_LIVE_VERIFY`: live ledger in Section 10 (unauthenticated checks, 2026-10-19).
+- `NOVELTY_AUDIT_REQUIRED`: "first" claims are hedged ("to our knowledge", survey stated in Section 8 of the paper); ledger in Section 7 of this file.
+- `PDF_UNDERFULL_BOX`: one, Theorem 14 header (long Lean-name list); cosmetic.
 
 ## 3. Requirement provenance
 
@@ -27,15 +29,16 @@ No other blockers.
 - [ ] Novelty ledger for the two "first" claims (Section 7) reviewed and signed off.
 - [ ] arXiv web-form actions (upload, select cs.DS primary + math.CO cross-list, paste MSC/ACM, select CC BY 4.0, inspect rendered PDF, approve).
 - [x] License choice: CC BY 4.0 (author-confirmed 2026-10-04).
-- [x] Artifact pin: `mcs-arxiv-v2` tagged and pushed to the public repo (author-confirmed 2026-10-04).
-- [~] AI reasoning mode: relaxed to provider/model/role only (author-confirmed 2026-10-04).
+- [x] Artifact pin: `mcs-arxiv-v7` tagged, pushed and published as a GitHub Release; Software Heritage save request accepted 2026-10-19.
+- [x] AI reasoning mode per model (author-confirmed 2026-10-19).
+- [x] Author contacts: emails in the title footnotes; first author marked BSc student (author-confirmed 2026-10-19). ORCIDs not provided.
 
 ## 5. Canonical TeX metadata validation
 
 One raw `\iffalse` / `\fi` region (`ARXIV-METADATA-BEGIN` … `ARXIV-METADATA-END`) sits immediately before `\begin{document}`. Compile-tested; 14 fields. `ARXIV_METADATA.txt` is derived from it byte-for-byte by stripping the markers.
 
 - Abstract is **not** copy-paste-safe (contains `\emph`, `$P_4$`), so the region uses the expanded single-line `Abstract:` form. Scientific identity with the visible abstract confirmed (only macro/format expansion differs): `emph{}` → plain; `$P_4$` → `P_4`; `Lean~4` → `Lean 4`.
-- Comments page count reconciled from the extracted final ZIP (13 pages, 1 table).
+- Comments page count reconciled from the extracted final ZIP (14 pages, 1 table).
 
 ## 6. Category / classification decision
 
@@ -81,21 +84,21 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (51665 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
-- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 13 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 13 pages, 43210 selectable-text chars, 30/30 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (53373 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 14 pages, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 44353 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `b2a17e3dec363701fff70a1ab320d289a1e4e0b6f0ea9805501739cd7b84c879`.
-- `archive-built.pdf` SHA-256: `e92d9369770aaf40d912b16491b24842da6e68bbae51e8747e7255aeaeef3d01`.
+- ZIP SHA-256: `add8ac0100a1b28a575a2d3f9fe6cb3e2cebe0c4098c7960bca3c06ab0e7f4e8`.
+- `archive-built.pdf` SHA-256: `deec27c72b25d4a8a6efa3e82f28229da7b25d196bfbc9cc4152d5e77379f235`.
 
 ## 12. Rendered-PDF audit
 
-13 pages, letter, selectable text, fonts embedded (`pdffonts` all `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 533–539, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
+14 pages, letter, selectable text, fonts embedded (`pdffonts` 32/32 `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 541–547, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
 - Authors: Md Thoriqul Islam Thonmay (first), Gregory Morse. Both ELTE, Department of Programming Languages and Compilers. Author order unchanged. Submitter is the first author.
-- AI disclosure: visible unnumbered section; provider + exact model ID + role for all three models; "No AI system is an author"; authors accept full responsibility. Divergence check (metadata line vs visible text) passes: the metadata field copies the visible paragraph verbatim.
+- AI disclosure: visible unnumbered section; provider + exact model ID + thinking mode + role for all four models, plus the AI-agent origin of the internal review rounds and their check scripts; "No AI system is an author"; authors accept full responsibility. Divergence check (metadata line vs visible text) passes: the metadata field copies the visible paragraph verbatim.
 - Rights: arXiv license CC BY 4.0 (author-confirmed); repository Apache-2.0; third-party deps (Lean 4, Mathlib) under their own licenses.
 
 ## 14. Checksums
@@ -118,6 +121,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 10. (Style pass, 2026-10-15) Prose of the introduction, contributions, cost-model paragraph, formalization and artifact paragraphs, related work and conclusion reworded by hand, using rewrites proposed by the self-hosted Humanizer 12B model as suggestions; theorem statements, proofs, Lean names, numbers and the abstract were not passed through it. The model is now named in the AI disclosure (visible text and metadata, identical). The artifact paragraph now also excepts the paper-level probe bound from "every positive statement is a theorem".
 
 11. (Supervisor round-2 checks, 2026-10-19) Lean: `exists_common_ordering_prefix` and `common_order_extends_prefix` now require the count bounds only for vertices not in the common prefix (strictly more general; `exists_common_pick` takes the same restricted bounds); the `exists_common_ordering` docstring says "every subset", which is equivalent to adding a matching. `formalization.yaml` gains its four missing comparator entries (41/41). Repository renamed to `mcs-lean`, library `ThesisLean` → `McsLean`; all 22 Lean files are otherwise identical to `c4c2c0f` except `Challenge.lean`, `Solution.lean`, `McsLean/Stability.lean`. Artifact re-pinned to `mcs-arxiv-v7` = `5cd2ca7` (lake build 8975 jobs, defs-sync, axiom audit, leanchecker on all 20 modules, CI green). Paper: Theorem 1, the online corollary, the abstract and contributions state the unchosen-vertex hypothesis; the matching equivalence of the every-subset form is proved in two lines; exhaustive counts (non-matching updates covered: 48/100 at n=4, 1020/5315 at n=5; no unsound case) and the n=3 P3 example are added. The sufficient-not-necessary example is now explicit (n=4, prefix (3,1,2)). Probe theorem: the claim "the delete probe is an O(1) check" is withdrawn (the hosts {01,02} and {01,12} share order and (M_j) but differ on deleting 01); the deletion break test needs runner-up data and maintaining it is stated as open. The proof now locates the *first* break (successor query plus augmented-tree descent), and the no-break update cost is O(log n). Random-graph checks against recomputation are quoted and reproduced by the new artifact scripts. "The hypotheses are sharp" replaced by "neither part of the hypothesis can simply be dropped". Palomar paragraph states that v2 is registered from the ancestor `c4c2c0f` and which two statements changed since.
+
+12. (2026-10-19, after the subagent audit of every referee item) Theorem 4 now attributes initialization to `init_valid` and the full-prefix identity to `greedySuffix_full`; the comparator paragraph explains why the table groups by *stated* section while the sentence counts *first named* section; introduction states the contribution as the first locality analysis and first machine-checked incremental repair of MCS orderings (hedged, survey cited); author emails in title footnotes, first author marked BSc student; AI disclosure gives a thinking mode per model and discloses that the internal review rounds and their check scripts (`scripts/stab.c`, probe and prefix-hypothesis scripts) came from AI agents run by the second author; "the referee's C checker" reworded; GitHub Release and Software Heritage archive mentioned. A subagent claim that the incomparability witness is not chordal was checked and rejected (its cycle used two non-edges; simplicial elimination succeeds). Page count 13 -> 14.
 
 ## 16. Official policy sources
 
