@@ -1,7 +1,7 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-19 (`arxiv-r3/r5.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-19 (`arxiv-r3/r7.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
@@ -85,16 +85,16 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (54094 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (54201 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 14 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 44935 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 44936 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `fca1bd1faacb6f741952eef7fed2205825902636d5439a7cd328a953d9c54abd`.
-- `archive-built.pdf` SHA-256: `5f1fea3e7dbc4b0b155d0eee06e0c20d3220f1da1b055be66dbbeddb86664dba`.
+- ZIP SHA-256: `1c454e59250c05bd7af1475867984393c8fac1127183beb801dcfec6c0d5ac7b`.
+- `archive-built.pdf` SHA-256: `70a0fcbd4de37856b4cec8d3a8ead717c17ff16ec4846c33e515c61d5e00b7cc`.
 
 ## 12. Rendered-PDF audit
 
-14 pages, letter, selectable text, fonts embedded (`pdffonts` 32/32 `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 548–554, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
+14 pages, letter, selectable text, fonts embedded (`pdffonts` 32/32 `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 551–557, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
@@ -126,6 +126,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 12. (2026-10-19, after the subagent audit of every referee item) Theorem 4 now attributes initialization to `init_valid` and the full-prefix identity to `greedySuffix_full`; the comparator paragraph explains why the table groups by *stated* section while the sentence counts *first named* section; introduction states the contribution as the first locality analysis and first machine-checked incremental repair of MCS orderings (hedged, survey cited); author emails in title footnotes, first author marked BSc student; AI disclosure gives a thinking mode per model and discloses that the internal review rounds and their check scripts (`scripts/stab.c`, probe and prefix-hypothesis scripts) came from AI agents run by the second author; "the referee's C checker" reworded; GitHub Release and Software Heritage archive mentioned. A subagent claim that the incomparability witness is not chordal was checked and rejected (its cycle used two non-edges; simplicial elimination succeeds). Page count 13 -> 14.
 
 13. (2026-10-19, Palomar v3 reviews) Obstruction minimality is now presented as a computer-search result, not a theorem (Theorem 3 note, introduction, artifact docstrings); the non-monotone break example is n=4 (the n=5 one was called minimal and was not); the README separates Lean theorems from paper-level and tested statements. Artifact re-pinned to `mcs-arxiv-v9` = `ab521f2` (Lean statements identical to v7; docstrings only). Software Heritage SWHID added.
+
+14. (2026-10-19, rendered-PDF review) All 14 pages rendered at 110 dpi and reviewed visually page by page, then re-reviewed after the fix. Found and fixed: a stranded first line at the bottom of the Related-work page and a single "2." line at the bottom of the obstructions page (now `\clubpenalty=\widowpenalty=10000` and two `$F$-degree~$2$` ties). Measured with `pdftotext -bbox`: no text line ends more than 2.1 pt past the 540 pt text edge (normal TeX tolerance; 0 lines beyond 543 pt); the Lean listing stays inside (max 537.4 pt). All 6 external links resolve (GitHub repo, two Palomar v2 URLs, arXiv 2604.12370) or are mailto; 89 internal links; 32/32 fonts embedded; `⟨ ⟩` and other Unicode glyphs in the listing render. Accepted as cosmetic: mid-name wraps of long monospace Lean identifiers in theorem headers, and the Theorem 14 header's loose line (the one underfull box).
 
 ## 16. Official policy sources
 
