@@ -1,12 +1,12 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-19 (`arxiv-r3/r3.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-19 (`arxiv-r3/r5.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
 
-**PENDING SUPERVISOR REVIEW** — 0 blockers, 4 warnings (`ABSTRACT_TRANSFORM_VERIFY`, `ARTIFACT_LIVE_VERIFY`, `NOVELTY_AUDIT_REQUIRED`, `PDF_UNDERFULL_BOX`), each classified below. Remaining before upload: the supervisor's next review round, Palomar v3 registration, and the arXiv web-form actions.
+**PENDING SUPERVISOR REVIEW** — 0 blockers, 4 warnings (`ABSTRACT_TRANSFORM_VERIFY`, `ARTIFACT_LIVE_VERIFY`, `NOVELTY_AUDIT_REQUIRED`, `PDF_UNDERFULL_BOX`), each classified below. Remaining before upload: the supervisor's next review round, completion of the Palomar v3 registration (consented and started; see Section 10), and the arXiv web-form actions.
 
 ## 2. Blockers
 
@@ -73,8 +73,9 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 |---|---|
 | Repository | https://github.com/thonmay/mcs-lean (renamed from `thesis-lean`; the old URL answers 301 to the new one) |
 | Public (unauth) | HTTP 200 |
-| Pin | annotated tag `mcs-arxiv-v7` (Lean proof + docs + `scripts/stab.c`, `scripts/probe_check.py`, `scripts/prefix_hypothesis_count.py`) |
-| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v7^{}` → `5cd2ca72e30ab5d5962af97d420de7eb01e9cfab` |
+| Pin | annotated tag `mcs-arxiv-v9` (Lean proof + docs + `scripts/stab.c`, `scripts/probe_check.py`, `scripts/prefix_hypothesis_count.py`); GitHub Release `mcs-arxiv-v9`; Software Heritage snapshot `swh:1:snp:8d0b366e1d03f3951b98118d86052e94cc57498c` (contains the tag) |
+| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v9^{}` → `ab521f20cf66548fd4202c78d7c468e8555b20e3` |
+| Palomar | v3 submission `um08gqgsunmk` from `ab521f2`: review `704cc036`, no blocking problems, no warnings; registration consented 2026-10-19T13:10Z and started (one transient retry). Earlier v3 attempts withdrawn: `7hz177t19zlj` (blocking: unproved 2P3 minimality wording), `4xtu7q8i9py2` (warning: README universal P3 claim); both fixed. |
 | Commit files reachable at pin | `README.md`, `comparator.json`, `formalization.yaml`, `lean-toolchain`, `AxiomAudit.lean`, `scripts/probe_check.py`, `scripts/prefix_hypothesis_count.py`: all 200 |
 | Role | Logically required (all theorems) |
 | Visible in paper | Yes (reproducibility paragraph, `sec:formalization`) |
@@ -84,16 +85,16 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (53373 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (54094 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 14 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 44353 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 44935 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `add8ac0100a1b28a575a2d3f9fe6cb3e2cebe0c4098c7960bca3c06ab0e7f4e8`.
-- `archive-built.pdf` SHA-256: `deec27c72b25d4a8a6efa3e82f28229da7b25d196bfbc9cc4152d5e77379f235`.
+- ZIP SHA-256: `fca1bd1faacb6f741952eef7fed2205825902636d5439a7cd328a953d9c54abd`.
+- `archive-built.pdf` SHA-256: `5f1fea3e7dbc4b0b155d0eee06e0c20d3220f1da1b055be66dbbeddb86664dba`.
 
 ## 12. Rendered-PDF audit
 
-14 pages, letter, selectable text, fonts embedded (`pdffonts` 32/32 `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 541–547, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
+14 pages, letter, selectable text, fonts embedded (`pdffonts` 32/32 `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 548–554, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
@@ -123,6 +124,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 11. (Supervisor round-2 checks, 2026-10-19) Lean: `exists_common_ordering_prefix` and `common_order_extends_prefix` now require the count bounds only for vertices not in the common prefix (strictly more general; `exists_common_pick` takes the same restricted bounds); the `exists_common_ordering` docstring says "every subset", which is equivalent to adding a matching. `formalization.yaml` gains its four missing comparator entries (41/41). Repository renamed to `mcs-lean`, library `ThesisLean` → `McsLean`; all 22 Lean files are otherwise identical to `c4c2c0f` except `Challenge.lean`, `Solution.lean`, `McsLean/Stability.lean`. Artifact re-pinned to `mcs-arxiv-v7` = `5cd2ca7` (lake build 8975 jobs, defs-sync, axiom audit, leanchecker on all 20 modules, CI green). Paper: Theorem 1, the online corollary, the abstract and contributions state the unchosen-vertex hypothesis; the matching equivalence of the every-subset form is proved in two lines; exhaustive counts (non-matching updates covered: 48/100 at n=4, 1020/5315 at n=5; no unsound case) and the n=3 P3 example are added. The sufficient-not-necessary example is now explicit (n=4, prefix (3,1,2)). Probe theorem: the claim "the delete probe is an O(1) check" is withdrawn (the hosts {01,02} and {01,12} share order and (M_j) but differ on deleting 01); the deletion break test needs runner-up data and maintaining it is stated as open. The proof now locates the *first* break (successor query plus augmented-tree descent), and the no-break update cost is O(log n). Random-graph checks against recomputation are quoted and reproduced by the new artifact scripts. "The hypotheses are sharp" replaced by "neither part of the hypothesis can simply be dropped". Palomar paragraph states that v2 is registered from the ancestor `c4c2c0f` and which two statements changed since.
 
 12. (2026-10-19, after the subagent audit of every referee item) Theorem 4 now attributes initialization to `init_valid` and the full-prefix identity to `greedySuffix_full`; the comparator paragraph explains why the table groups by *stated* section while the sentence counts *first named* section; introduction states the contribution as the first locality analysis and first machine-checked incremental repair of MCS orderings (hedged, survey cited); author emails in title footnotes, first author marked BSc student; AI disclosure gives a thinking mode per model and discloses that the internal review rounds and their check scripts (`scripts/stab.c`, probe and prefix-hypothesis scripts) came from AI agents run by the second author; "the referee's C checker" reworded; GitHub Release and Software Heritage archive mentioned. A subagent claim that the incomparability witness is not chordal was checked and rejected (its cycle used two non-edges; simplicial elimination succeeds). Page count 13 -> 14.
+
+13. (2026-10-19, Palomar v3 reviews) Obstruction minimality is now presented as a computer-search result, not a theorem (Theorem 3 note, introduction, artifact docstrings); the non-monotone break example is n=4 (the n=5 one was called minimal and was not); the README separates Lean theorems from paper-level and tested statements. Artifact re-pinned to `mcs-arxiv-v9` = `ab521f2` (Lean statements identical to v7; docstrings only). Software Heritage SWHID added.
 
 ## 16. Official policy sources
 
