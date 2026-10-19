@@ -651,9 +651,12 @@ def _generate_known_good_candidate(problem_name: str) -> str:
         "dynamic_bfs": _BFS_CODE,
         "dynamic_dfs": _DFS_CODE,
         "dynamic_mcs": _MCS_CODE,
+        "dynamic_lbfs": _LBFS_CODE,
         "dynamic_scc": _SCC_CODE,
         "reachability": _REACH_CODE,
     }
+    if problem_name not in algorithms:
+        raise ValueError(f"no known-good recompute candidate for {problem_name!r}")
     algo = algorithms.get(problem_name, _BFS_CODE)
     return f'''# Known-good candidate: recompute from scratch after each update
 # Problem: {problem_name}
@@ -756,6 +759,25 @@ def _compute(graph):
             if graph[v][u] == 1 and u not in chosen:
                 cardinality[u] += 1
 
+    return {"ordering": ordering}
+'''
+
+
+_LBFS_CODE = '''
+def _compute(graph):
+    """Lexicographic BFS by partition refinement (start 0, min-id ties)."""
+    n = len(graph)
+    cells = [list(range(n))] if n else []
+    ordering = []
+    while cells:
+        pivot = cells[0].pop(0)
+        ordering.append(pivot)
+        refined = []
+        for cell in cells:
+            inside = [u for u in cell if graph[pivot][u]]
+            outside = [u for u in cell if not graph[pivot][u]]
+            refined.extend(c for c in (inside, outside) if c)
+        cells = refined
     return {"ordering": ordering}
 '''
 

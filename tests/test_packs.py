@@ -222,7 +222,7 @@ def test_config_pack_and_problem_round_trip(tmp_path):
 def test_prompt_contains_pack_brief(tmp_path):
     cfg = RunConfig(problem="dynamic_mcs", pack="dynamic_mcs")
     cfg.validate()
-    provider = LLMProvider(config=cfg, run_dir=tmp_path, enlcode_path="/bin/true")
+    provider = LLMProvider(config=cfg, run_dir=tmp_path)
     prompt = provider._build_problem_prompt("dynamic_mcs")
     assert "RESEARCH BRIEF:" in prompt
     # A distinctive line from the shipped MCS brief must be present verbatim.
@@ -231,7 +231,7 @@ def test_prompt_contains_pack_brief(tmp_path):
 
 def test_prompt_without_pack_has_no_brief(tmp_path):
     cfg = RunConfig(problem="dynamic_mcs")
-    provider = LLMProvider(config=cfg, run_dir=tmp_path, enlcode_path="/bin/true")
+    provider = LLMProvider(config=cfg, run_dir=tmp_path)
     prompt = provider._build_problem_prompt("dynamic_mcs")
     assert "RESEARCH BRIEF:" not in prompt
 
@@ -239,7 +239,7 @@ def test_prompt_without_pack_has_no_brief(tmp_path):
 def test_prompt_keeps_researcher_hint(tmp_path):
     cfg = RunConfig(problem="dynamic_mcs", pack="dynamic_mcs")
     cfg.validate()
-    provider = LLMProvider(config=cfg, run_dir=tmp_path, enlcode_path="/bin/true")
+    provider = LLMProvider(config=cfg, run_dir=tmp_path)
     provider.hint = "try a cardinality bucket"
     prompt = provider._build_problem_prompt("dynamic_mcs")
     assert "RESEARCH BRIEF:" in prompt

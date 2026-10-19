@@ -71,15 +71,26 @@ class Orchestrator:
         self.problem: ProblemDefinition = get_problem(config.problem)
         self.sandbox = Sandbox(timeout_seconds=config.timeout_seconds,
                                directed=self.problem.directed)
+        # Two grades. During evolution every candidate gets the search grade
+        # (non-isomorphic graphs up to search_n_max, every single flip, a few
+        # bounded sequences: seconds per candidate). The best fully correct
+        # candidate then gets the final grade on the configured bound
+        # (default n <= 5, millions of sequences: minutes).
+        update_mode = self.pack.update_mode if self.pack else "mixed"
         self.verifier = Verifier(
+            problem=self.problem, sandbox=self.sandbox,
+            bound_n_max=min(config.search_n_max, config.bound.n_max),
+            bound_n_random=0, bound_seq_len_max=config.bound.seq_len_max,
+            bound_seq_count=config.search_seq_count, bound_seed=config.bound.seed,
+            relabels_per_class=1, update_mode=update_mode,
+        )
+        self.final_verifier = Verifier(
             problem=self.problem,
-            sandbox=self.sandbox,
-            bound_n_max=config.bound.n_max,
-            bound_n_random=config.bound.n_random,
-            bound_seq_len_max=config.bound.seq_len_max,
-            bound_seq_count=config.bound.seq_count,
-            bound_seed=config.bound.seed,
-            update_mode=self.pack.update_mode if self.pack else "mixed",
+            sandbox=Sandbox(timeout_seconds=config.final_timeout_seconds,
+                            directed=self.problem.directed),
+            bound_n_max=config.bound.n_max, bound_n_random=config.bound.n_random,
+            bound_seq_len_max=config.bound.seq_len_max, bound_seq_count=config.bound.seq_count,
+            bound_seed=config.bound.seed, update_mode=update_mode,
         )
         self.checkpoint = Checkpoint(self.run_dir)
         self.provider = LLMProvider(config=config, run_dir=self.run_dir)
@@ -156,6 +167,7 @@ class Orchestrator:
             self.step_generation()
 
         # Final export
+        self._final_grade()
         summary = self._export_summary()
         self._maybe_formalize(summary)
         self.events.emit(
@@ -163,9 +175,34 @@ class Orchestrator:
             best_candidate_id=summary["best_candidate_id"],
             best_fitness=summary["best_fitness"],
             best_work_ratio=summary["best_work_ratio"],
-            model_calls=self.model_calls,
+            model_calls=self.model_calls, final_grade=summary["final_grade"],
         )
         return summary
+
+    def _final_grade(self) -> None:
+        """Grade the best search-passing candidate on the full bound.
+
+        Runs once, after the search, unless the run was stopped by the user.
+        The result is recorded in a ``final_graded`` event and in
+        ``self.final`` for the summary; the candidate's search grade is kept.
+        """
+        self.final: dict[str, Any] | None = None
+        best = self.population.best_candidate
+        if (not self.config.final_grade or self.stop_reason == "user_stop"
+                or best is None or not best.is_passing):
+            return
+        probe = Candidate(id=best.id, code_path=best.code_path, generation=best.generation)
+        self.events.emit("final_grade_start", id=best.id, n_max=self.config.bound.n_max)
+        started = time.monotonic()
+        result = self.final_verifier.verify(probe)
+        self.final = {
+            "id": best.id, "state": result.state.value, "fitness": result.fitness,
+            "work_ratio": result.work_ratio, "tests_passed": result.tests_passed,
+            "tests_total": result.tests_total, "timeout": result.timeout,
+            "failing_case": result.failing_case, "n_max": self.config.bound.n_max,
+            "duration_s": round(time.monotonic() - started, 1),
+        }
+        self.events.emit("final_graded", **self.final)
 
     def _maybe_formalize(self, summary: dict[str, Any]) -> None:
         """Optional final step (pack ``lean: {enabled: true}``): ask the Lean
@@ -174,8 +211,9 @@ class Orchestrator:
         best = summary.get("best_candidate_id")
         if not (self.pack and self.pack.lean) or self.stop_reason == "user_stop":
             return
-        if not best or summary.get("best_fitness") != 1.0:
-            self.events.emit("lean_skipped", reason="no fully correct candidate")
+        final = summary.get("final_grade")
+        if not best or summary.get("best_fitness") != 1.0 or (final and final["state"] != "PASS"):
+            self.events.emit("lean_skipped", reason="no candidate passed the final grade")
             return
         from .formalize import run_formalize
         self.events.emit("lean_start", id=best)
@@ -694,6 +732,8 @@ class Orchestrator:
             "passing_candidates": sum(1 for c in self.population.candidates if c.is_passing),
             "model_calls": self.model_calls,
             "fitness_history": self.fitness_history,
+            "search_grade": {"n_max": self.verifier.n_max},
+            "final_grade": getattr(self, "final", None),
             "config": self.config.to_dict(),
         }
 

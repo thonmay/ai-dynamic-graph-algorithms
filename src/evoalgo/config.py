@@ -6,8 +6,11 @@ Config schema (config.yaml):
   pack: null                    # optional problem-pack name or path; when set,
                                 #   the problem (checker) comes from the pack
                                 #   and overrides `problem`
-  provider: enlcode             # LLM provider adapter name
+  provider: enlcode             # agent backend: api | enlcode | mock
   model: null                   # model id (null = provider default)
+  api_base_url: null            # api: ericai | openrouter | openai | URL
+  api_key_env: null             # api: NAME of the env var holding the key
+  agent_max_steps: 12           # api: model turns per role call
   generator_agent: algorithm-generator
   repairer_agent: algorithm-repairer
   reflector_agent: algorithm-reflector
@@ -48,7 +51,7 @@ VALID_PROBLEMS = {
     "dynamic_scc", "dynamic_lbfs", "reachability",
 }
 
-VALID_PROVIDERS = {"enlcode"}
+VALID_PROVIDERS = {"api", "enlcode", "mock"}
 MAX_GOAL_CHARS = 2000
 
 
@@ -68,8 +71,26 @@ class RunConfig:
     # What the researcher wants to find out in this run; sent to every agent
     # call together with the pack brief. Live hints are separate.
     research_goal: str | None = None
+    # Agent backend: "api" (built-in tool loop over an OpenAI-compatible
+    # endpoint), "enlcode" (agent harness) or "mock" (scripted, offline).
     provider: str = "enlcode"
     model: str | None = None
+    # api backend: endpoint alias (ericai | openrouter | openai) or URL, the
+    # NAME of the environment variable holding the key, optional CA bundle.
+    api_base_url: str | None = None
+    api_key_env: str | None = None
+    api_ca_cert: str | None = None
+    agent_max_steps: int = 12          # model turns per role call
+    agent_max_seconds: int = 900       # wall clock per role call
+    agent_request_timeout: int = 300   # one HTTP request
+    agent_temperature: float = 0.2
+    agent_max_tokens: int = 8192       # completion tokens per model turn
+    # Reasoning ("thinking") per model turn. Off by default: reasoning models
+    # on vLLM spend the whole token budget thinking and never call a tool.
+    agent_thinking: bool = False
+    api_extra_body: dict[str, Any] | None = None  # passed through to the endpoint
+    harness_bin: str | None = None     # enlcode/opencode binary override
+    mock_script: list[str] | None = None
     generator_agent: str = "algorithm-generator"
     repairer_agent: str = "algorithm-repairer"
     reflector_agent: str = "algorithm-reflector"
@@ -86,6 +107,12 @@ class RunConfig:
     max_consecutive_all_failed: int = 5
     model_call_budget: int = 500
     early_stop_on_success: bool = True
+    # Search grade (every candidate) vs final grade (best candidate, on
+    # `bound`). See Orchestrator.__init__.
+    search_n_max: int = 4
+    search_seq_count: int = 3
+    final_grade: bool = True
+    final_timeout_seconds: int = 300   # per verifier chunk in the final grade
     workdir: str = "runs"
 
     @classmethod
@@ -99,36 +126,8 @@ class RunConfig:
         return cls(bound=bound, **filtered)
 
     def to_dict(self) -> dict[str, Any]:
-        d = {
-            "problem": self.problem,
-            "pack": self.pack,
-            "research_goal": self.research_goal,
-            "provider": self.provider,
-            "model": self.model,
-            "generator_agent": self.generator_agent,
-            "repairer_agent": self.repairer_agent,
-            "reflector_agent": self.reflector_agent,
-            "population_size": self.population_size,
-            "max_generations": self.max_generations,
-            "elitism_k": self.elitism_k,
-            "crossover_enabled": self.crossover_enabled,
-            "diversity_threshold": self.diversity_threshold,
-            "timeout_seconds": self.timeout_seconds,
-            "bound": {
-                "n_max": self.bound.n_max,
-                "n_random": self.bound.n_random,
-                "seq_len_max": self.bound.seq_len_max,
-                "seq_count": self.bound.seq_count,
-                "seed": self.bound.seed,
-            },
-            "dashboard_interval": self.dashboard_interval,
-            "plateau_window": self.plateau_window,
-            "plateau_epsilon": self.plateau_epsilon,
-            "max_consecutive_all_failed": self.max_consecutive_all_failed,
-            "model_call_budget": self.model_call_budget,
-            "early_stop_on_success": self.early_stop_on_success,
-            "workdir": self.workdir,
-        }
+        d = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "bound"}
+        d["bound"] = {f.name: getattr(self.bound, f.name) for f in fields(Bound)}
         return d
 
     def validate(self) -> list[str]:
@@ -151,6 +150,23 @@ class RunConfig:
             errors.append(f"provider must be one of {VALID_PROVIDERS}, got '{self.provider}'")
         if self.research_goal is not None and len(self.research_goal) > MAX_GOAL_CHARS:
             errors.append(f"research_goal must be at most {MAX_GOAL_CHARS} characters")
+        if self.provider == "api":
+            if not self.api_base_url:
+                errors.append("provider 'api' needs api_base_url (ericai, openrouter, openai or a URL)")
+            if not self.model:
+                errors.append("provider 'api' needs a model id")
+        if not (2 <= self.search_n_max <= 8):
+            errors.append(f"search_n_max must be 2-8, got {self.search_n_max}")
+        if self.search_seq_count < 0:
+            errors.append(f"search_seq_count must be >= 0, got {self.search_seq_count}")
+        if not (10 <= self.final_timeout_seconds <= 3600):
+            errors.append(f"final_timeout_seconds must be 10-3600, got {self.final_timeout_seconds}")
+        if not (1 <= self.agent_max_steps <= 50):
+            errors.append(f"agent_max_steps must be 1-50, got {self.agent_max_steps}")
+        if not (10 <= self.agent_max_seconds <= 7200):
+            errors.append(f"agent_max_seconds must be 10-7200, got {self.agent_max_seconds}")
+        if not (0.0 <= self.agent_temperature <= 2.0):
+            errors.append(f"agent_temperature must be 0.0-2.0, got {self.agent_temperature}")
         if not (1 <= self.population_size <= 50):
             errors.append(f"population_size must be 1-50, got {self.population_size}")
         if not (1 <= self.max_generations <= 1000):

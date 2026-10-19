@@ -421,6 +421,7 @@ class Verifier:
             result.failing_case = {
                 "operation": "timeout",
                 "chunk_start": partial["chunk_start"],
+                **({"hang": partial["hang"]} if partial.get("hang") else {}),
             }
             return True
         if partial["chunk_crash"]:
@@ -534,6 +535,38 @@ def _worker_check_chunk(ctx: dict[str, Any], i: int, chunk_start: int,
     )
 
 
+HANG_PROBE_SECONDS = 3
+HANG_PROBE_MAX_GRAPHS = 400
+
+
+def _locate_hang(sandbox: Sandbox, code_path, chunk_cases: list[dict[str, Any]],
+                 chunk_meta: list[tuple[int, int]], root: int | None) -> dict[str, Any] | None:
+    """After a chunk timeout, find the first graph and sequence that hang.
+
+    Re-runs the chunk one base graph at a time (then one sequence at a time)
+    with a short timeout, so the reflector gets a concrete failing case
+    instead of just "timeout". Bounded: gives up after
+    ``HANG_PROBE_MAX_GRAPHS`` graphs.
+    """
+    for case, (n, _num) in list(zip(chunk_cases, chunk_meta))[:HANG_PROBE_MAX_GRAPHS]:
+        r = sandbox.execute_batch(code_path, [case], offline_src="", root=root, repeat=1,
+                                  timeout=HANG_PROBE_SECONDS)
+        if not r.is_timeout:
+            continue
+        for seq_idx, seq in enumerate(case["sequences"]):
+            one = {"graph": case["graph"], "sequences": [seq]}
+            r = sandbox.execute_batch(code_path, [one], offline_src="", root=root, repeat=1,
+                                      timeout=HANG_PROBE_SECONDS)
+            if r.is_timeout:
+                ops = [f"{op['type']} ({op['edge'][0]}, {op['edge'][1]})" for op in seq]
+                return {"graph_n": n, "graph": case["graph"], "sequence_idx": seq_idx,
+                        "operations": ops, "note": f"no result within {HANG_PROBE_SECONDS}s: "
+                        "likely an infinite loop in init or one of these updates"}
+        return {"graph_n": n, "graph": case["graph"],
+                "note": "this graph's sequences together exceed the time limit"}
+    return None
+
+
 def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
                       code_path, chunk_cases: list[dict[str, Any]],
                       chunk_meta: list[tuple[int, int]], chunk_start: int,
@@ -563,6 +596,7 @@ def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
             "candidate_work": 0, "offline_work": 0,
             "crash": False, "chunk_crash": False,
             "chunk_crash_error": None, "failing_case": None,
+            "hang": _locate_hang(sandbox, code_path, chunk_cases, chunk_meta, root),
         }
 
     if batch_result.is_crash and not batch_result.all_results:
@@ -628,7 +662,7 @@ def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
 
             # Check init state.
             state = _deserialize_state(results[0]["state"])
-            if not problem.check_invariant(state, current_graph, root):
+            if not _invariant_holds(problem, state, current_graph, root):
                 failing_case = problem.failing_context(state, current_graph, root)
                 failing_case["graph_n"] = n
                 failing_case["sequence_idx"] = seq_idx
@@ -657,7 +691,7 @@ def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
                 step_result_idx = step_idx + 1
                 if step_result_idx < len(results):
                     state = _deserialize_state(results[step_result_idx]["state"])
-                    if not problem.check_invariant(state, current_graph, root):
+                    if not _invariant_holds(problem, state, current_graph, root):
                         failing_case = problem.failing_context(state, current_graph, root)
                         failing_case["graph_n"] = n
                         failing_case["sequence_idx"] = seq_idx
@@ -686,6 +720,20 @@ def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
         "chunk_crash": False, "chunk_crash_error": None,
         "failing_case": failing_case,
     }
+
+
+def _invariant_holds(problem: ProblemDefinition, state: Any, graph: np.ndarray,
+                     root: int | None) -> bool:
+    """check_invariant that treats a malformed candidate state as a failure.
+
+    A candidate controls its state's shape; a checker exception on odd values
+    (wrong types, None where an int is expected) must fail that candidate, not
+    abort the whole run.
+    """
+    try:
+        return bool(problem.check_invariant(state, graph, root))
+    except Exception:
+        return False
 
 
 def _deserialize_state(raw: Any) -> Any:

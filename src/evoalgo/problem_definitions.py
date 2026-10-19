@@ -102,6 +102,30 @@ def offline_compute(graph, root):
             return state.get("parent", state.get("tree", state))
         return state
 
+    def failing_context(self, state: Any, graph: np.ndarray, root: int | None) -> dict:
+        ctx = super().failing_context(state, graph, root)
+        # Per-vertex diff in one shape, so the agent need not reconcile a
+        # list-shaped result with the dict-shaped oracle output.
+        try:
+            expected = self._bfs_tree(graph, root)
+            parent = self._extract_parent(state) or {}
+            dist = self._extract_distances(state) or {}
+            ctx["graph"] = graph.tolist()
+            ctx["root"] = root
+            ctx["wrong_vertices"] = [
+                {"vertex": v,
+                 "expected_distance": expected["distances"].get(v, -1),
+                 "your_distance": dist.get(v, "missing"),
+                 "your_parent": parent.get(v)}
+                for v in range(graph.shape[0])
+                if dist.get(v, -1) != expected["distances"].get(v, -1)
+                or (v != root and parent.get(v) is not None
+                    and not graph[parent[v], v])
+            ]
+        except Exception:
+            pass
+        return ctx
+
     def check_invariant(self, state: Any, graph: np.ndarray, root: int | None) -> bool:
         if root is None:
             return False
@@ -173,10 +197,11 @@ def offline_compute(graph, root):
         d = state.get("distances", state.get("dist"))
         if d is None:
             return None
+        # None is an accepted spelling of "unreachable", same as -1.
         if isinstance(d, dict):
-            return {int(k): int(v) for k, v in d.items()}
+            return {int(k): -1 if v is None else int(v) for k, v in d.items()}
         if isinstance(d, (list, tuple)):
-            return {i: int(x) for i, x in enumerate(d)}
+            return {i: -1 if x is None else int(x) for i, x in enumerate(d)}
         if isinstance(d, np.ndarray):
             return {i: int(d[i]) for i in range(len(d))}
         return None

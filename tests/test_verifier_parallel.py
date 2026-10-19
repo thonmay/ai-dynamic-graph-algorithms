@@ -100,3 +100,63 @@ def test_infinite_loop_parallel_no_slower_than_serial(tmp_path):
     _, _, wall_serial = _verify_infinite_loop(1, 10, 5, tmp_path)
     _, _, wall_parallel = _verify_infinite_loop(8, 10, 5, tmp_path)
     assert wall_parallel < wall_serial + 15, (wall_parallel, wall_serial)
+
+
+def test_hang_is_located(tmp_path):
+    """A timeout reports the first graph and sequence that hang."""
+    verifier = _make_verifier(1, 10, 5)
+    path = tmp_path / "hang.py"
+    path.write_text(_INFINITE_LOOP_CODE)
+    result = verifier.verify(Candidate(id="hang", code_path=str(path), generation=0))
+    hang = result.failing_case["hang"]
+    assert hang["graph_n"] >= 1 and "graph" in hang
+
+
+# Correct BFS that spells unreachable distances as None (a valid convention).
+_NONE_DIST_BFS = '''
+from collections import deque
+
+def init(graph):
+    n = len(graph)
+    parent = [None] * n
+    dist = [None] * n
+    dist[0] = 0
+    q = deque([0])
+    while q:
+        u = q.popleft()
+        for v in range(n):
+            if graph[u][v] and dist[v] is None:
+                dist[v] = dist[u] + 1
+                parent[v] = u
+                q.append(v)
+    return {"parent": parent, "distances": dist}
+
+def insert_edge(graph, edge, state):
+    return init(graph)
+
+def delete_edge(graph, edge, state):
+    return init(graph)
+'''
+
+# A malformed state must fail the candidate, not crash the verifier.
+_MALFORMED_STATE = _NONE_DIST_BFS.replace(
+    'return {"parent": parent, "distances": dist}',
+    'return {"parent": parent, "distances": ["x"] * n}')
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+def test_none_distances_pass(tmp_path, workers):
+    path = tmp_path / "none_dist.py"
+    path.write_text(_NONE_DIST_BFS)
+    cand = Candidate(id="none_dist", code_path=str(path), generation=0)
+    _make_verifier(workers, 10, 30).verify(cand)
+    assert cand.state.value == "PASS", cand.failing_case
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+def test_malformed_state_fails_cleanly(tmp_path, workers):
+    path = tmp_path / "malformed.py"
+    path.write_text(_MALFORMED_STATE)
+    cand = Candidate(id="malformed", code_path=str(path), generation=0)
+    _make_verifier(workers, 10, 30).verify(cand)
+    assert cand.state.value == "FAIL"
