@@ -64,15 +64,15 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 
 20 `\cite` occurrences across the 15 works; each attribution checked against the source's hypotheses and scope. No retractions/corrections outstanding. The Corneil–Krueger incomparability claim and the brute-force witness (204/204, symmetric difference 40) are reproduced in the artifact README.
 
-## 10. External-artifact manifest (live verification, 2026-10-04)
+## 10. External-artifact manifest (live verification, 2026-10-19)
 
 | Field | Value |
 |---|---|
-| Repository | https://github.com/thonmay/thesis-lean |
+| Repository | https://github.com/thonmay/mcs-lean (renamed from `thesis-lean`; the old URL answers 301 to the new one) |
 | Public (unauth) | HTTP 200 |
-| Pin | annotated tag `mcs-arxiv-v4` (Lean proof + docs + `scripts/stab.c`) |
-| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v4^{}` → `c4c2c0fb15adf42b8b584e4fc83d5cbe643d5819` |
-| Commit files reachable at pin | `README.md` 200, `comparator.json` 200, `formalization.yaml` 200, `lean-toolchain` 200, `AxiomAudit.lean` 200 |
+| Pin | annotated tag `mcs-arxiv-v7` (Lean proof + docs + `scripts/stab.c`, `scripts/probe_check.py`, `scripts/prefix_hypothesis_count.py`) |
+| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v7^{}` → `5cd2ca72e30ab5d5962af97d420de7eb01e9cfab` |
+| Commit files reachable at pin | `README.md`, `comparator.json`, `formalization.yaml`, `lean-toolchain`, `AxiomAudit.lean`, `scripts/probe_check.py`, `scripts/prefix_hypothesis_count.py`: all 200 |
 | Role | Logically required (all theorems) |
 | Visible in paper | Yes (reproducibility paragraph, `sec:formalization`) |
 | In Comments | Yes |
@@ -81,16 +81,16 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (47778 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (51665 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 13 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber, 3 runs): all rc=0, 13 pages, 39489 selectable-text chars, fonts embedded, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 13 pages, 43210 selectable-text chars, 30/30 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `7e7940f5cb5e939e5ab737c9216ada8536743b8944f6ef288b5769207a5c19b8`.
-- `archive-built.pdf` SHA-256: `e2118daaa37bf2ead92b0baa8aefc151af643353b7ca60d975fc8003bceac7ae`.
+- ZIP SHA-256: `b2a17e3dec363701fff70a1ab320d289a1e4e0b6f0ea9805501739cd7b84c879`.
+- `archive-built.pdf` SHA-256: `e92d9369770aaf40d912b16491b24842da6e68bbae51e8747e7255aeaeef3d01`.
 
 ## 12. Rendered-PDF audit
 
-13 pages, letter, selectable text, fonts embedded (`pdffonts` all `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 485–491, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
+13 pages, letter, selectable text, fonts embedded (`pdffonts` all `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 533–539, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
@@ -116,6 +116,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 9. (Palomar v2 registered, 2026-10-15T01:03:25Z) Sec. 7 and the reproducibility paragraph now cite version 2 (pinned commit `c4c2c0f`, outcome `neutral`, no review warnings, trust `high`, 742 Challenge lines) as the registered record, superseding v1 from ancestor `a872fdd`; footnote URLs point to `version=2` / `-v2.json` (both HTTP 200).
 
 10. (Style pass, 2026-10-15) Prose of the introduction, contributions, cost-model paragraph, formalization and artifact paragraphs, related work and conclusion reworded by hand, using rewrites proposed by the self-hosted Humanizer 12B model as suggestions; theorem statements, proofs, Lean names, numbers and the abstract were not passed through it. The model is now named in the AI disclosure (visible text and metadata, identical). The artifact paragraph now also excepts the paper-level probe bound from "every positive statement is a theorem".
+
+11. (Supervisor round-2 checks, 2026-10-19) Lean: `exists_common_ordering_prefix` and `common_order_extends_prefix` now require the count bounds only for vertices not in the common prefix (strictly more general; `exists_common_pick` takes the same restricted bounds); the `exists_common_ordering` docstring says "every subset", which is equivalent to adding a matching. `formalization.yaml` gains its four missing comparator entries (41/41). Repository renamed to `mcs-lean`, library `ThesisLean` → `McsLean`; all 22 Lean files are otherwise identical to `c4c2c0f` except `Challenge.lean`, `Solution.lean`, `McsLean/Stability.lean`. Artifact re-pinned to `mcs-arxiv-v7` = `5cd2ca7` (lake build 8975 jobs, defs-sync, axiom audit, leanchecker on all 20 modules, CI green). Paper: Theorem 1, the online corollary, the abstract and contributions state the unchosen-vertex hypothesis; the matching equivalence of the every-subset form is proved in two lines; exhaustive counts (non-matching updates covered: 48/100 at n=4, 1020/5315 at n=5; no unsound case) and the n=3 P3 example are added. The sufficient-not-necessary example is now explicit (n=4, prefix (3,1,2)). Probe theorem: the claim "the delete probe is an O(1) check" is withdrawn (the hosts {01,02} and {01,12} share order and (M_j) but differ on deleting 01); the deletion break test needs runner-up data and maintaining it is stated as open. The proof now locates the *first* break (successor query plus augmented-tree descent), and the no-break update cost is O(log n). Random-graph checks against recomputation are quoted and reproduced by the new artifact scripts. "The hypotheses are sharp" replaced by "neither part of the hypothesis can simply be dropped". Palomar paragraph states that v2 is registered from the ancestor `c4c2c0f` and which two statements changed since.
 
 ## 16. Official policy sources
 
