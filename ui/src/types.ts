@@ -38,6 +38,8 @@ export type RunStartEvent = Base & {
   resumed?: boolean
   generation?: number
   backfilled?: boolean
+  /** Set for coding-agent workspaces (evoalgo init): the agent, not the engine, drives the run. */
+  workspace?: string
 }
 
 export type RunEvent =

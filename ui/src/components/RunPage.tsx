@@ -37,7 +37,9 @@ export function RunPage({ runId }: { runId: string }) {
   const shownGens = state.gens.filter((g) => g.gen <= popGen)
   const status = deriveStatus(state, connected)
   const active = ACTIVE.includes(status)
-  const canControl = active && status !== 'stopping'
+  // A coding agent drives workspace runs; the control channel has no reader.
+  const agentRun = state.meta?.provider === 'harness'
+  const canControl = active && status !== 'stopping' && !agentRun
 
   useEffect(() => {
     if (!playing) return
@@ -96,6 +98,9 @@ export function RunPage({ runId }: { runId: string }) {
           <span className="meta num">gen {viewGen}/{maxGen || '-'}</span>
           <span className="meta num hide-s">{duration(endMs - startMs)}</span>
           <div className="ctl">
+            {agentRun ? (
+              <span className="meta">{state.meta?.model ? `${state.meta.model} session` : 'agent session'}</span>
+            ) : <>
             {status === 'paused' || status === 'resuming' ? (
               <button className="btn" disabled={status === 'resuming'} onClick={() => send({ cmd: 'resume' })}>
                 {status === 'resuming' ? <><span className="spinner xs" />Resuming</> : 'Resume'}
@@ -112,6 +117,7 @@ export function RunPage({ runId }: { runId: string }) {
               ? <button className="btn primary" disabled={!canControl} aria-expanded={steerOpen}
                         onClick={() => setSteerOpen((o) => !o)}>Steer</button>
               : <a className="btn primary" href={`#/new?from=${encodeURIComponent(runId)}`}>Run again</a>}
+            </>}
           </div>
         </div>
       </nav>

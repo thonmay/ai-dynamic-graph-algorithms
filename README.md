@@ -52,6 +52,21 @@ Core principles:
 - Exhaustive isomorphism-aware coverage up to n <= 5, random sampling beyond
 - LLM-agnostic provider abstraction, CLI-driven, JSON filesystem persistence
 
+## Use with coding agents
+
+The `evoalgo` [Agent Skill](https://agentskills.io) lets Claude Code, Codex or
+opencode run the search loop themselves: edit one candidate file, grade it with
+the exhaustive verifier, keep or revert. Install the package from a clone
+(`pip install -e '.[api,ui]'`), then make the skill available:
+
+- Inside this repo it is picked up automatically (`.agents/skills/`, `.claude/skills/`).
+- Elsewhere: `evoalgo skill --install` (copies it to `~/.agents/skills` and `~/.claude/skills`).
+- Claude Code plugin: `/plugin install evoalgo --marketplace thonmay/ai-dynamic-graph-algorithms`.
+
+Then ask the agent, for example: "Use the evoalgo skill to find a dynamic BFS
+algorithm for pack dynamic_bfs". Each session is a run in `runs/` and shows in
+`evoalgo ui`.
+
 ## Status
 
 Design phase. Code implementation is the next phase.

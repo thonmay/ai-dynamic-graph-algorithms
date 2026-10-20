@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     # run status
     p_status = subparsers.add_parser("status", help="show current run status")
     p_status.add_argument("run_dir", help="path to run directory")
+    p_status.add_argument("--json", action="store_true", help="machine-readable summary")
 
     # run resume
     p_resume = subparsers.add_parser("resume", help="resume from last checkpoint")
@@ -79,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     # run history
     p_history = subparsers.add_parser("history", help="list previous runs")
     p_history.add_argument("--workdir", default="runs", help="run directory root")
+    p_history.add_argument("--json", action="store_true", help="machine-readable list")
 
     # control (steer a running run between generations)
     p_control = subparsers.add_parser("control", help="pause/resume/stop or steer a running run")
@@ -118,6 +120,40 @@ def main(argv: list[str] | None = None) -> int:
                                "1 = serial, reproduces the original path)")
     p_verify.add_argument("--timeout", type=int, default=120,
                           help="per-chunk wall-clock seconds (default 120)")
+
+    # harness workspaces (a coding agent drives the loop, evoalgo grades)
+    p_init = subparsers.add_parser(
+        "init", help="create a workspace for a coding agent (program.md, candidate.py)")
+    p_init.add_argument("pack", help="problem pack name, e.g. dynamic_bfs")
+    p_init.add_argument("dir", nargs="?", default=None,
+                        help="where the agent works (default: the run folder itself)")
+    p_init.add_argument("--runs", default="runs", help="run directory root (for the UI)")
+    p_init.add_argument("--run-id", default=None)
+    p_init.add_argument("--goal", default=None, help="research goal for this run")
+    p_init.add_argument("--harness", default=None,
+                        help="which agent drives it (claude, codex, opencode), shown in the UI")
+
+    p_check = subparsers.add_parser("check", help="grade a candidate in a workspace, print JSON")
+    p_check.add_argument("file", nargs="?", default=None, help="default: candidate.py")
+    p_check.add_argument("--level", choices=["examples", "search", "full"], default="search",
+                         help="examples: n<=3, s; search: n<=4, s (default); full: n<=5, minutes")
+    p_check.add_argument("--final", action="store_true",
+                         help="the independent final grade (implies --level full)")
+    p_check.add_argument("--note", default="", help="what changed, logged in results.tsv")
+    p_check.add_argument("--workspace", default=".", help="workspace directory (default: cwd)")
+
+    p_finish = subparsers.add_parser("finish", help="close a workspace run")
+    p_finish.add_argument("--workspace", default=".")
+    p_finish.add_argument("--reason", default="harness_done")
+
+    subparsers.add_parser("packs", help="list problem packs as JSON")
+
+    p_skill = subparsers.add_parser("skill", help="install the evoalgo agent skill")
+    p_skill.add_argument("--install", action="store_true", required=True)
+    p_skill.add_argument("--project", default=None,
+                         help="install into this repo (.agents/skills, .claude/skills) "
+                              "instead of the home directory")
+    p_skill.add_argument("--force", action="store_true", help="replace an existing copy")
 
     # formalize (Lean proof of a PASS candidate)
     p_formalize = subparsers.add_parser(
@@ -159,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_ui(args)
     elif args.command == "verify":
         return cmd_verify(args)
+    elif args.command in ("init", "check", "finish", "skill", "packs"):
+        return cmd_workspace(args)
     elif args.command == "formalize":
         if args.stage_timeout < 60:
             print("--stage-timeout must be at least 60 seconds")
@@ -300,8 +338,53 @@ def cmd_events(args) -> int:
     return status
 
 
+def cmd_workspace(args) -> int:
+    from . import workspace as wsm
+    try:
+        if args.command == "init":
+            ws = wsm.init_workspace(args.pack, args.dir, runs_root=args.runs, run_id=args.run_id,
+                                    goal=args.goal, harness=args.harness)
+            print(json.dumps({"workspace": str(ws.dir), "run_dir": str(ws.run_dir),
+                              "program": str(ws.dir / wsm.PROGRAM_FILE),
+                              "candidate": str(ws.dir / wsm.CANDIDATE_FILE)}, indent=2))
+            return 0
+        if args.command == "packs":
+            from .packs import find_packs, pack_info
+            tiers = {"calibration": 0, "core": 1, "open": 2}
+            packs = sorted(find_packs(), key=lambda p: (tiers.get(p.tier, 9), p.name))
+            keep = ("name", "tier", "title", "directed", "update_mode", "question")
+            print(json.dumps([{k: pack_info(p)[k] for k in keep} for p in packs], indent=1))
+            return 0
+        if args.command == "skill":
+            dests = wsm.install_skill("project" if args.project else "user",
+                                      Path(args.project) if args.project else None, args.force)
+            print(json.dumps({"installed": [str(d) for d in dests]}, indent=2))
+            return 0
+        ws = wsm.Workspace.find(args.workspace)
+        if args.command == "finish":
+            print(json.dumps(wsm.finish(ws, args.reason), indent=2, default=str))
+            return 0
+        level = "full" if args.final else args.level
+        report = wsm.check(ws, args.file, level=level, note=args.note, final=args.final)
+        print(json.dumps(report, indent=1, default=str))
+        return 0 if report["verdict"] == "PASS" else 3
+    except KeyboardInterrupt:
+        print(json.dumps({"error": "interrupted"}))
+        return 130
+    except Exception as e:  # agents parse stdout: always answer in JSON
+        print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
+        return 2
+
+
 def cmd_status(args) -> int:
     run_dir = Path(args.run_dir)
+    if getattr(args, "json", False):
+        from .events import summarize
+        if not (run_dir / "config.yaml").is_file():
+            print(json.dumps({"error": f"no run at {run_dir}"}))
+            return 1
+        print(json.dumps(_run_summary(run_dir, summarize), indent=1, default=str))
+        return 0
     committed = run_dir / "COMMITTED"
     if not committed.exists():
         print("No committed generations found.")
@@ -357,6 +440,10 @@ def cmd_resume(args) -> int:
         print(f"No config found at {config_path}")
         return 1
 
+    if (run_dir / "HARNESS").exists():
+        print(f"{run_dir} is driven by a coding agent (evoalgo init); continue it there "
+              "with `evoalgo check`")
+        return 1
     config = RunConfig.load(config_path)
     run_id = run_dir.name
     orch = Orchestrator(config=config, run_id=run_id)
@@ -440,11 +527,33 @@ def cmd_export(args) -> int:
     return 0
 
 
+def _run_summary(run_dir: Path, summarize) -> dict:
+    """Event summary plus the final grade and best candidate path, for agents."""
+    from .events import read_events
+    s = summarize(run_dir)
+    s.pop("history", None)
+    final = next((e for e in reversed(read_events(run_dir)) if e.get("type") == "final_graded"), None)
+    if final:
+        s["final_grade"] = {k: final.get(k) for k in ("id", "state", "tests_passed", "tests_total",
+                                                      "work_ratio", "n_max")}
+    best = (final or {}).get("id") if final and final.get("state") == "PASS" else s.get("best_id")
+    if best and (run_dir / "candidates" / f"{best}.py").is_file():
+        s["best_candidate_path"] = str(run_dir / "candidates" / f"{best}.py")
+    s["harness"] = (run_dir / "HARNESS").exists()
+    return s
+
+
 def cmd_history(args) -> int:
     workdir = Path(args.workdir)
     if not workdir.exists():
         print(f"No runs directory: {workdir}")
         return 1
+    if getattr(args, "json", False):
+        from .events import summarize
+        runs = [_run_summary(p.parent, summarize) for p in sorted(workdir.glob("*/config.yaml"))]
+        runs.sort(key=lambda r: r.get("updated") or "", reverse=True)
+        print(json.dumps(runs, indent=1, default=str))
+        return 0
 
     runs = sorted(workdir.iterdir())
     if not runs:

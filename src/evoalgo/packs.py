@@ -325,3 +325,18 @@ def resolve_pack(name_or_path: str | Path, root: Path | str = DEFAULT_PROBLEMS_R
         str(name_or_path),
         [f"no problem pack found: looked for directory '{p}' and '{candidate}'"],
     )
+
+
+def pack_info(pack: Pack) -> dict[str, Any]:
+    # The "Research question:" paragraph, joined across its wrapped lines.
+    question = None
+    for para in pack.brief.split("\n\n"):
+        if para.strip().lower().startswith("research question"):
+            question = " ".join(para.split(":", 1)[1].split())
+            break
+    return {
+        "name": pack.name, "title": pack.title, "tier": pack.tier,
+        "directed": pack.directed, "needs_root": pack.needs_root, "checker": pack.checker,
+        "update_mode": pack.update_mode, "lean": pack.lean, "objective": pack.objective,
+        "question": question, "brief": pack.brief,
+    }

@@ -22,7 +22,6 @@ import asyncio
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import time
@@ -35,9 +34,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import MAX_GOAL_CHARS, RunConfig
-from .packs import Pack, PackError, find_packs, resolve_pack
-from .events import (
+from .packs import Pack, PackError, find_packs, pack_info, resolve_pack  # noqa: F401
+from .events import (  # noqa: F401  (engine_state, run_state re-exported)
     ENGINE_FILE,
+    engine_state,
+    run_state,
+    summarize,
     EVENTS_FILE,
     pending_commands,
     read_events,
@@ -58,66 +60,6 @@ def _origin_ok(origin: str | None) -> bool:
     if not origin:
         return True
     return urlsplit(origin).hostname in LOCAL_HOSTS
-
-
-def engine_state(run_dir: Path) -> str:
-    """"alive" if the engine that wrote engine.json still runs on this host,
-    "gone" if engine.json is left behind by a dead process, "none" otherwise."""
-    try:
-        info = json.loads((run_dir / ENGINE_FILE).read_text())
-    except FileNotFoundError:
-        return "none"
-    except (OSError, json.JSONDecodeError):
-        return "gone"
-    if info.get("host") != socket.gethostname():
-        return "gone"  # ponytail: a run on another host is reported as gone
-    try:
-        os.kill(int(info["pid"]), 0)
-    except PermissionError:
-        return "alive"
-    except (OSError, KeyError, TypeError, ValueError):
-        return "gone"
-    return "alive"
-
-
-def run_state(events: list[dict[str, Any]], engine: str = "alive") -> str:
-    if not events:
-        return "empty"
-    if events[-1].get("type") == "run_end":
-        return "done"
-    if engine != "alive":
-        return "interrupted"
-    paused = False
-    for e in events:
-        if e.get("type") == "paused":
-            paused = True
-        elif e.get("type") == "resumed":
-            paused = False
-    return "paused" if paused else "running"
-
-
-def summarize(run_dir: Path) -> dict[str, Any]:
-    events = read_events(run_dir)
-    engine = engine_state(run_dir)
-    summary: dict[str, Any] = {"run_id": run_dir.name, "has_events": bool(events),
-                               "engine": engine,
-                               "state": run_state(events, engine) if events else "no_events"}
-    if not events:
-        return summary
-    start = next((e for e in events if e["type"] == "run_start"), {})
-    commits = [e for e in events if e["type"] == "gen_committed"]
-    last = commits[-1] if commits else {}
-    summary.update(
-        problem=start.get("problem"), model=start.get("model"),
-        pack=start.get("pack"), research_goal=start.get("research_goal"),
-        max_generations=start.get("max_generations"),
-        generation=last.get("gen", 0), best_id=last.get("best_id"),
-        best_fitness=last.get("best_fitness"), best_work_ratio=last.get("best_work_ratio"),
-        model_calls=last.get("model_calls"), started=start.get("ts"),
-        updated=events[-1].get("ts"), events=len(events),
-        history=[c.get("best_work_ratio") for c in commits],
-    )
-    return summary
 
 
 def _read_capped(path: Path) -> str | None:
@@ -173,17 +115,6 @@ def agent_options() -> dict[str, Any]:
     harness = EnlcodeBackend.find_bin(None)
     return {"endpoints": endpoints,
             "harness": {"id": "enlcode", "available": bool(harness and os.access(harness, os.X_OK))}}
-
-
-def pack_info(pack: Pack) -> dict[str, Any]:
-    question = next((line.split(":", 1)[1].strip() for line in pack.brief.splitlines()
-                     if line.lower().startswith("research question")), None)
-    return {
-        "name": pack.name, "title": pack.title, "tier": pack.tier,
-        "directed": pack.directed, "needs_root": pack.needs_root, "checker": pack.checker,
-        "update_mode": pack.update_mode, "lean": pack.lean, "objective": pack.objective,
-        "question": question, "brief": pack.brief,
-    }
 
 
 def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
