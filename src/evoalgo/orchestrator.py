@@ -140,6 +140,11 @@ class Orchestrator:
     def _run(self) -> dict[str, Any]:
         # Try to resume from checkpoint
         loaded = self._try_resume()
+        if self.config.selection_seed is not None:
+            # Parent selection is the engine's only randomness; the LLM's is
+            # not ours to fix. Seeded per (seed, generation) so a resume
+            # continues the same stream it would have used.
+            self.population.rng.seed(f"{self.config.selection_seed}:{self.generation}")
         # A hint set before a resume stays in effect.
         for e in read_events(self.run_dir):
             if e.get("type") == "control_ack" and e.get("cmd") == "hint":
@@ -360,10 +365,16 @@ class Orchestrator:
 
         self.generation = latest["generation"]
         self.model_calls = latest.get("model_calls", 0)
+        # Later updates read provider.call_count; continue from the checkpoint
+        # so the call budget covers the whole run, not just this process.
+        self.provider.call_count = self.model_calls
         self.consecutive_all_failed = latest.get("consecutive_all_failed", 0)
         self.fitness_history = latest.get("fitness_history", [])
         self.stop_reason = latest.get("stop_reason")
 
+        # Same for the generation limit.
+        if self.stop_reason == "max_generations" and self.generation < self.config.max_generations:
+            self.stop_reason = None
         # If the run stopped due to budget exhaustion but the budget has
         # been raised since, clear the stop reason so the loop can continue.
         if self.stop_reason == "model_call_budget_exhausted":
@@ -447,8 +458,9 @@ class Orchestrator:
             self.verifier.verify(candidate)
             self._emit_verified(candidate)
 
-        # Reflect on failures
-        for candidate in new_candidates:
+        # Reflect on failures (off in the no-reflection ablation: failed
+        # candidates then never become repairable, so slots go to mutation)
+        for candidate in new_candidates if self.config.reflection else []:
             if candidate.is_failed:
                 if self.model_calls >= self.config.model_call_budget:
                     self.stop_reason = "model_call_budget_exhausted"
@@ -610,8 +622,9 @@ class Orchestrator:
             self.verifier.verify(candidate)
             self._emit_verified(candidate)
 
-        # Reflect on failures
-        for candidate in new_candidates:
+        # Reflect on failures (off in the no-reflection ablation: failed
+        # candidates then never become repairable, so slots go to mutation)
+        for candidate in new_candidates if self.config.reflection else []:
             if candidate.is_failed:
                 if self.model_calls >= self.config.model_call_budget:
                     self.stop_reason = "model_call_budget_exhausted"

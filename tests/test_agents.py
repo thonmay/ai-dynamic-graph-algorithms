@@ -269,3 +269,71 @@ def test_final_grade_tries_next_passing(tmp_path, monkeypatch):
     assert graded == [("gen001_c01", "FAIL"), ("gen001_c02", "PASS")]
     assert summary["final_grade"]["id"] == "gen001_c02"
     assert summary["final_grade"]["state"] == "PASS"
+
+
+def _jwt(seconds_left: float) -> str:
+    import base64
+    import time as _t
+    body = base64.urlsafe_b64encode(json.dumps({"exp": _t.time() + seconds_left}).encode()).decode().rstrip("=")
+    return f"h.{body}.s"
+
+
+def test_ericai_refresh_writes_fresh_token(tmp_path, monkeypatch):
+    from evoalgo.agents import api
+    token_file = tmp_path / ".ericai_token_env"
+    token_file.write_text(f"export ERICAI_ACCESS_TOKEN={_jwt(60)}\n")
+    fresh = _jwt(5400)
+    cli = tmp_path / "ericai"
+    cli.write_text(f"#!/bin/sh\necho {fresh}\n")
+    cli.chmod(0o755)
+    monkeypatch.setattr(api, "ERICAI_TOKEN_FILE", token_file)
+    monkeypatch.setattr(api, "ERICAI_CLI", cli)
+    assert api.refresh_ericai_token() is True
+    assert api._read_key("ERICAI_ACCESS_TOKEN") == fresh
+    assert oct(token_file.stat().st_mode & 0o777) == "0o600"
+    # A fresh token is not refreshed again unless forced.
+    cli.write_text("#!/bin/sh\nexit 1\n")
+    assert api.refresh_ericai_token() is True
+    assert api.refresh_ericai_token(force=True) is False
+    assert api._read_key("ERICAI_ACCESS_TOKEN") == fresh  # failed refresh keeps the old file
+
+
+def test_ericai_refresh_rejects_bad_output(tmp_path, monkeypatch):
+    from evoalgo.agents import api
+    token_file = tmp_path / ".ericai_token_env"
+    token_file.write_text(f"export ERICAI_ACCESS_TOKEN={_jwt(60)}\n")
+    cli = tmp_path / "ericai"
+    cli.write_text("#!/bin/sh\necho please log in in a browser\n")
+    cli.chmod(0o755)
+    monkeypatch.setattr(api, "ERICAI_TOKEN_FILE", token_file)
+    monkeypatch.setattr(api, "ERICAI_CLI", cli)
+    assert api.refresh_ericai_token() is False
+    assert api._jwt_seconds_left(api._read_key("ERICAI_ACCESS_TOKEN")) < 120
+
+
+def test_no_reflection_ablation(tmp_path):
+    cfg = RunConfig(problem="dynamic_bfs", provider="mock", population_size=2, max_generations=2,
+                    elitism_k=1, early_stop_on_success=False, mock_script=["bad", "bad", "good", "good"],
+                    reflection=False,
+                    bound=Bound(n_max=3, n_random=0, seq_len_max=2, seq_count=1, seed=1),
+                    search_n_max=2, search_seq_count=1, workdir=str(tmp_path))
+    summary = Orchestrator(cfg, run_id="noref").run()
+    events = read_events(tmp_path / "noref")
+    assert not [e for e in events if e["type"] == "candidate_reflected"]
+    assert not [e for e in events if e["type"] == "candidate_generated" and e.get("role") == "repair"]
+    roles = {e["role"] for e in events if e["type"] == "agent_call_start"}
+    assert roles == {"seed", "mutate"}  # no reflect, no repair calls
+    assert summary["model_calls"] == len([e for e in events if e["type"] == "agent_call_start"])
+
+
+def test_resume_keeps_call_count(tmp_path):
+    """A resumed run continues counting calls, so the budget covers the whole run."""
+    base = dict(problem="dynamic_bfs", provider="mock", population_size=2, elitism_k=1,
+                early_stop_on_success=False, mock_script=["bad"] * 20, model_call_budget=100,
+                bound=Bound(n_max=3, n_random=0, seq_len_max=2, seq_count=1, seed=1),
+                search_n_max=2, search_seq_count=1, workdir=str(tmp_path), selection_seed=7)
+    first = Orchestrator(RunConfig(max_generations=1, **base), run_id="r").run()
+    second = Orchestrator(RunConfig(max_generations=2, **base), run_id="r").run()
+    calls = [e for e in read_events(tmp_path / "r") if e["type"] == "agent_call_end"]
+    assert first["model_calls"] > 0
+    assert second["model_calls"] == len(calls) > first["model_calls"]

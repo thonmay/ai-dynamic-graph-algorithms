@@ -35,6 +35,23 @@ from typing import Any
 import numpy as np
 
 # Runner script that executes inside the subprocess
+def _runner_file() -> str:
+    """The runner script, written once per process and content (not per call).
+
+    A per-call temp file was left behind whenever the parent was killed
+    (timeouts, Ctrl-C), hundreds per run. One file per process and template
+    version, overwritten atomically, leaves at most one.
+    """
+    import hashlib
+    digest = hashlib.sha256(_RUNNER_TEMPLATE.encode()).hexdigest()[:12]
+    path = Path(tempfile.gettempdir()) / f"evoalgo_runner_{os.getuid()}_{digest}.py"
+    if not path.is_file() or path.read_text() != _RUNNER_TEMPLATE:
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(_RUNNER_TEMPLATE)
+        os.replace(tmp, path)
+    return str(path)
+
+
 _RUNNER_TEMPLATE = textwrap.dedent('''
 import json, sys, time, traceback, copy
 
@@ -264,11 +281,7 @@ class Sandbox:
         module_path = Path(module_path)
         call_timeout = self.timeout if timeout is None else timeout
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix="_runner.py", delete=False
-        ) as f:
-            f.write(_RUNNER_TEMPLATE)
-            runner_path = f.name
+        runner_path = _runner_file()
 
         input_data = {
             "module_path": str(module_path),
@@ -331,8 +344,6 @@ class Sandbox:
 
         except subprocess.TimeoutExpired:
             return SandboxResult(status="timeout", error=f"Exceeded {call_timeout}s")
-        finally:
-            Path(runner_path).unlink(missing_ok=True)
 
     def execute(
         self,

@@ -612,9 +612,10 @@ def cmd_verify(args) -> int:
     n_max = args.n_max if args.n_max is not None else (5 if args.problem in corpus_problems else 4)
 
     problem = get_problem(args.problem)
-    if args.problem in corpus_problems:
-        return _cmd_verify_corpus(problem, n_max, args, tmpdir=Path(tempfile.mkdtemp(prefix="evoalgo_verify_")))
-    return _cmd_verify_smoke(problem, n_max, args, tmpdir=Path(tempfile.mkdtemp(prefix="evoalgo_verify_")))
+    with tempfile.TemporaryDirectory(prefix="evoalgo_verify_") as tmp:
+        if args.problem in corpus_problems:
+            return _cmd_verify_corpus(problem, n_max, args, tmpdir=Path(tmp))
+        return _cmd_verify_smoke(problem, n_max, args, tmpdir=Path(tmp))
 
 
 def _make_selftest_verifier(problem, n_max: int, args) -> Verifier:

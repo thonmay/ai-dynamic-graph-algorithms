@@ -199,3 +199,14 @@ def test_cli_errors_are_json(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert main(["check"]) == 2
     assert "error" in json.loads(capsys.readouterr().out)
+
+
+def test_sandbox_leaves_no_temp_files(tmp_path, monkeypatch):
+    import tempfile
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    from evoalgo.agents.examples import run_examples
+    for _ in range(3):
+        assert run_examples("dynamic_bfs", GOOD)["verdict"] == "PASS"
+    left = [p.name for p in tmp_path.iterdir()]
+    assert len(left) == 1 and left[0].startswith("evoalgo_runner_"), left

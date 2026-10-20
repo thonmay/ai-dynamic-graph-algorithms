@@ -107,6 +107,10 @@ class RunConfig:
     max_consecutive_all_failed: int = 5
     model_call_budget: int = 500
     early_stop_on_success: bool = True
+    # Reflection role (failure analysis feeding repair). False = ablation.
+    reflection: bool = True
+    # Seed for parent selection (None = unseeded). Campaign runs set one per seed.
+    selection_seed: int | None = None
     # Search grade (every candidate) vs final grade (best candidate, on
     # `bound`). See Orchestrator.__init__.
     search_n_max: int = 4

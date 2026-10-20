@@ -51,6 +51,9 @@ class Population:
         self.diversity_threshold = diversity_threshold
         self.crossover_enabled = crossover_enabled
         self.candidates: list[Candidate] = []
+        # Own generator: parent selection must not depend on other users of
+        # the global `random` (e.g. HTTP retry jitter). Seeded by the orchestrator.
+        self.rng = random.Random()
 
     def add(self, candidate: Candidate) -> None:
         self.candidates.append(candidate)
@@ -105,7 +108,7 @@ class Population:
 
         for _ in range(count):
             # Tournament: pick k random candidates, choose the best-ranked
-            contenders = random.sample(viable, tournament_k)
+            contenders = self.rng.sample(viable, tournament_k)
             best = min(contenders, key=_rank_key)
             parents.append(best)
 
