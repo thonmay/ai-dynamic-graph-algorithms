@@ -1,0 +1,402 @@
+{
+  "call_id": "call_0023",
+  "timestamp": "2026-10-21T21:59:47Z",
+  "backend": "api",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "type": "generate",
+  "candidate_id": "gen007_c02",
+  "messages_start": [
+    {
+      "role": "system",
+      "content": "You are the GENERATION role in an evolutionary search for dynamic graph algorithms. Produce one candidate algorithm and write it with `write_candidate`. You do not reflect, repair other candidates, or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the problem definition, research brief, run goal and any researcher hint in the task.\n2. If a parent candidate is given, derive your candidate from it: keep what works and change the part the goal or hint points at. If no parent is given, start from the offline algorithm and make it dynamic.\n3. Write the full module with `write_candidate`.\n4. Check it with `run_examples` (small public set). If it fails, fix the first failure with `edit_candidate` or a new `write_candidate`, then check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`. Each returns the new state.\n- `graph` is the current 0/1 adjacency matrix (list of lists, vertex ids 0..n-1) after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no `get_result()`, no imports beyond the Python standard library.\n- The maintained result (tree, ordering, partition, set) is part of the returned state, in the shape the problem definition describes.\n\n## Rules\n\n- Correct first, then cheaper: the hidden grade is correctness on every tested graph and update, then work relative to recomputing from scratch.\n- Prefer the smallest change that achieves the goal. Simpler code that is equally correct is better.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case, not just the examples.\n- If you are unsure about a graph-theory fact, say so in your report instead of guessing.\n\n## Report (final message, no tool call)\n\nCANDIDATE: <file written>\nAPPROACH: <one or two lines: idea and key data structures>\nEXAMPLES: <last run_examples verdict>\nNOTES: <assumptions or concerns, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: derive a NEW candidate from the parent below.\nOutput file: candidates/gen007_c02.py\n\nPARENT CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering.\n\nStrategy:\n- init: static partition-refinement LexBFS (O(n^2) label-based).\n- insert_edge / delete_edge: check if the old ordering is still a valid\n  LexBFS (4-point property).  If yes, keep it.  If no, try a cheap local\n  repair (move one of the endpoints to a different position).  If that\n  fails, fall back to a full recompute.\n\nThe 4-point (LB) property: for all positions a < b < c with\nordering[a]~ordering[c] and not ordering[a]~ordering[b],\nthere exists d < a with ordering[d]~ordering[b] and not ordering[d]~ordering[c].\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via label-based approach. Returns ordering list.\n\n    Correct LexBFS: maintain a list of (label, vertex) pairs for the\n    remaining vertices, sorted by label (stable, so equal labels keep\n    their insertion order).  Repeatedly take the first pair, output the\n    vertex, and append 1/0 to every remaining vertex's label according\n    to adjacency to the output vertex.  The stable sort preserves the\n    FIFO order among vertices with identical labels, which is what\n    makes this a BFS (neighbors of the start come before non-neighbors).\n    \"\"\"\n    n = len(graph)\n    adj = [set() for _ in range(n)]\n    for v in range(n):\n        for w in range(v + 1, n):\n            if graph[v][w]:\n                adj[v].add(w)\n                adj[w].add(v)\n\n    ordered = []\n    remaining = list(range(n))\n    labels = {v: [] for v in range(n)}\n\n    for _ in range(n):\n        # Stable sort by label in REVERSE order: a vertex with label [1,...]\n        # (adjacent to the most recently selected vertex) comes before one\n        # with [0,...].  Equal labels keep their current order (FIFO).\n        # This ensures neighbors of the start are output before non-neighbors.\n        remaining.sort(key=lambda v: labels[v], reverse=True)\n        best = remaining[0]\n        ordered.append(best)\n        remaining.remove(best)\n        for v in remaining:\n            # Append the adjacency bit to the most recently selected vertex.\n            # The label is the adjacency vector to the ordered prefix, in\n            # selection order (newest first).  The reverse sort makes the\n            # newest bit the most significant, so neighbors of the most\n            # recently selected vertex come first.\n            labels[v].append(1 if best in adj[v] else 0)\n\n    return ordered\n\n\ndef _is_valid_lexbfs(graph, ordering):\n    \"\"\"Check the 4-point (LB) property. Returns True if valid.\"\"\"\n    n = len(graph)\n    for a in range(n):\n        va = ordering[a]\n        for b in range(a + 1, n):\n            vb = ordering[b]\n            if graph[va][vb]:\n                continue\n            for c in range(b + 1, n):\n                vc = ordering[c]\n                if not graph[va][vc]:\n                    continue\n                # Need d < a with d~b and not d~c\n                found = False\n                for d in range(a):\n                    vd = ordering[d]\n                    if graph[vd][vb] and not graph[vd][vc]:\n                        found = True\n                        break\n                if not found:\n                    return False\n    return True\n\n\ndef _try_local_repair(graph, ordering, u, v):\n    \"\"\"Try to fix the ordering after an edge update involving (u, v).\n\n    Try moving u or v to various positions, or swapping them.\n    Returns a valid ordering or None.\n    \"\"\"\n    n = len(graph)\n\n    # Try moving u to each position\n    for new_pos in range(n):\n        candidate = [x for x in ordering if x != u]\n        candidate.insert(new_pos, u)\n        if _is_valid_lexbfs(graph, candidate):\n            return candidate\n\n    # Try moving v to each position\n    for new_pos in range(n):\n        candidate = [x for x in ordering if x != v]\n        candidate.insert(new_pos, v)\n        if _is_valid_lexbfs(graph, candidate):\n            return candidate\n\n    # Try swapping u and v\n    candidate = list(ordering)\n    iu = candidate.index(u)\n    iv = candidate.index(v)\n    candidate[iu], candidate[iv] = candidate[iv], candidate[iu]\n    if _is_valid_lexbfs(graph, candidate):\n        return candidate\n\n    return None\n\n\ndef init(graph):\n    ordering = _lexbfs(graph)\n    return {'ordering': ordering}\n\n\ndef insert_edge(graph, edge, state):\n    u, v = edge\n    ordering = state['ordering']\n    if _is_valid_lexbfs(graph, ordering):\n        return state\n    repaired = _try_local_repair(graph, ordering, u, v)\n    if repaired is not None:\n        return {'ordering': repaired}\n    return {'ordering': _lexbfs(graph)}\n\n\ndef delete_edge(graph, edge, state):\n    u, v = edge\n    ordering = state['ordering']\n    if _is_valid_lexbfs(graph, ordering):\n        return state\n    repaired = _try_local_repair(graph, ordering, u, v)\n    if repaired is not None:\n        return {'ordering': repaired}\n    return {'ordering': _lexbfs(graph)}\n```\n\nSPECIALIST FOCUS:\nYou are a specialist agent, added because the search stopped getting cheaper. Signature of the plateau: the best candidate gen002_c03 is correct on the search grade with work ratio 0.343, and no candidate has lowered it recently. Lower is better; 1.0 is the cost of the offline recomputation. Find the update cases where the parent still recomputes or scans more than it needs to, and handle them locally. Keep it correct: a change that breaks correctness is worse than no change.\n\nMore context: read_file('pack/brief.md') has the full research brief.\n"
+    }
+  ],
+  "duration_s": 99.5,
+  "steps": 16,
+  "tool_calls": [
+    "read_file",
+    "read_file",
+    "read_file",
+    "read_file",
+    "read_file",
+    "read_file",
+    "write_candidate",
+    "write_candidate",
+    "run_examples",
+    "edit_candidate",
+    "edit_candidate",
+    "edit_candidate",
+    "edit_candidate",
+    "edit_candidate",
+    "run_examples",
+    "read_file",
+    "write_candidate",
+    "run_examples",
+    "write_candidate"
+  ],
+  "examples_runs": 3,
+  "usage": {
+    "prompt_tokens": 223186,
+    "completion_tokens": 20841
+  },
+  "ok": true,
+  "error": "step limit (16) reached",
+  "summary": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are the GENERATION role in an evolutionary search for dynamic graph algorithms. Produce one candidate algorithm and write it with `write_candidate`. You do not reflect, repair other candidates, or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the problem definition, research brief, run goal and any researcher hint in the task.\n2. If a parent candidate is given, derive your candidate from it: keep what works and change the part the goal or hint points at. If no parent is given, start from the offline algorithm and make it dynamic.\n3. Write the full module with `write_candidate`.\n4. Check it with `run_examples` (small public set). If it fails, fix the first failure with `edit_candidate` or a new `write_candidate`, then check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`. Each returns the new state.\n- `graph` is the current 0/1 adjacency matrix (list of lists, vertex ids 0..n-1) after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no `get_result()`, no imports beyond the Python standard library.\n- The maintained result (tree, ordering, partition, set) is part of the returned state, in the shape the problem definition describes.\n\n## Rules\n\n- Correct first, then cheaper: the hidden grade is correctness on every tested graph and update, then work relative to recomputing from scratch.\n- Prefer the smallest change that achieves the goal. Simpler code that is equally correct is better.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case, not just the examples.\n- If you are unsure about a graph-theory fact, say so in your report instead of guessing.\n\n## Report (final message, no tool call)\n\nCANDIDATE: <file written>\nAPPROACH: <one or two lines: idea and key data structures>\nEXAMPLES: <last run_examples verdict>\nNOTES: <assumptions or concerns, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: derive a NEW candidate from the parent below.\nOutput file: candidates/gen007_c02.py\n\nPARENT CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering.\n\nStrategy:\n- init: static partition-refinement LexBFS (O(n^2) label-based).\n- insert_edge / delete_edge: check if the old ordering is still a valid\n  LexBFS (4-point property).  If yes, keep it.  If no, try a cheap local\n  repair (move one of the endpoints to a different position).  If that\n  fails, fall back to a full recompute.\n\nThe 4-point (LB) property: for all positions a < b < c with\nordering[a]~ordering[c] and not ordering[a]~ordering[b],\nthere exists d < a with ordering[d]~ordering[b] and not ordering[d]~ordering[c].\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via label-based approach. Returns ordering list.\n\n    Correct LexBFS: maintain a list of (label, vertex) pairs for the\n    remaining vertices, sorted by label (stable, so equal labels keep\n    their insertion order).  Repeatedly take the first pair, output the\n    vertex, and append 1/0 to every remaining vertex's label according\n    to adjacency to the output vertex.  The stable sort preserves the\n    FIFO order among vertices with identical labels, which is what\n    makes this a BFS (neighbors of the start come before non-neighbors).\n    \"\"\"\n    n = len(graph)\n    adj = [set() for _ in range(n)]\n    for v in range(n):\n        for w in range(v + 1, n):\n            if graph[v][w]:\n                adj[v].add(w)\n                adj[w].add(v)\n\n    ordered = []\n    remaining = list(range(n))\n    labels = {v: [] for v in range(n)}\n\n    for _ in range(n):\n        # Stable sort by label in REVERSE order: a vertex with label [1,...]\n        # (adjacent to the most recently selected vertex) comes before one\n        # with [0,...].  Equal labels keep their current order (FIFO).\n        # This ensures neighbors of the start are output before non-neighbors.\n        remaining.sort(key=lambda v: labels[v], reverse=True)\n        best = remaining[0]\n        ordered.append(best)\n        remaining.remove(best)\n        for v in remaining:\n            # Append the adjacency bit to the most recently selected vertex.\n            # The label is the adjacency vector to the  ...[3339 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-9a6b51d7740c8df5",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"pack/brief.md\"}"
+          }
+        },
+        {
+          "id": "chatcmpl-tool-b0512a1207f6a4d4",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen007_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9a6b51d7740c8df5",
+      "content": "# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b0512a1207f6a4d4",
+      "content": "error: no such file: candidates/gen007_c02.py; files in candidates/: gen001_c01.py, gen001_c02.py, gen001_c03.py, gen001_c04.py, gen002_c01.py, gen002_c02.py, gen002_c03.py, gen003_c01.py, gen003_c02.py, gen004_c01.py, gen004_c02.py, gen005_c01.py, gen005_c02.py, gen006_c01.py, gen006_c02.py, gen007_c01.py"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a377c719e47ef199",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen002_c03.py\"}"
+          }
+        },
+        {
+          "id": "chatcmpl-tool-b139c9078df6bee6",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen007_c01.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a377c719e47ef199",
+      "content": "\"\"\"Dynamic LexBFS ordering.\n\nStrategy:\n- init: static partition-refinement LexBFS (O(n^2) label-based).\n- insert_edge / delete_edge: check if the old ordering is still a valid\n  LexBFS (4-point property).  If yes, keep it.  If no, try a cheap local\n  repair (move one of the endpoints to a different position).  If that\n  fails, fall back to a full recompute.\n\nThe 4-point (LB) property: for all positions a < b < c with\nordering[a]~ordering[c] and not ordering[a]~ordering[b],\nthere exists d < a with ordering[d]~ordering[b] and not ordering[d]~ordering[c].\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via label-based approach. Returns ordering list.\n\n    Correct LexBFS: maintain a list of (label, vertex) pairs for the\n    remaining vertices, sorted by label (stable, so equal labels keep\n    their insertion order).  Repeatedly take the first pair, output the\n    vertex, and append 1/0 to every remaining vertex's label according\n    to adjacency to the output vertex.  The stable sort preserves the\n    FIFO order among vertices with identical labels, which is what\n    makes this a BFS (neighbors of the start come before non-neighbors).\n    \"\"\"\n    n = len(graph)\n    adj = [set() for _ in range(n)]\n    for v in range(n):\n        for w in range(v + 1, n):\n            if graph[v][w]:\n                adj[v].add(w)\n                adj[w].add(v)\n\n    ordered = []\n    remaining = list(range(n))\n    labels = {v: [] for v in range(n)}\n\n    for _ in range(n):\n        # Stable sort by label in REVERSE order: a vertex with label [1,...]\n        # (adjacent to the most recently selected vertex) comes before one\n        # with [0,...].  Equal labels keep their current order (FIFO).\n        # This ensures neighbors of the start are output before non-neighbors.\n        remaining.sort(key=lambda v: labels[v], reverse=True)\n        best = remaining[0]\n        ordered.append(best)\n        remaining.remove(best)\n        for v in remaining:\n            # Append the adjacency bit to the most recently selected vertex.\n            # The label is the adjacency vector to the ordered prefix, in\n            # selection order (newest first).  The reverse sort makes the\n            # newest bit the most significant, so neighbors of the most\n            # recently selected vertex come first.\n            labels[v].append(1 if best in adj[v] else 0)\n\n    return ordered\n\n\ndef _is_valid_lexbfs(graph, ordering):\n    \"\"\"Check the 4-point (LB) property. Returns True if valid.\"\"\"\n    n = len(graph)\n    for a in range(n):\n        va = ordering[a]\n        for b in range(a + 1, n):\n            vb = ordering[b]\n            if graph[va][vb]:\n                continue\n            for c in range(b + 1, n):\n                vc = ordering[c]\n                if not graph[va][vc]:\n                    continue\n                # Need d < a with d~b and not d~c\n                found = False\n                for d in range(a):\n                    vd = ordering[d]\n                    if graph[vd][vb] and not graph[vd][vc]:\n                        found = True\n                        break\n                if not found:\n                    return False\n    return True\n\n\ndef _try_local_repair(graph, ordering, u, v):\n    \"\"\"Try to fix the ordering after an edge update involving (u, v).\n\n    Try moving u or v to various positions, or swapping them.\n    Returns a valid ordering or None.\n    \"\"\"\n    n = len(graph)\n\n    # Try moving u to each position\n    for new_pos in range(n):\n        candidate = [x for x in ordering if x != u]\n        candidate.insert(new_pos, u)\n        if _is_valid_lexbfs(graph, candidate):\n            return candidate\n\n    # Try moving v to each position\n    for new_pos in range(n):\n        candidate = [x for x in ordering if x != v]\n        candidate.insert(new_pos, v)\n        if _is_valid_lexbfs(graph, candidate):\n            return candidate\n\n    # Try swapping u and v\n    candidate = list(ordering)\n    iu = candidate.index(u)\n    iv = candidate.index(v)\n    candidate[iu ...[844 chars]"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b139c9078df6bee6",
+      "content": "\"\"\"Dynamic LexBFS ordering.\n\nStrategy: maintain a valid LexBFS ordering incrementally.\n\n- init: static LexBFS via partition refinement (O(n^2) bitset version).\n- insert_edge(u, v) / delete_edge(u, v): a single edge flip only affects\n  (LB) 4-point triples that involve the flipped edge, so we run a\n  *targeted* validity check (O(n^2) worst case, early-exit) instead of the\n  parent's O(n^3) full check.  If the ordering is still valid we keep it;\n  otherwise we recompute.\n\nValidity is certified by the (LB) 4-point property of Corneil and Krueger:\nfor all positions a < b < c with ac in E and ab not in E, there exists\nd < a with db in E and dc not in E.\n\nTargeted check after flipping edge (u, v):\n  Let p = pos[u], q = pos[v], assume p < q.\n  - Necessary condition: the (p, q) pair itself must be (LB)-satisfied\n    (this is the only pair whose own status can change).\n  - For every c > q: the witness set for pair (u, c) gains/loses v, and\n    the violation set for pair (v, c) gains/loses u.  Both are checked\n    in O(n) each.\n  - For every b < p: the violation set for pair (b, u) gains/loses v,\n    and for pair (b, v) gains/loses u.  Checked in O(n) each.\n  - All other pairs are unaffected by the flip.\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via partition refinement. Returns ordering list.\n\n    O(n^2) using bitsets: each bucket is a Python int bitmask of its\n    members; refinement of a bucket by vertex v is a single AND.\n    \"\"\"\n    n = len(graph)\n    if n == 0:\n        return []\n\n    # Bitset of neighbors of each vertex.\n    nbr = [0] * n\n    for i in range(n):\n        row = graph[i]\n        m = 0\n        for j in range(n):\n            if row[j]:\n                m |= 1 << j\n        nbr[i] = m\n\n    buckets = [(1 << n) - 1]\n    ordering = []\n\n    for _ in range(n):\n        # Find the first non-empty bucket.\n        bi = 0\n        while bi < len(buckets) and buckets[bi] == 0:\n            bi += 1\n        if bi >= len(buckets):\n            break\n\n        # Take the lowest-numbered vertex of this bucket (deterministic\n        # tie-break; any tie-break is valid).\n        b = buckets[bi]\n        v = (b & -b).bit_length() - 1\n        buckets[bi] = b ^ (1 << v)\n        ordering.append(v)\n\n        # Refine every remaining bucket by adjacency to v.\n        nb = nbr[v]\n        new_buckets = []\n        for x in buckets:\n            if x == 0:\n                continue\n            a = x & nb\n            c = x & ~nb\n            if a:\n                new_buckets.append(a)\n            if c:\n                new_buckets.append(c)\n        buckets = new_buckets\n\n    return ordering\n\n\ndef _recompute(graph):\n    \"\"\"Recompute the LexBFS ordering from scratch.\"\"\"\n    return {'ordering': _lexbfs(graph)}\n\n\ndef _check_pair(graph, ordering, i, j):\n    \"\"\"Check the (LB) condition for the pair (ordering[i], ordering[j]),\n    i < j.  O(j^2) worst case.\"\"\"\n    n = len(ordering)\n    b = ordering[i]\n    c = ordering[j]\n    # Find the minimum position d < i with graph[d][b]=1 and graph[d][c]=0.\n    min_d = n\n    for d in range(i):\n        x = ordering[d]\n        if graph[x][b] and not graph[x][c]:\n            min_d = d\n            break\n    # For every a < i with graph[a][c]=1 and graph[a][b]=0 we need a > min_d.\n    for a in range(i):\n        x = ordering[a]\n        if graph[x][c] and not graph[x][b]:\n            if a <= min_d:\n                return False\n    return True\n\n\ndef _still_valid_after_flip(graph, ordering, u, v):\n    \"\"\"Targeted (LB) check after flipping edge (u, v).  O(n^2) worst case.\"\"\"\n    n = len(ordering)\n    if n <= 2:\n        return True\n\n    pos = [0] * n\n    for i, x in enumerate(ordering):\n        pos[x] = i\n\n    p = pos[u]\n    q = pos[v]\n    if p > q:\n        p, q = q, p\n\n    # 1. Necessary condition: the (p, q) pair itself must be satisfied.\n    if not _check_pair(graph, ordering, p, q):\n        return False\n\n    # 2. Pairs (u, c) and (v, c) for c > q: their witness sets change.\n    for ci in range(q + 1, n):\n        c = ordering[ci]\n   ...[2456 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a4b27608eebad96a",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen006_c02.py\"}"
+          }
+        },
+        {
+          "id": "chatcmpl-tool-82d495de54e46473",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen005_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a4b27608eebad96a",
+      "content": "\"\"\"Dynamic LexBFS ordering.\n\nStrategy:\n- init: static label-based LexBFS (O(n^2)).\n- insert_edge / delete_edge:\n    1. Cheap necessary-condition check (O(n)): for each endpoint x of the\n       updated edge, the set of neighbors of x must be a prefix of the\n       ordering.  If both are prefixes, the ordering is still a valid\n       LexBFS and we keep it.\n    2. If not, try a cheap local repair: move u or v to a position that\n       restores the prefix property, verified by the full 4-point check.\n    3. Fall back to a full recompute.\n\nThe 4-point (LB) property: for all positions a < b < c with\nordering[a]~ordering[c] and not ordering[a]~ordering[b],\nthere exists d < a with ordering[d]~ordering[b] and not ordering[d]~ordering[c].\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via label-based approach. Returns ordering list.\"\"\"\n    n = len(graph)\n    adj = [set() for _ in range(n)]\n    for v in range(n):\n        for w in range(v + 1, n):\n            if graph[v][w]:\n                adj[v].add(w)\n                adj[w].add(v)\n\n    ordered = []\n    remaining = list(range(n))\n    labels = {v: [] for v in range(n)}\n\n    for _ in range(n):\n        remaining.sort(key=lambda v: labels[v], reverse=True)\n        best = remaining[0]\n        ordered.append(best)\n        remaining.remove(best)\n        for v in remaining:\n            labels[v].append(1 if best in adj[v] else 0)\n\n    return ordered\n\n\ndef _is_valid_lexbfs(graph, ordering):\n    \"\"\"Check the 4-point (LB) property. Returns True if valid.\n\n    For each position a, precompute the set S of vertices that are\n    adjacent to some earlier vertex but not to ordering[a] itself.\n    Then for each b > a with a not~ b, the witness d < a exists iff\n    ordering[b] is in S.\n    \"\"\"\n    n = len(graph)\n    for a in range(n):\n        va = ordering[a]\n        S = set()\n        for d in range(a):\n            vd = ordering[d]\n            if graph[vd][va]:\n                continue\n            for x in range(n):\n                if graph[vd][x]:\n                    S.add(x)\n        for b in range(a + 1, n):\n            vb = ordering[b]\n            if graph[va][vb]:\n                continue\n            if vb not in S:\n                return False\n    return True\n\n\ndef _prefix_ok(graph, ordering, pos, x):\n    \"\"\"Necessary condition: neighbors of x form a prefix of the ordering.\n\n    pos[x] = position of vertex x in the ordering.\n    Returns True iff for every neighbor y of x, pos[y] < pos[x].\n    \"\"\"\n    px = pos[x]\n    row = graph[x]\n    for y in range(len(row)):\n        if row[y] and pos[y] >= px:\n            return False\n    return True\n\n\ndef _try_local_repair(graph, ordering, u, v):\n    \"\"\"Try to fix the ordering after an edge update involving (u, v).\n\n    Try moving u or v to each position; accept the first candidate that\n    passes the full 4-point check.  Returns a valid ordering or None.\n    \"\"\"\n    n = len(ordering)\n\n    for x in (u, v):\n        for new_pos in range(n):\n            candidate = [t for t in ordering if t != x]\n            candidate.insert(new_pos, x)\n            if _is_valid_lexbfs(graph, candidate):\n                return candidate\n\n    return None\n\n\ndef _update(graph, edge, state):\n    u, v = edge\n    ordering = state['ordering']\n    n = len(ordering)\n\n    # Cheap necessary-condition check: both endpoints' neighbor sets\n    # must be prefixes of the ordering.\n    pos = [0] * n\n    for i, x in enumerate(ordering):\n        pos[x] = i\n    if _prefix_ok(graph, ordering, pos, u) and _prefix_ok(graph, ordering, pos, v):\n        return state\n\n    repaired = _try_local_repair(graph, ordering, u, v)\n    if repaired is not None:\n        return {'ordering': repaired}\n    return {'ordering': _lexbfs(graph)}\n\n\ndef init(graph):\n    ordering = _lexbfs(graph)\n    return {'ordering': ordering}\n\n\ndef insert_edge(graph, edge, state):\n    return _update(graph, edge, state)\n\n\ndef delete_edge(graph, edge, state):\n    return _update(graph, edge, state)\n"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-82d495de54e46473",
+      "content": "\"\"\"Dynamic LexBFS ordering.\n\nStrategy:\n- init: static partition-refinement LexBFS (label-based, O(n^2)).\n- insert_edge / delete_edge: check if the old ordering is still a valid\n  LexBFS using the 4-point (LB) property with bitset adjacency.  If yes,\n  keep it.  If no, try a cheap local repair (move one of the endpoints to\n  a different position, or swap them).  If that fails, fall back to a\n  full recompute.\n\nThe 4-point (LB) property: for all positions a < b < c with\nordering[a]~ordering[c] and not ordering[a]~ordering[b],\nthere exists d < a with ordering[d]~ordering[b] and not ordering[d]~ordering[c].\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via label-based approach. Returns ordering list.\n\n    Maintain a list of (label, vertex) pairs for the remaining vertices,\n    sorted by label (stable, so equal labels keep their insertion order).\n    Repeatedly take the first pair, output the vertex, and append 1/0 to\n    every remaining vertex's label according to adjacency to the output\n    vertex.  The stable sort preserves the FIFO order among vertices with\n    identical labels, which is what makes this a BFS (neighbors of the\n    start come before non-neighbors).\n    \"\"\"\n    n = len(graph)\n    adj = [set() for _ in range(n)]\n    for v in range(n):\n        for w in range(v + 1, n):\n            if graph[v][w]:\n                adj[v].add(w)\n                adj[w].add(v)\n\n    ordered = []\n    remaining = list(range(n))\n    labels = {v: [] for v in range(n)}\n\n    for _ in range(n):\n        # Stable sort by label in REVERSE order: a vertex with label [1,...]\n        # (adjacent to the most recently selected vertex) comes before one\n        # with [0,...].  Equal labels keep their current order (FIFO).\n        # This ensures neighbors of the start are output before non-neighbors.\n        remaining.sort(key=lambda v: labels[v], reverse=True)\n        best = remaining[0]\n        ordered.append(best)\n        remaining.remove(best)\n        for v in remaining:\n            # Append the adjacency bit to the most recently selected vertex.\n            # The label is the adjacency vector to the ordered prefix, in\n            # selection order (newest first).  The reverse sort makes the\n            # newest bit the most significant, so neighbors of the most\n            # recently selected vertex come first.\n            labels[v].append(1 if best in adj[v] else 0)\n\n    return ordered\n\n\ndef _is_valid_lexbfs(graph, ordering):\n    \"\"\"Check the 4-point (LB) property using bitsets. Returns True if valid.\n\n    For all a < b < c with a~c and not a~b, there must exist d < a with\n    d~b and not d~c.\n\n    We iterate over (a, b) pairs where not a~b, compute the set of\n    candidate d's (vertices before a that are adjacent to b), and then\n    check that for every c > b with a~c, at least one candidate d is\n    not adjacent to c.\n    \"\"\"\n    n = len(graph)\n    # Build bitsets: adj_bits[v] is an int with bit w set iff v~w\n    adj_bits = [0] * n\n    for v in range(n):\n        bits = 0\n        row = graph[v]\n        for w in range(n):\n            if row[w]:\n                bits |= (1 << w)\n        adj_bits[v] = bits\n\n    # Precompute prefix bitsets: prefix[a] = bitset of vertices in ordering[0..a-1]\n    prefix = [0] * (n + 1)\n    for i in range(n):\n        prefix[i + 1] = prefix[i] | (1 << ordering[i])\n\n    for a in range(n):\n        va = ordering[a]\n        for b in range(a + 1, n):\n            vb = ordering[b]\n            if graph[va][vb]:\n                continue\n            # d must be in prefix[a] and d~vb\n            d_candidates = prefix[a] & adj_bits[vb]\n            if d_candidates == 0:\n                # No d < a adjacent to vb, so any c > b with va~vc fails\n                for c in range(b + 1, n):\n                    if graph[va][ordering[c]]:\n                        return False\n                continue\n            # For each c > b with va~vc, need d_candidates & ~adj_bits[vc] != 0\n            for c in range(b + 1, n):\n                vc = ordering ...[1859 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a6511d1d42f32897",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering.\\n\\nStrategy:\\n- init: static partition-refinement LexBFS (O(n^2) bitset version).\\n- insert_edge / delete_edge: a single edge flip only affects (LB)\\n  4-point triples that involve the flipped edge, so we run a *targeted*\\n  validity check (O(n^2) worst case, early-exit) instead of the parent's\\n  O(n^3) full check.  If the ordering is still valid we keep it;\\n  otherwise we recompute.\\n\\nValidity is certified by the (LB) 4-point property of Corneil and Krueger:\\nfor all positions a < b < c with ac in E and ab not in E, there exists\\nd < a with db in E and dc not in E.\\n\\nTargeted check after flipping edge (u, v):\\n  Let p = pos[u], q = pos[v], assume p < q.\\n  - Necessary condition: the (p, q) pair itself must be (LB)-satisfied\\n    (this is the only pair whose own status can change).\\n  - For every c > q: the witness set for pair (u, c) gains/loses v, and\\n    the violation set for pair (v, c) gains/loses u.  Both are checked\\n    in O(n) each.\\n  - For every b < p: the violation set for pair (b, u) gains/loses v,\\n    and for pair (b, v) gains/loses u.  Checked in O(n) each.\\n  - All other pairs are unaffected by the flip.\\n\\\"\\\"\\\"\\n\\n\\ndef _lexbfs(graph):\\n    \\\"\\\"\\\"Static LexBFS via partition refinement. Returns ordering list.\\n\\n    O(n^2) using bitsets: each bucket is a Python int bitmask of its\\n    members; refinement of a bucket by vertex v is a single AND.\\n    \\\"\\\"\\\"\\n    n = len(graph)\\n    if n == 0:\\n        return []\\n\\n    # Bitset of neighbors of each vertex.\\n    nbr = [0] * n\\n    for i in range(n):\\n        row = graph[i]\\n        m = 0\\n        for j in range(n):\\n            if row[j]:\\n                m |= 1 << j\\n        nbr[i] = m\\n\\n    buckets = [(1 << n) - 1]\\n    ordering = []\\n\\n    for _ in range(n):\\n        # Find the first non-empty bucket.\\n        bi = 0\\n        while bi < len(buckets) and buckets[bi] == 0:\\n            bi += 1\\n        if bi >= len(buckets):\\n            break\\n\\n        # Take the lowest-numbered vertex of this bucket (deterministic\\n        # tie-break; any tie-break is valid).\\n        b = buckets[bi]\\n        v = (b & -b).bit_length() - 1\\n        buckets[bi] = b ^ (1 << v)\\n        ordering.append(v)\\n\\n        # Refine every remaining bucket by adjacency to v.\\n        nb = nbr[v]\\n        new_buckets = []\\n        for x in buckets:\\n            if x == 0:\\n                continue\\n            a = x & nb\\n            c = x & ~nb\\n            if a:\\n                new_buckets.append(a)\\n            if c:\\n                new_buckets.append(c)\\n        buckets = new_buckets\\n\\n    return ordering\\n\\n\\ndef _recompute(graph):\\n    \\\"\\\"\\\"Recompute the LexBFS ordering from scratch.\\\"\\\"\\\"\\n    return {'ordering': _lexbfs(graph)}\\n\\n\\ndef _check_pair(graph, ordering, i, j):\\n    \\\"\\\"\\\"Check the (LB) condition for the pair (ordering[i], ordering[j]),\\n    i < j.  O(j^2) worst case.\\\"\\\"\\\"\\n    n = len(ordering)\\n    b = ordering[i]\\n    c = ordering[j]\\n    # Find the minimum position d < i with graph[d][b]=1 and graph[d][c]=0.\\n    min_d = n\\n    for d in range(i):\\n        x = ordering[d]\\n        if graph[x][b] and not graph[x][c]:\\n            min_d = d\\n            break\\n    # For every a < i with graph[a][c]=1 and graph[a][b]=0 we need a > min_d.\\n    for a in range(i):\\n        x = ordering[a]\\n        if graph[x][c] and not graph[x][b]:\\n            if a <= min_d:\\n                return False\\n    return True\\n\\n\\ndef _still_valid_after_flip(graph, ordering, u, v):\\n    \\\"\\\"\\\"Targeted (LB) check after flipping edge (u, v).  O(n^2) worst case.\\\"\\\"\\\"\\n    n = len(ordering)\\n    if n <= 2:\\n        return True\\n\\n    pos = [0] * n\\n    for i, x in enumerate(ordering):\\n        pos[x] = i\\n\\n    p = pos[u]\\n    q = pos[v]\\n    if p > q:\\n        p, q = q, p\\n\\n    # 1. Necessary condition: the (p, q) pair itself must be satisfied.\\n    if not _check_pair(graph, ordering, p, q):\\n        return False\\n\\n    # 2. Pairs (u, c) and  ...[2691 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a6511d1d42f32897",
+      "content": "error: bad arguments for write_candidate: Toolbox._t_write_candidate() got an unexpected keyword argument 'path'"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-9394716480671124",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering.\\n\\nStrategy:\\n- init: static partition-refinement LexBFS (O(n^2) bitset version).\\n- insert_edge / delete_edge: a single edge flip only affects (LB)\\n  4-point triples that involve the flipped edge, so we run a *targeted*\\n  validity check (O(n^2) worst case, early-exit) instead of the parent's\\n  O(n^3) full check.  If the ordering is still valid we keep it;\\n  otherwise we recompute.\\n\\nValidity is certified by the (LB) 4-point property of Corneil and Krueger:\\nfor all positions a < b < c with ac in E and ab not in E, there exists\\nd < a with db in E and dc not in E.\\n\\nTargeted check after flipping edge (u, v):\\n  Let p = pos[u], q = pos[v], assume p < q.\\n  - Necessary condition: the (p, q) pair itself must be (LB)-satisfied\\n    (this is the only pair whose own status can change).\\n  - For every c > q: the witness set for pair (u, c) gains/loses v, and\\n    the violation set for pair (v, c) gains/loses u.  Both are checked\\n    in O(n) each.\\n  - For every b < p: the violation set for pair (b, u) gains/loses v,\\n    and for pair (b, v) gains/loses u.  Checked in O(n) each.\\n  - All other pairs are unaffected by the flip.\\n\\\"\\\"\\\"\\n\\n\\ndef _lexbfs(graph):\\n    \\\"\\\"\\\"Static LexBFS via partition refinement. Returns ordering list.\\n\\n    O(n^2) using bitsets: each bucket is a Python int bitmask of its\\n    members; refinement of a bucket by vertex v is a single AND.\\n    \\\"\\\"\\\"\\n    n = len(graph)\\n    if n == 0:\\n        return []\\n\\n    # Bitset of neighbors of each vertex.\\n    nbr = [0] * n\\n    for i in range(n):\\n        row = graph[i]\\n        m = 0\\n        for j in range(n):\\n            if row[j]:\\n                m |= 1 << j\\n        nbr[i] = m\\n\\n    buckets = [(1 << n) - 1]\\n    ordering = []\\n\\n    for _ in range(n):\\n        # Find the first non-empty bucket.\\n        bi = 0\\n        while bi < len(buckets) and buckets[bi] == 0:\\n            bi += 1\\n        if bi >= len(buckets):\\n            break\\n\\n        # Take the lowest-numbered vertex of this bucket (deterministic\\n        # tie-break; any tie-break is valid).\\n        b = buckets[bi]\\n        v = (b & -b).bit_length() - 1\\n        buckets[bi] = b ^ (1 << v)\\n        ordering.append(v)\\n\\n        # Refine every remaining bucket by adjacency to v.\\n        nb = nbr[v]\\n        new_buckets = []\\n        for x in buckets:\\n            if x == 0:\\n                continue\\n            a = x & nb\\n            c = x & ~nb\\n            if a:\\n                new_buckets.append(a)\\n            if c:\\n                new_buckets.append(c)\\n        buckets = new_buckets\\n\\n    return ordering\\n\\n\\ndef _recompute(graph):\\n    \\\"\\\"\\\"Recompute the LexBFS ordering from scratch.\\\"\\\"\\\"\\n    return {'ordering': _lexbfs(graph)}\\n\\n\\ndef _check_pair(graph, ordering, i, j):\\n    \\\"\\\"\\\"Check the (LB) condition for the pair (ordering[i], ordering[j]),\\n    i < j.  O(j^2) worst case.\\\"\\\"\\\"\\n    n = len(ordering)\\n    b = ordering[i]\\n    c = ordering[j]\\n    # Find the minimum position d < i with graph[d][b]=1 and graph[d][c]=0.\\n    min_d = n\\n    for d in range(i):\\n        x = ordering[d]\\n        if graph[x][b] and not graph[x][c]:\\n            min_d = d\\n            break\\n    # For every a < i with graph[a][c]=1 and graph[a][b]=0 we need a > min_d.\\n    for a in range(i):\\n        x = ordering[a]\\n        if graph[x][c] and not graph[x][b]:\\n            if a <= min_d:\\n                return False\\n    return True\\n\\n\\ndef _still_valid_after_flip(graph, ordering, u, v):\\n    \\\"\\\"\\\"Targeted (LB) check after flipping edge (u, v).  O(n^2) worst case.\\\"\\\"\\\"\\n    n = len(ordering)\\n    if n <= 2:\\n        return True\\n\\n    pos = [0] * n\\n    for i, x in enumerate(ordering):\\n        pos[x] = i\\n\\n    p = pos[u]\\n    q = pos[v]\\n    if p > q:\\n        p, q = q, p\\n\\n    # 1. Necessary condition: the (p, q) pair itself must be satisfied.\\n    if not _check_pair(graph, ordering, p, q):\\n        return False\\n\\n    # 2. Pairs (u, c) and  ...[2655 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9394716480671124",
+      "content": "wrote candidates/gen007_c02.py (204 lines)"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8d34ccf0801bfa08",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8d34ccf0801bfa08",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 3,\n \"total\": 4,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_lbfs\",\n  \"result\": \"[0, 1, 2]\",\n  \"expected\": \"[0, 2, 1]\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"violation\": {\n   \"a\": 0,\n   \"b\": 1,\n   \"c\": 2,\n   \"pos_a\": 0,\n   \"minD\": 1000000000\n  },\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8f691d1a2bcfc3fd",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _check_pair(graph, ordering, i, j):\\n    \\\"\\\"\\\"Check the (LB) condition for the pair (ordering[i], ordering[j]),\\n    i < j.  O(j^2) worst case.\\\"\\\"\\\"\\n    n = len(ordering)\\n    b = ordering[i]\\n    c = ordering[j]\\n    # Find the minimum position d < i with graph[d][b]=1 and graph[d][c]=0.\\n    min_d = n\\n    for d in range(i):\\n        x = ordering[d]\\n        if graph[x][b] and not graph[x][c]:\\n            min_d = d\\n            break\\n    # For every a < i with graph[a][c]=1 and graph[a][b]=0 we need a > min_d.\\n    for a in range(i):\\n        x = ordering[a]\\n        if graph[x][c] and not graph[x][b]:\\n            if a <= min_d:\\n                return False\\n    return True\", \"new\": \"def _check_pair(graph, ordering, i, j):\\n    \\\"\\\"\\\"Check the (LB) condition for the pair (ordering[i], ordering[j]),\\n    i < j.  O(j^2) worst case.\\n\\n    For every a < i with a~c and not a~b, there must exist d < a with\\n    d~b and not d~c.  Equivalently, the minimum position d < i with\\n    d~b and not d~c must be strictly smaller than every such a.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    b = ordering[i]\\n    c = ordering[j]\\n    # Find the minimum position d < i with graph[d][b]=1 and graph[d][c]=0.\\n    min_d = n\\n    for d in range(i):\\n        x = ordering[d]\\n        if graph[x][b] and not graph[x][c]:\\n            min_d = d\\n            break\\n    # For every a < i with graph[a][c]=1 and graph[a][b]=0 we need a > min_d.\\n    for a in range(i):\\n        x = ordering[a]\\n        if graph[x][c] and not graph[x][b]:\\n            if a <= min_d:\\n                return False\\n    return True\\n\\n\\ndef _check_pair_after_flip(graph, ordering, i, j, u, v):\\n    \\\"\\\"\\\"Check the (LB) condition for pair (ordering[i], ordering[j]) after\\n    flipping edge (u, v).  O(j^2) worst case.\\n\\n    The only adjacency bits that changed are graph[u][v] and graph[v][u].\\n    So the only d/a positions whose status can change are d == pos[u] or\\n    d == pos[v] (and similarly for a).  We can check the pair in O(j)\\n    by:\\n      - computing min_d over all d < i (O(i)),\\n      - then for each a < i with a~c and not a~b, checking a > min_d.\\n    This is the same as _check_pair but we use the current graph, which\\n    already reflects the flip.  So we just call _check_pair.\\n    \\\"\\\"\\\"\\n    return _check_pair(graph, ordering, i, j)\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8f691d1a2bcfc3fd",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8ceb04c21c88deee",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _check_pair_after_flip(graph, ordering, i, j, u, v):\\n    \\\"\\\"\\\"Check the (LB) condition for pair (ordering[i], ordering[j]) after\\n    flipping edge (u, v).  O(j^2) worst case.\\n\\n    The only adjacency bits that changed are graph[u][v] and graph[v][u].\\n    So the only d/a positions whose status can change are d == pos[u] or\\n    d == pos[v] (and similarly for a).  We can check the pair in O(j)\\n    by:\\n      - computing min_d over all d < i (O(i)),\\n      - then for each a < i with a~c and not a~b, checking a > min_d.\\n    This is the same as _check_pair but we use the current graph, which\\n    already reflects the flip.  So we just call _check_pair.\\n    \\\"\\\"\\\"\\n    return _check_pair(graph, ordering, i, j)\", \"new\": \"\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8ceb04c21c88deee",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a60e1cd2ff8eccad",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # 2. Pairs (u, c) and (v, c) for c > q: their witness sets change.\\n    for ci in range(q + 1, n):\\n        c = ordering[ci]\\n        # Pair (u, c): violation set = {a < p : a~c, a not~ u}.\\n        # u is in it iff graph[u][c] (and not graph[u][u]).\\n        # If u is a violator, we need a witness d < p with d~u, d not~ c.\\n        if graph[u][c]:\\n            ok = False\\n            for d in range(p):\\n                x = ordering[d]\\n                if graph[x][u] and not graph[x][c]:\\n                    ok = True\\n                    break\\n            if not ok:\\n                return False\\n        # Pair (v, c): violation set = {a < q : a~c, a not~ v}.\\n        # v is in it iff graph[v][c].\\n        if graph[v][c]:\\n            ok = False\\n            for d in range(q):\\n                x = ordering[d]\\n                if graph[x][v] and not graph[x][c]:\\n                    ok = True\\n                    break\\n            if not ok:\\n                return False\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a60e1cd2ff8eccad",
+      "content": "error: bad arguments for edit_candidate: Toolbox._t_edit_candidate() missing 1 required positional argument: 'new'"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-ab6753d64381ec76",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # 2. Pairs (u, c) and (v, c) for c > q: their witness sets change.\\n    for ci in range(q + 1, n):\\n        c = ordering[ci]\\n        # Pair (u, c): violation set = {a < p : a~c, a not~ u}.\\n        # u is in it iff graph[u][c] (and not graph[u][u]).\\n        # If u is a violator, we need a witness d < p with d~u, d not~ c.\\n        if graph[u][c]:\\n            ok = False\\n            for d in range(p):\\n                x = ordering[d]\\n                if graph[x][u] and not graph[x][c]:\\n                    ok = True\\n                    break\\n            if not ok:\\n                return False\\n        # Pair (v, c): violation set = {a < q : a~c, a not~ v}.\\n        # v is in it iff graph[v][c].\\n        if graph[v][c]:\\n            ok = False\\n            for d in range(q):\\n                x = ordering[d]\\n                if graph[x][v] and not graph[x][c]:\\n                    ok = True\\n                    break\\n            if not ok:\\n                return False\", \"new\": \"    # 2. Pairs (u, c) and (v, c) for c > q: their witness sets change.\\n    #    The only adjacency bits that changed are graph[u][v] and graph[v][u].\\n    #    So for pair (u, c), the only d whose status can change is d == v\\n    #    (since d~u and d not~ c can only change if d == v, because the\\n    #    only new/removed adjacency is between u and v).  Similarly for\\n    #    pair (v, c), the only d whose status can change is d == u.\\n    #    So we only need to check: if v < p (i.e., v is before u in the\\n    #    ordering), then v is a candidate witness for pair (u, c); if\\n    #    u < q, then u is a candidate witness for pair (v, c).\\n    #    But we also need to check that the pair was valid BEFORE the flip\\n    #    for all other d.  Since the ordering was valid before the flip,\\n    #    the only new violations can come from the changed adjacency bits.\\n    #\\n    #    More precisely: for pair (u, c) with c > q > p:\\n    #      - Before the flip, the pair was valid (or u~c was false, so\\n    #        the pair wasn't a violation).\\n    #      - After the flip, the only change is graph[u][v] flipped.\\n    #      - If graph[u][c] is now true (was false before, i.e., insertion\\n    #        of (u,c) — but we only flipped (u,v), so graph[u][c] didn't\\n    #        change).  Wait, we only flipped (u,v), so graph[u][c] is\\n    #        unchanged.  The only thing that changed is whether v is a\\n    #        valid witness for pair (u, c) (if v < p) or whether u is a\\n    #        valid witness for pair (v, c) (if u < q).\\n    #\\n    #    So the check is:\\n    #    - If v < p (v is before u): v's status as a witness for pair\\n    #      (u, c) changed.  If graph[u][c] is true (u~c), and v was the\\n    #      ONLY witness (i.e., no other d < p with d~u and not d~c),\\n    #      and v is no longer a witness (graph[v][u] flipped to false,\\n    #      i.e., deletion), then the pair is now violated.\\n    #      Conversely, if v was not a witness before (graph[v][u] was\\n    #      false) and now is (graph[v][u] is true, i.e., insertion),\\n    #      that only helps.\\n    #    - Similarly for pair (v, c) with u < q.\\n    #\\n    #    But we don't know the old graph.  However, we know the current\\n    #    graph.  The key insight is: the ordering was valid before the\\n    #    flip.  So for pair (u, c) before the flip, if u~c was true,\\n    #    there existed d < p with d~u and not d~c.  After the flip, the\\n    #    only d whose status can change is d == v (if v < p).  So:\\n    #    - If v < p and graph[u][c] is true: check if v is a witness\\n    #      (graph[v][u] and not graph[v][c]).  If v is NOT a witness,\\n    #      we need to check if there's another witness.  But we don't\\n    #      know if v was the only witness before.  However, if v is not\\n    #      a witness now, and v was a witness before (deletion case),\\n    #      then we need to check for another witness.  If v was not a\\n    #      witness before (insertion case), then v ...[2546 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-ab6753d64381ec76",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-96e6aca09c0dfceb",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # 3. Pairs (b, u) and (b, v) for b < p: their violation sets change.\\n    for bi in range(p):\\n        b = ordering[bi]\\n        # Pair (b, u): violation set = {a < bi : a~u, a not~ b}.\\n        # v is in it iff graph[v][u] and not graph[v][b].\\n        # If v is a violator, need witness d < bi with d~b, d not~ u.\\n        if graph[v][u] and not graph[v][b]:\\n            ok = False\\n            for d in range(bi):\\n                x = ordering[d]\\n                if graph[x][b] and not graph[x][u]:\\n                    ok = True\\n                    break\\n            if not ok:\\n                return False\\n        # Pair (b, v): violation set = {a < bi : a~v, a not~ b}.\\n        # u is in it iff graph[u][v] and not graph[u][b].\\n        if graph[u][v] and not graph[u][b]:\\n            ok = False\\n            for d in range(bi):\\n                x = ordering[d]\\n                if graph[x][b] and not graph[x][v]:\\n                    ok = True\\n                    break\\n            if not ok:\\n                return False\", \"new\": \"    # 3. Pairs (b, u) and (b, v) for b < p: their violation sets change.\\n    #    The only adjacency bits that changed are graph[u][v] and graph[v][u].\\n    #    For pair (b, u) with b < p: the violation set is {a < bi : a~u, a not~ b}.\\n    #    The only a whose status can change is a == v (since a~u can only\\n    #    change if a == v).  So:\\n    #    - If v < bi (v is before b): v's status as a violator changed.\\n    #      If v is now a violator (graph[v][u] and not graph[v][b]), we\\n    #      need a witness d < bi with d~b and not d~u.  The only d whose\\n    #      status can change is d == u (but u > b since b < p < q and\\n    #      u is at position p, so u is not < bi).  So no witness status\\n    #      changed.  If the pair was valid before the flip, and v was\\n    #      not a violator before (insertion case), then v becoming a\\n    #      violator is a new violation.  We need to check for a witness.\\n    #      If v was a violator before (deletion case), then v is no\\n    #      longer a violator, which only helps.\\n    #    - If v >= bi: v's status didn't change (v is not < bi).\\n    #    Similarly for pair (b, v) with a == u.\\n    for bi in range(p):\\n        b = ordering[bi]\\n        # Pair (b, u): if v < bi and v is a violator, check for witness.\\n        if pos[v] < bi and graph[v][u] and not graph[v][b]:\\n            ok = False\\n            for d in range(bi):\\n                x = ordering[d]\\n                if graph[x][b] and not graph[x][u]:\\n                    ok = True\\n                    break\\n            if not ok:\\n                return False\\n        # Pair (b, v): if u < bi and u is a violator, check for witness.\\n        if pos[u] < bi and graph[u][v] and not graph[u][b]:\\n            ok = False\\n            for d in range(bi):\\n                x = ordering[d]\\n                if graph[x][b] and not graph[x][v]:\\n                    ok = True\\n                    break\\n            if not ok:\\n                return False\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-96e6aca09c0dfceb",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-9cec34fc1030a438",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9cec34fc1030a438",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 3,\n \"total\": 4,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_lbfs\",\n  \"result\": \"[0, 1, 2]\",\n  \"expected\": \"[0, 2, 1]\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"violation\": {\n   \"a\": 0,\n   \"b\": 1,\n   \"c\": 2,\n   \"pos_a\": 0,\n   \"minD\": 1000000000\n  },\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-ae379cec0b44bf71",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen007_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-ae379cec0b44bf71",
+      "content": "\"\"\"Dynamic LexBFS ordering.\n\nStrategy:\n- init: static partition-refinement LexBFS (O(n^2) bitset version).\n- insert_edge / delete_edge: a single edge flip only affects (LB)\n  4-point triples that involve the flipped edge, so we run a *targeted*\n  validity check (O(n^2) worst case, early-exit) instead of the parent's\n  O(n^3) full check.  If the ordering is still valid we keep it;\n  otherwise we recompute.\n\nValidity is certified by the (LB) 4-point property of Corneil and Krueger:\nfor all positions a < b < c with ac in E and ab not in E, there exists\nd < a with db in E and dc not in E.\n\nTargeted check after flipping edge (u, v):\n  Let p = pos[u], q = pos[v], assume p < q.\n  - Necessary condition: the (p, q) pair itself must be (LB)-satisfied\n    (this is the only pair whose own status can change).\n  - For every c > q: the witness set for pair (u, c) gains/loses v, and\n    the violation set for pair (v, c) gains/loses u.  Both are checked\n    in O(n) each.\n  - For every b < p: the violation set for pair (b, u) gains/loses v,\n    and for pair (b, v) gains/loses u.  Checked in O(n) each.\n  - All other pairs are unaffected by the flip.\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via partition refinement. Returns ordering list.\n\n    O(n^2) using bitsets: each bucket is a Python int bitmask of its\n    members; refinement of a bucket by vertex v is a single AND.\n    \"\"\"\n    n = len(graph)\n    if n == 0:\n        return []\n\n    # Bitset of neighbors of each vertex.\n    nbr = [0] * n\n    for i in range(n):\n        row = graph[i]\n        m = 0\n        for j in range(n):\n            if row[j]:\n                m |= 1 << j\n        nbr[i] = m\n\n    buckets = [(1 << n) - 1]\n    ordering = []\n\n    for _ in range(n):\n        # Find the first non-empty bucket.\n        bi = 0\n        while bi < len(buckets) and buckets[bi] == 0:\n            bi += 1\n        if bi >= len(buckets):\n            break\n\n        # Take the lowest-numbered vertex of this bucket (deterministic\n        # tie-break; any tie-break is valid).\n        b = buckets[bi]\n        v = (b & -b).bit_length() - 1\n        buckets[bi] = b ^ (1 << v)\n        ordering.append(v)\n\n        # Refine every remaining bucket by adjacency to v.\n        nb = nbr[v]\n        new_buckets = []\n        for x in buckets:\n            if x == 0:\n                continue\n            a = x & nb\n            c = x & ~nb\n            if a:\n                new_buckets.append(a)\n            if c:\n                new_buckets.append(c)\n        buckets = new_buckets\n\n    return ordering\n\n\ndef _recompute(graph):\n    \"\"\"Recompute the LexBFS ordering from scratch.\"\"\"\n    return {'ordering': _lexbfs(graph)}\n\n\ndef _check_pair(graph, ordering, i, j):\n    \"\"\"Check the (LB) condition for the pair (ordering[i], ordering[j]),\n    i < j.  O(j^2) worst case.\n\n    For every a < i with a~c and not a~b, there must exist d < a with\n    d~b and not d~c.  Equivalently, the minimum position d < i with\n    d~b and not d~c must be strictly smaller than every such a.\n    \"\"\"\n    n = len(ordering)\n    b = ordering[i]\n    c = ordering[j]\n    # Find the minimum position d < i with graph[d][b]=1 and graph[d][c]=0.\n    min_d = n\n    for d in range(i):\n        x = ordering[d]\n        if graph[x][b] and not graph[x][c]:\n            min_d = d\n            break\n    # For every a < i with graph[a][c]=1 and graph[a][b]=0 we need a > min_d.\n    for a in range(i):\n        x = ordering[a]\n        if graph[x][c] and not graph[x][b]:\n            if a <= min_d:\n                return False\n    return True\n\n\n\n\n\ndef _still_valid_after_flip(graph, ordering, u, v):\n    \"\"\"Targeted (LB) check after flipping edge (u, v).  O(n^2) worst case.\"\"\"\n    n = len(ordering)\n    if n <= 2:\n        return True\n\n    pos = [0] * n\n    for i, x in enumerate(ordering):\n        pos[x] = i\n\n    p = pos[u]\n    q = pos[v]\n    if p > q:\n        p, q = q, p\n\n    # 1. Necessary condition: the (p, q) pair itself must be satisfied.\n    if not _check_pair(graph, ordering, p, q):\n      ...[4035 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8673c05bdfe20504",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering.\\n\\nStrategy:\\n- init: static partition-refinement LexBFS (O(n^2) bitset version).\\n- insert_edge / delete_edge: a single edge flip only affects (LB)\\n  4-point triples that involve the flipped edge, so we run a *targeted*\\n  validity check (O(n^2) worst case, early-exit) instead of the parent's\\n  O(n^3) full check.  If the ordering is still valid we keep it;\\n  otherwise we recompute.\\n\\nValidity is certified by the (LB) 4-point property of Corneil and Krueger:\\nfor all positions a < b < c with ac in E and ab not in E, there exists\\nd < a with db in E and dc not in E.\\n\\nTargeted check after flipping edge (u, v):\\n  Let p = pos[u], q = pos[v], assume p < q.\\n  - Necessary condition: the (p, q) pair itself must be (LB)-satisfied\\n    (this is the only pair whose own status can change).\\n  - For every c > q: the witness set for pair (u, c) gains/loses v, and\\n    the violation set for pair (v, c) gains/loses u.  Both are checked\\n    in O(n) each.\\n  - For every b < p: the violation set for pair (b, u) gains/loses v,\\n    and for pair (b, v) gains/loses u.  Checked in O(n) each.\\n  - All other pairs are unaffected by the flip.\\n\\\"\\\"\\\"\\n\\n\\ndef _lexbfs(graph):\\n    \\\"\\\"\\\"Static LexBFS via partition refinement. Returns ordering list.\\n\\n    O(n^2) using bitsets: each bucket is a Python int bitmask of its\\n    members; refinement of a bucket by vertex v is a single AND.\\n    \\\"\\\"\\\"\\n    n = len(graph)\\n    if n == 0:\\n        return []\\n\\n    # Bitset of neighbors of each vertex.\\n    nbr = [0] * n\\n    for i in range(n):\\n        row = graph[i]\\n        m = 0\\n        for j in range(n):\\n            if row[j]:\\n                m |= 1 << j\\n        nbr[i] = m\\n\\n    buckets = [(1 << n) - 1]\\n    ordering = []\\n\\n    for _ in range(n):\\n        # Find the first non-empty bucket.\\n        bi = 0\\n        while bi < len(buckets) and buckets[bi] == 0:\\n            bi += 1\\n        if bi >= len(buckets):\\n            break\\n\\n        # Take the lowest-numbered vertex of this bucket (deterministic\\n        # tie-break; any tie-break is valid).\\n        b = buckets[bi]\\n        v = (b & -b).bit_length() - 1\\n        buckets[bi] = b ^ (1 << v)\\n        ordering.append(v)\\n\\n        # Refine every remaining bucket by adjacency to v.\\n        nb = nbr[v]\\n        new_buckets = []\\n        for x in buckets:\\n            if x == 0:\\n                continue\\n            a = x & nb\\n            c = x & ~nb\\n            if a:\\n                new_buckets.append(a)\\n            if c:\\n                new_buckets.append(c)\\n        buckets = new_buckets\\n\\n    return ordering\\n\\n\\ndef _recompute(graph):\\n    \\\"\\\"\\\"Recompute the LexBFS ordering from scratch.\\\"\\\"\\\"\\n    return {'ordering': _lexbfs(graph)}\\n\\n\\ndef _check_pair(graph, ordering, i, j):\\n    \\\"\\\"\\\"Check the (LB) condition for the pair (ordering[i], ordering[j]),\\n    i < j.  O(j^2) worst case.\\n\\n    For every a < i with a~c and not a~b, there must exist d < a with\\n    d~b and not d~c.  Equivalently, the minimum position d < i with\\n    d~b and not d~c must be strictly smaller than every such a.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    b = ordering[i]\\n    c = ordering[j]\\n    # Find the minimum position d < i with graph[d][b]=1 and graph[d][c]=0.\\n    min_d = n\\n    for d in range(i):\\n        x = ordering[d]\\n        if graph[x][b] and not graph[x][c]:\\n            min_d = d\\n            break\\n    # For every a < i with graph[a][c]=1 and graph[a][b]=0 we need a > min_d.\\n    for a in range(i):\\n        x = ordering[a]\\n        if graph[x][c] and not graph[x][b]:\\n            if a <= min_d:\\n                return False\\n    return True\\n\\n\\ndef _still_valid_after_flip(graph, ordering, u, v):\\n    \\\"\\\"\\\"Targeted (LB) check after flipping edge (u, v).  O(n^2) worst case.\\\"\\\"\\\"\\n    n = len(ordering)\\n    if n <= 2:\\n        return True\\n\\n    pos = [0] * n\\n    for i, x in enumerate(ordering):\\n        pos[x] = i\\n\\n    p = pos[u]\\n    q = pos[ ...[4581 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8673c05bdfe20504",
+      "content": "wrote candidates/gen007_c02.py (236 lines)"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-96bd28762413b742",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-96bd28762413b742",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 3,\n \"total\": 4,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_lbfs\",\n  \"result\": \"[0, 1, 2]\",\n  \"expected\": \"[0, 2, 1]\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"violation\": {\n   \"a\": 0,\n   \"b\": 1,\n   \"c\": 2,\n   \"pos_a\": 0,\n   \"minD\": 1000000000\n  },\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-af35436c745711fd",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering.\\n\\nStrategy:\\n- init: static partition-refinement LexBFS (O(n^2) bitset version).\\n- insert_edge / delete_edge: a single edge flip only affects (LB)\\n  4-point triples that involve the flipped edge, so we run a *targeted*\\n  validity check (O(n^2) worst case, early-exit) instead of the parent's\\n  O(n^3) full check.  If the ordering is still valid we keep it;\\n  otherwise we recompute.\\n\\nValidity is certified by the (LB) 4-point property of Corneil and Krueger:\\nfor all positions a < b < c with ac in E and ab not in E, there exists\\nd < a with db in E and dc not in E.\\n\\nTargeted check after flipping edge (u, v):\\n  Let p = pos[u], q = pos[v], assume p < q.\\n  - Necessary condition: the (p, q) pair itself must be (LB)-satisfied\\n    (this is the only pair whose own status can change).\\n  - For every c > q: the witness set for pair (u, c) gains/loses v, and\\n    the violation set for pair (v, c) gains/loses u.  Both are checked\\n    in O(n) each.\\n  - For every b < p: the violation set for pair (b, u) gains/loses v,\\n    and for pair (b, v) gains/loses u.  Checked in O(n) each.\\n  - All other pairs are unaffected by the flip.\\n\\\"\\\"\\\"\\n\\n\\ndef _lexbfs(graph):\\n    \\\"\\\"\\\"Static LexBFS via partition refinement. Returns ordering list.\\n\\n    O(n^2) using bitsets: each bucket is a Python int bitmask of its\\n    members; refinement of a bucket by vertex v is a single AND.\\n    \\\"\\\"\\\"\\n    n = len(graph)\\n    if n == 0:\\n        return []\\n\\n    # Bitset of neighbors of each vertex.\\n    nbr = [0] * n\\n    for i in range(n):\\n        row = graph[i]\\n        m = 0\\n        for j in range(n):\\n            if row[j]:\\n                m |= 1 << j\\n        nbr[i] = m\\n\\n    buckets = [(1 << n) - 1]\\n    ordering = []\\n\\n    for _ in range(n):\\n        # Find the first non-empty bucket.\\n        bi = 0\\n        while bi < len(buckets) and buckets[bi] == 0:\\n            bi += 1\\n        if bi >= len(buckets):\\n            break\\n\\n        # Take the lowest-numbered vertex of this bucket (deterministic\\n        # tie-break; any tie-break is valid).\\n        b = buckets[bi]\\n        v = (b & -b).bit_length() - 1\\n        buckets[bi] = b ^ (1 << v)\\n        ordering.append(v)\\n\\n        # Refine every remaining bucket by adjacency to v.\\n        nb = nbr[v]\\n        new_buckets = []\\n        for x in buckets:\\n            if x == 0:\\n                continue\\n            a = x & nb\\n            c = x & ~nb\\n            if a:\\n                new_buckets.append(a)\\n            if c:\\n                new_buckets.append(c)\\n        buckets = new_buckets\\n\\n    return ordering\\n\\n\\ndef _recompute(graph):\\n    \\\"\\\"\\\"Recompute the LexBFS ordering from scratch.\\\"\\\"\\\"\\n    return {'ordering': _lexbfs(graph)}\\n\\n\\ndef _check_pair(graph, ordering, i, j):\\n    \\\"\\\"\\\"Check the (LB) condition for the pair (ordering[i], ordering[j]),\\n    i < j.  O(j^2) worst case.\\n\\n    For every a < i with a~c and not a~b, there must exist d < a with\\n    d~b and not d~c.  Equivalently, the minimum position d < i with\\n    d~b and not d~c must be strictly smaller than every such a.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    b = ordering[i]\\n    c = ordering[j]\\n    # Find the minimum position d < i with graph[d][b]=1 and graph[d][c]=0.\\n    min_d = n\\n    for d in range(i):\\n        x = ordering[d]\\n        if graph[x][b] and not graph[x][c]:\\n            min_d = d\\n            break\\n    # For every a < i with graph[a][c]=1 and graph[a][b]=0 we need a > min_d.\\n    for a in range(i):\\n        x = ordering[a]\\n        if graph[x][c] and not graph[x][b]:\\n            if a <= min_d:\\n                return False\\n    return True\\n\\n\\ndef _still_valid_after_flip(graph, ordering, u, v):\\n    \\\"\\\"\\\"Targeted (LB) check after flipping edge (u, v).  O(n^2) worst case.\\\"\\\"\\\"\\n    n = len(ordering)\\n    if n <= 2:\\n        return True\\n\\n    pos = [0] * n\\n    for i, x in enumerate(ordering):\\n        pos[x] = i\\n\\n    p = pos[u]\\n    q = pos[ ...[4581 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-af35436c745711fd",
+      "content": "wrote candidates/gen007_c02.py (236 lines)"
+    }
+  ]
+}

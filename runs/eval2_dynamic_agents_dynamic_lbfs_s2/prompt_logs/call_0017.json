@@ -1,0 +1,374 @@
+{
+  "call_id": "call_0017",
+  "timestamp": "2026-10-21T21:59:05Z",
+  "backend": "api",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "type": "generate",
+  "candidate_id": "gen005_c01",
+  "messages_start": [
+    {
+      "role": "system",
+      "content": "You are the GENERATION role in an evolutionary search for dynamic graph algorithms. Produce one candidate algorithm and write it with `write_candidate`. You do not reflect, repair other candidates, or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the problem definition, research brief, run goal and any researcher hint in the task.\n2. If a parent candidate is given, derive your candidate from it: keep what works and change the part the goal or hint points at. If no parent is given, start from the offline algorithm and make it dynamic.\n3. Write the full module with `write_candidate`.\n4. Check it with `run_examples` (small public set). If it fails, fix the first failure with `edit_candidate` or a new `write_candidate`, then check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`. Each returns the new state.\n- `graph` is the current 0/1 adjacency matrix (list of lists, vertex ids 0..n-1) after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no `get_result()`, no imports beyond the Python standard library.\n- The maintained result (tree, ordering, partition, set) is part of the returned state, in the shape the problem definition describes.\n\n## Rules\n\n- Correct first, then cheaper: the hidden grade is correctness on every tested graph and update, then work relative to recomputing from scratch.\n- Prefer the smallest change that achieves the goal. Simpler code that is equally correct is better.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case, not just the examples.\n- If you are unsure about a graph-theory fact, say so in your report instead of guessing.\n\n## Report (final message, no tool call)\n\nCANDIDATE: <file written>\nAPPROACH: <one or two lines: idea and key data structures>\nEXAMPLES: <last run_examples verdict>\nNOTES: <assumptions or concerns, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: derive a NEW candidate from the parent below.\nOutput file: candidates/gen005_c01.py\n\nPARENT CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering.\n\nStrategy: maintain a valid LexBFS ordering. On each update, first check\nwhether the old ordering is still valid (cheap, O(n^3) worst case but\nusually fast); if not, try a local repair (reinsert affected vertices\ninto the base ordering); if the repair fails the (LB) 4-point\ncertificate, fall back to a full static LexBFS recomputation.\n\"\"\"\n\n\ndef _lexbfs_full(A):\n    \"\"\"Static LexBFS via label refinement. O(n^3) worst case.\n\n    Each vertex gets a label (tuple of 0/1) built by processing vertices\n    in order. At each step, pick the unprocessed vertex with the\n    lexicographically largest label (ties broken by vertex id).\n    \"\"\"\n    n = len(A)\n    if n == 0:\n        return []\n    unprocessed = set(range(n))\n    labels = {v: [] for v in range(n)}\n    order = []\n\n    while unprocessed:\n        best = min(unprocessed, key=lambda v: ([-x for x in labels[v]], v))\n        order.append(best)\n        unprocessed.remove(best)\n        for u in unprocessed:\n            labels[u].append(1 if A[best][u] else 0)\n\n    return order\n\n\ndef _check_lb(A, order):\n    \"\"\"Check the (LB) 4-point property.\n\n    For all positions a < b < c with ac in E and ab not in E,\n    there exists d < a with db in E and dc not in E.\n    \"\"\"\n    n = len(order)\n    for a in range(n):\n        va = order[a]\n        for b in range(a + 1, n):\n            vb = order[b]\n            if A[va][vb]:\n                continue\n            for c in range(b + 1, n):\n                vc = order[c]\n                if not A[va][vc]:\n                    continue\n                found = False\n                for d in range(a):\n                    vd = order[d]\n                    if A[vd][vb] and not A[vd][vc]:\n                        found = True\n                        break\n                if not found:\n                    return False\n    return True\n\n\ndef _local_repair(A, order, affected):\n    \"\"\"Try to repair the ordering by reinserting affected vertices.\n\n    Returns a new ordering if valid, else None.\n    \"\"\"\n    n = len(A)\n    if not affected:\n        return order\n\n    base = [v for v in order if v not in affected]\n    aff = sorted(affected)\n\n    if len(aff) > 6:\n        return None\n\n    from itertools import permutations\n\n    for perm in permutations(aff):\n        new_order = list(base)\n        ok = True\n        for v in perm:\n            placed = False\n            for pos in range(len(new_order) + 1):\n                trial = new_order[:pos] + [v] + new_order[pos:]\n                if _check_lb(A, trial):\n                    new_order = trial\n                    placed = True\n                    break\n            if not placed:\n                ok = False\n                break\n        if ok and _check_lb(A, new_order):\n            return new_order\n\n    return None\n\n\ndef init(graph):\n    A = [list(row) for row in graph]\n    order = _lexbfs_full(A)\n    return {'ordering': order, 'A': A}\n\n\ndef insert_edge(graph, edge, state):\n    A = [list(row) for row in graph]\n    u, v = edge\n\n    order = state['ordering']\n    # The old ordering may still be valid after an insertion.\n    if _check_lb(A, order):\n        return {'ordering': order, 'A': A}\n\n    affected = {u, v}\n    for x in range(len(A)):\n        if A[u][x] or A[v][x]:\n            affected.add(x)\n\n    new_order = _local_repair(A, order, affected)\n    if new_order is None:\n        new_order = _lexbfs_full(A)\n    return {'ordering': new_order, 'A': A}\n\n\ndef delete_edge(graph, edge, state):\n    A = [list(row) for row in graph]\n    u, v = edge\n\n    order = state['ordering']\n    # The old ordering may still be valid after a deletion.\n    if _check_lb(A, order):\n        return {'ordering': order, 'A': A}\n\n    affected = {u, v}\n    for x in range(len(A)):\n        if A[u][x] or A[v][x]:\n            affected.add(x)\n\n    new_order = _local_repair(A, order, affected)\n    if new_order is None:\n        new_order = _lexbfs_full(A)\n    return {'ordering': new_order, 'A': A}\n```\n\nMore context: read_file('pack/brief.md') has the full research brief.\n"
+    }
+  ],
+  "duration_s": 24.9,
+  "steps": 16,
+  "tool_calls": [
+    "read_file",
+    "run_examples",
+    "write_candidate",
+    "run_examples",
+    "edit_candidate",
+    "edit_candidate",
+    "edit_candidate",
+    "run_examples",
+    "read_file",
+    "edit_candidate",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples",
+    "read_file",
+    "edit_candidate",
+    "run_examples"
+  ],
+  "examples_runs": 5,
+  "usage": {
+    "prompt_tokens": 106593,
+    "completion_tokens": 4317
+  },
+  "ok": true,
+  "error": "step limit (16) reached",
+  "summary": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are the GENERATION role in an evolutionary search for dynamic graph algorithms. Produce one candidate algorithm and write it with `write_candidate`. You do not reflect, repair other candidates, or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the problem definition, research brief, run goal and any researcher hint in the task.\n2. If a parent candidate is given, derive your candidate from it: keep what works and change the part the goal or hint points at. If no parent is given, start from the offline algorithm and make it dynamic.\n3. Write the full module with `write_candidate`.\n4. Check it with `run_examples` (small public set). If it fails, fix the first failure with `edit_candidate` or a new `write_candidate`, then check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`. Each returns the new state.\n- `graph` is the current 0/1 adjacency matrix (list of lists, vertex ids 0..n-1) after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no `get_result()`, no imports beyond the Python standard library.\n- The maintained result (tree, ordering, partition, set) is part of the returned state, in the shape the problem definition describes.\n\n## Rules\n\n- Correct first, then cheaper: the hidden grade is correctness on every tested graph and update, then work relative to recomputing from scratch.\n- Prefer the smallest change that achieves the goal. Simpler code that is equally correct is better.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case, not just the examples.\n- If you are unsure about a graph-theory fact, say so in your report instead of guessing.\n\n## Report (final message, no tool call)\n\nCANDIDATE: <file written>\nAPPROACH: <one or two lines: idea and key data structures>\nEXAMPLES: <last run_examples verdict>\nNOTES: <assumptions or concerns, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: derive a NEW candidate from the parent below.\nOutput file: candidates/gen005_c01.py\n\nPARENT CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering.\n\nStrategy: maintain a valid LexBFS ordering. On each update, first check\nwhether the old ordering is still valid (cheap, O(n^3) worst case but\nusually fast); if not, try a local repair (reinsert affected vertices\ninto the base ordering); if the repair fails the (LB) 4-point\ncertificate, fall back to a full static LexBFS recomputation.\n\"\"\"\n\n\ndef _lexbfs_full(A):\n    \"\"\"Static LexBFS via label refinement. O(n^3) worst case.\n\n    Each vertex gets a label (tuple of 0/1) built by processing vertices\n    in order. At each step, pick the unprocessed vertex with the\n    lexicographically largest label (ties broken by vertex id).\n    \"\"\"\n    n = len(A)\n    if n == 0:\n        return []\n    unprocessed = set(range(n))\n    labels = {v: [] for v in range(n)}\n    order = []\n\n    while unprocessed:\n        best = min(unprocessed, key=lambda v: ([-x for x in labels[v]], v))\n        order.append(best)\n        unprocessed.remove(best)\n        for u in unprocessed:\n            labels[u].append(1 if A[best][u] else 0)\n\n    return order\n\n\ndef _check_lb(A, order):\n    \"\"\"Check the (LB) 4-point property.\n\n    For all positions a < b < c with ac in E and ab not in E,\n    there exists d < a with db in E and dc not in E.\n    \"\"\"\n    n = len(order)\n    for a in range(n):\n        va = order[a]\n        for b in range(a + 1, n):\n            vb = order[b]\n            if A[va][vb]:\n                continue\n            for c in range(b + 1, n):\n                vc = order[c]\n                if not A[va][vc]:\n                    continue\n                found = False\n                for d in range(a):\n                    vd = order[d]\n                    if A[vd][vb] and not A[vd][vc]:\n                        found = True\n                        break\n                if not found:\n                    return False\n    return True\n\n\ndef _local_repair(A, order, affected):\n    \"\"\"Try to repair the ordering by reinserting affected vertices.\n\n    Returns a new ordering if valid, else None.\n    \"\"\"\n    n = len(A)\n    if not affected:\n        return order\n\n   ...[1950 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-9df99a7d8e3803e2",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"pack/brief.md\"}"
+          }
+        },
+        {
+          "id": "chatcmpl-tool-b37798128155cd67",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9df99a7d8e3803e2",
+      "content": "# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b37798128155cd67",
+      "content": "error: no candidate written yet; call write_candidate first"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-91277f48a4e2c6ea",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering.\\n\\nStrategy: maintain a valid LexBFS ordering. On each update, first check\\nwhether the old ordering is still valid (cheap, O(n^3) worst case but\\nusually fast); if not, try a local repair (reinsert affected vertices\\ninto the base ordering); if the repair fails the (LB) 4-point\\ncertificate, fall back to a full static LexBFS recomputation.\\n\\\"\\\"\\\"\\n\\n\\ndef _lexbfs_full(A):\\n    \\\"\\\"\\\"Static LexBFS via label refinement. O(n^3) worst case.\\n\\n    Each vertex gets a label (tuple of 0/1) built by processing vertices\\n    in order. At each step, pick the unprocessed vertex with the\\n    lexicographically largest label (ties broken by vertex id).\\n    \\\"\\\"\\\"\\n    n = len(A)\\n    if n == 0:\\n        return []\\n    unprocessed = set(range(n))\\n    labels = {v: [] for v in range(n)}\\n    order = []\\n\\n    while unprocessed:\\n        best = min(unprocessed, key=lambda v: ([-x for x in labels[v]], v))\\n        order.append(best)\\n        unprocessed.remove(best)\\n        for u in unprocessed:\\n            labels[u].append(1 if A[best][u] else 0)\\n\\n    return order\\n\\n\\ndef _check_lb(A, order):\\n    \\\"\\\"\\\"Check the (LB) 4-point property.\\n\\n    For all positions a < b < c with ac in E and ab not in E,\\n    there exists d < a with db in E and dc not in E.\\n    \\\"\\\"\\\"\\n    n = len(order)\\n    for a in range(n):\\n        va = order[a]\\n        for b in range(a + 1, n):\\n            vb = order[b]\\n            if A[va][vb]:\\n                continue\\n            for c in range(b + 1, n):\\n                vc = order[c]\\n                if not A[va][vc]:\\n                    continue\\n                found = False\\n                for d in range(a):\\n                    vd = order[d]\\n                    if A[vd][vb] and not A[vd][vc]:\\n                        found = True\\n                        break\\n                if not found:\\n                    return False\\n    return True\\n\\n\\ndef _local_repair(A, order, affected):\\n    \\\"\\\"\\\"Try to repair the ordering by reinserting affected vertices.\\n\\n    Returns a new ordering if valid, else None.\\n    \\\"\\\"\\\"\\n    n = len(A)\\n    if not affected:\\n        return order\\n\\n    base = [v for v in order if v not in affected]\\n    aff = sorted(affected)\\n\\n    if len(aff) > 6:\\n        return None\\n\\n    from itertools import permutations\\n\\n    for perm in permutations(aff):\\n        new_order = list(base)\\n        ok = True\\n        for v in perm:\\n            placed = False\\n            for pos in range(len(new_order) + 1):\\n                trial = new_order[:pos] + [v] + new_order[pos:]\\n                if _check_lb(A, trial):\\n                    new_order = trial\\n                    placed = True\\n                    break\\n            if not placed:\\n                ok = False\\n                break\\n        if ok and _check_lb(A, new_order):\\n            return new_order\\n\\n    return None\\n\\n\\ndef init(graph):\\n    A = [list(row) for row in graph]\\n    order = _lexbfs_full(A)\\n    return {'ordering': order, 'A': A}\\n\\n\\ndef insert_edge(graph, edge, state):\\n    A = [list(row) for row in graph]\\n    u, v = edge\\n\\n    order = state['ordering']\\n    # The old ordering may still be valid after an insertion.\\n    if _check_lb(A, order):\\n        return {'ordering': order, 'A': A}\\n\\n    affected = {u, v}\\n    for x in range(len(A)):\\n        if A[u][x] or A[v][x]:\\n            affected.add(x)\\n\\n    new_order = _local_repair(A, order, affected)\\n    if new_order is None:\\n        new_order = _lexbfs_full(A)\\n    return {'ordering': new_order, 'A': A}\\n\\n\\ndef delete_edge(graph, edge, state):\\n    A = [list(row) for row in graph]\\n    u, v = edge\\n\\n    order = state['ordering']\\n    # The old ordering may still be valid after a deletion.\\n    if _check_lb(A, order):\\n        return {'ordering': order, 'A': A}\\n\\n    affected = {u, v}\\n    for x in range(len(A)):\\n        if A[u][x] or A[v][x]:\\n            affected.add(x)\\n\\n    new_order = _local_repa ...[134 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-91277f48a4e2c6ea",
+      "content": "wrote candidates/gen005_c01.py (143 lines)"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b10fd074d20885a6",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b10fd074d20885a6",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-87d3245308aa5f89",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _check_lb(A, order):\\n    \\\"\\\"\\\"Check the (LB) 4-point property.\\n\\n    For all positions a < b < c with ac in E and ab not in E,\\n    there exists d < a with db in E and dc not in E.\\n    \\\"\\\"\\\"\\n    n = len(order)\\n    for a in range(n):\\n        va = order[a]\\n        for b in range(a + 1, n):\\n            vb = order[b]\\n            if A[va][vb]:\\n                continue\\n            for c in range(b + 1, n):\\n                vc = order[c]\\n                if not A[va][vc]:\\n                    continue\\n                found = False\\n                for d in range(a):\\n                    vd = order[d]\\n                    if A[vd][vb] and not A[vd][vc]:\\n                        found = True\\n                        break\\n                if not found:\\n                    return False\\n    return True\", \"new\": \"def _check_lb(A, order):\\n    \\\"\\\"\\\"Check the (LB) 4-point property.\\n\\n    For all positions a < b < c with ac in E and ab not in E,\\n    there exists d < a with db in E and dc not in E.\\n\\n    Vectorized with bitmasks: for each a, the set of d < a that are\\n    adjacent to b but not to c must be non-empty for every such triple.\\n    \\\"\\\"\\\"\\n    n = len(order)\\n    if n == 0:\\n        return True\\n    adj = [0] * n\\n    for v in range(n):\\n        row = A[v]\\n        m = 0\\n        for u in range(n):\\n            if row[u]:\\n                m |= 1 << u\\n        adj[v] = m\\n    pos = [0] * n\\n    for i, v in enumerate(order):\\n        pos[v] = i\\n    for a in range(n):\\n        va = order[a]\\n        ma = adj[va]\\n        for b in range(a + 1, n):\\n            vb = order[b]\\n            if (ma >> vb) & 1:\\n                continue\\n            mb = adj[vb]\\n            for c in range(b + 1, n):\\n                vc = order[c]\\n                if not ((ma >> vc) & 1):\\n                    continue\\n                if (mb & ~adj[vc]) == 0:\\n                    return False\\n    return True\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-87d3245308aa5f89",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8bc5d9ffdd110190",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _local_repair(A, order, affected):\\n    \\\"\\\"\\\"Try to repair the ordering by reinserting affected vertices.\\n\\n    Returns a new ordering if valid, else None.\\n    \\\"\\\"\\\"\\n    n = len(A)\\n    if not affected:\\n        return order\\n\\n    base = [v for v in order if v not in affected]\\n    aff = sorted(affected)\\n\\n    if len(aff) > 6:\\n        return None\\n\\n    from itertools import permutations\\n\\n    for perm in permutations(aff):\\n        new_order = list(base)\\n        ok = True\\n        for v in perm:\\n            placed = False\\n            for pos in range(len(new_order) + 1):\\n                trial = new_order[:pos] + [v] + new_order[pos:]\\n                if _check_lb(A, trial):\\n                    new_order = trial\\n                    placed = True\\n                    break\\n            if not placed:\\n                ok = False\\n                break\\n        if ok and _check_lb(A, new_order):\\n            return new_order\\n\\n    return None\", \"new\": \"def _local_repair(A, order, affected):\\n    \\\"\\\"\\\"Try to repair the ordering by reinserting affected vertices.\\n\\n    Returns a new ordering if valid, else None.\\n    \\\"\\\"\\\"\\n    n = len(A)\\n    if not affected:\\n        return order\\n\\n    base = [v for v in order if v not in affected]\\n    aff = sorted(affected)\\n\\n    if len(aff) > 6:\\n        return None\\n\\n    from itertools import permutations\\n\\n    for perm in permutations(aff):\\n        new_order = list(base)\\n        ok = True\\n        for v in perm:\\n            placed = False\\n            for pos in range(len(new_order) + 1):\\n                trial = new_order[:pos] + [v] + new_order[pos:]\\n                if _check_lb(A, trial):\\n                    new_order = trial\\n                    placed = True\\n                    break\\n            if not placed:\\n                ok = False\\n                break\\n        if ok and _check_lb(A, new_order):\\n            return new_order\\n\\n    return None\\n\\n\\ndef _try_repair(A, order, affected):\\n    \\\"\\\"\\\"Local repair with a bounded number of attempts.\\n\\n    Tries a few permutations of the affected vertices (up to 24) and\\n    reinserts each at the first position that keeps the (LB) property.\\n    Returns a new ordering if valid, else None.\\n    \\\"\\\"\\\"\\n    if not affected:\\n        return order\\n    aff = sorted(affected)\\n    if len(aff) > 6:\\n        return None\\n    base = [v for v in order if v not in affected]\\n    from itertools import permutations\\n    for perm in permutations(aff):\\n        new_order = list(base)\\n        ok = True\\n        for v in perm:\\n            placed = False\\n            for pos in range(len(new_order) + 1):\\n                trial = new_order[:pos] + [v] + new_order[pos:]\\n                if _check_lb(A, trial):\\n                    new_order = trial\\n                    placed = True\\n                    break\\n            if not placed:\\n                ok = False\\n                break\\n        if ok and _check_lb(A, new_order):\\n            return new_order\\n    return None\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8bc5d9ffdd110190",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8ad15af31925df22",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _try_repair(A, order, affected):\\n    \\\"\\\"\\\"Local repair with a bounded number of attempts.\\n\\n    Tries a few permutations of the affected vertices (up to 24) and\\n    reinserts each at the first position that keeps the (LB) property.\\n    Returns a new ordering if valid, else None.\\n    \\\"\\\"\\\"\\n    if not affected:\\n        return order\\n    aff = sorted(affected)\\n    if len(aff) > 6:\\n        return None\\n    base = [v for v in order if v not in affected]\\n    from itertools import permutations\\n    for perm in permutations(aff):\\n        new_order = list(base)\\n        ok = True\\n        for v in perm:\\n            placed = False\\n            for pos in range(len(new_order) + 1):\\n                trial = new_order[:pos] + [v] + new_order[pos:]\\n                if _check_lb(A, trial):\\n                    new_order = trial\\n                    placed = True\\n                    break\\n            if not placed:\\n                ok = False\\n                break\\n        if ok and _check_lb(A, new_order):\\n            return new_order\\n    return None\", \"new\": \"\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8ad15af31925df22",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-9a725df9d685a507",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9a725df9d685a507",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 15,\n \"total\": 16,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_lbfs\",\n  \"result\": \"[0, 1, 2]\",\n  \"expected\": \"[0, 2, 1]\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"violation\": {\n   \"a\": 0,\n   \"b\": 1,\n   \"c\": 2,\n   \"pos_a\": 0,\n   \"minD\": 1000000000\n  },\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a1d75b793f94aded",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen005_c01.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a1d75b793f94aded",
+      "content": "\"\"\"Dynamic LexBFS ordering.\n\nStrategy: maintain a valid LexBFS ordering. On each update, first check\nwhether the old ordering is still valid (cheap, O(n^3) worst case but\nusually fast); if not, try a local repair (reinsert affected vertices\ninto the base ordering); if the repair fails the (LB) 4-point\ncertificate, fall back to a full static LexBFS recomputation.\n\"\"\"\n\n\ndef _lexbfs_full(A):\n    \"\"\"Static LexBFS via label refinement. O(n^3) worst case.\n\n    Each vertex gets a label (tuple of 0/1) built by processing vertices\n    in order. At each step, pick the unprocessed vertex with the\n    lexicographically largest label (ties broken by vertex id).\n    \"\"\"\n    n = len(A)\n    if n == 0:\n        return []\n    unprocessed = set(range(n))\n    labels = {v: [] for v in range(n)}\n    order = []\n\n    while unprocessed:\n        best = min(unprocessed, key=lambda v: ([-x for x in labels[v]], v))\n        order.append(best)\n        unprocessed.remove(best)\n        for u in unprocessed:\n            labels[u].append(1 if A[best][u] else 0)\n\n    return order\n\n\ndef _check_lb(A, order):\n    \"\"\"Check the (LB) 4-point property.\n\n    For all positions a < b < c with ac in E and ab not in E,\n    there exists d < a with db in E and dc not in E.\n\n    Vectorized with bitmasks: for each a, the set of d < a that are\n    adjacent to b but not to c must be non-empty for every such triple.\n    \"\"\"\n    n = len(order)\n    if n == 0:\n        return True\n    adj = [0] * n\n    for v in range(n):\n        row = A[v]\n        m = 0\n        for u in range(n):\n            if row[u]:\n                m |= 1 << u\n        adj[v] = m\n    pos = [0] * n\n    for i, v in enumerate(order):\n        pos[v] = i\n    for a in range(n):\n        va = order[a]\n        ma = adj[va]\n        for b in range(a + 1, n):\n            vb = order[b]\n            if (ma >> vb) & 1:\n                continue\n            mb = adj[vb]\n            for c in range(b + 1, n):\n                vc = order[c]\n                if not ((ma >> vc) & 1):\n                    continue\n                if (mb & ~adj[vc]) == 0:\n                    return False\n    return True\n\n\ndef _local_repair(A, order, affected):\n    \"\"\"Try to repair the ordering by reinserting affected vertices.\n\n    Returns a new ordering if valid, else None.\n    \"\"\"\n    n = len(A)\n    if not affected:\n        return order\n\n    base = [v for v in order if v not in affected]\n    aff = sorted(affected)\n\n    if len(aff) > 6:\n        return None\n\n    from itertools import permutations\n\n    for perm in permutations(aff):\n        new_order = list(base)\n        ok = True\n        for v in perm:\n            placed = False\n            for pos in range(len(new_order) + 1):\n                trial = new_order[:pos] + [v] + new_order[pos:]\n                if _check_lb(A, trial):\n                    new_order = trial\n                    placed = True\n                    break\n            if not placed:\n                ok = False\n                break\n        if ok and _check_lb(A, new_order):\n            return new_order\n\n    return None\n\n\n\n\n\ndef init(graph):\n    A = [list(row) for row in graph]\n    order = _lexbfs_full(A)\n    return {'ordering': order, 'A': A}\n\n\ndef insert_edge(graph, edge, state):\n    A = [list(row) for row in graph]\n    u, v = edge\n\n    order = state['ordering']\n    # The old ordering may still be valid after an insertion.\n    if _check_lb(A, order):\n        return {'ordering': order, 'A': A}\n\n    affected = {u, v}\n    for x in range(len(A)):\n        if A[u][x] or A[v][x]:\n            affected.add(x)\n\n    new_order = _local_repair(A, order, affected)\n    if new_order is None:\n        new_order = _lexbfs_full(A)\n    return {'ordering': new_order, 'A': A}\n\n\ndef delete_edge(graph, edge, state):\n    A = [list(row) for row in graph]\n    u, v = edge\n\n    order = state['ordering']\n    # The old ordering may still be valid after a deletion.\n    if _check_lb(A, order):\n        return {'ordering': order, 'A': A}\n\n    affected = {u, v}\n    for x in ran ...[227 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-84d4c7c209b2475b",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    for a in range(n):\\n        va = order[a]\\n        ma = adj[va]\\n        for b in range(a + 1, n):\\n            vb = order[b]\\n            if (ma >> vb) & 1:\\n                continue\\n            mb = adj[vb]\\n            for c in range(b + 1, n):\\n                vc = order[c]\\n                if not ((ma >> vc) & 1):\\n                    continue\\n                if (mb & ~adj[vc]) == 0:\\n                    return False\\n    return True\", \"new\": \"    for a in range(n):\\n        va = order[a]\\n        ma = adj[va]\\n        for b in range(a + 1, n):\\n            vb = order[b]\\n            if (ma >> vb) & 1:\\n                continue\\n            mb = adj[vb]\\n            for c in range(b + 1, n):\\n                vc = order[c]\\n                if not ((ma >> vc) & 1):\\n                    continue\\n                # Need some d < a with db in E and dc not in E.\\n                # d < a means pos[d] < a, i.e. d in order[0..a-1].\\n                # Build mask of vertices d with pos[d] < a.\\n                # (mb & ~adj[vc]) gives vertices adjacent to b but not c.\\n                # Intersect with prefix mask.\\n                prefix = 0\\n                for d in range(a):\\n                    prefix |= 1 << order[d]\\n                if (mb & ~adj[vc] & prefix) == 0:\\n                    return False\\n    return True\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-84d4c7c209b2475b",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-913424dd592ae4c5",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    for a in range(n):\\n        va = order[a]\\n        ma = adj[va]\\n        for b in range(a + 1, n):\\n            vb = order[b]\\n            if (ma >> vb) & 1:\\n                continue\\n            mb = adj[vb]\\n            for c in range(b + 1, n):\\n                vc = order[c]\\n                if not ((ma >> vc) & 1):\\n                    continue\\n                # Need some d < a with db in E and dc not in E.\\n                # d < a means pos[d] < a, i.e. d in order[0..a-1].\\n                # Build mask of vertices d with pos[d] < a.\\n                # (mb & ~adj[vc]) gives vertices adjacent to b but not c.\\n                # Intersect with prefix mask.\\n                prefix = 0\\n                for d in range(a):\\n                    prefix |= 1 << order[d]\\n                if (mb & ~adj[vc] & prefix) == 0:\\n                    return False\\n    return True\", \"new\": \"    prefix = 0\\n    for a in range(n):\\n        va = order[a]\\n        ma = adj[va]\\n        for b in range(a + 1, n):\\n            vb = order[b]\\n            if (ma >> vb) & 1:\\n                continue\\n            mb = adj[vb]\\n            for c in range(b + 1, n):\\n                vc = order[c]\\n                if not ((ma >> vc) & 1):\\n                    continue\\n                # Need some d with pos[d] < a, db in E, dc not in E.\\n                if (mb & ~adj[vc] & prefix) == 0:\\n                    return False\\n        prefix |= 1 << va\\n    return True\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-913424dd592ae4c5",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8715509a9f0ca87c",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8715509a9f0ca87c",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-887abd59aa672892",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _local_repair(A, order, affected):\\n    \\\"\\\"\\\"Try to repair the ordering by reinserting affected vertices.\\n\\n    Returns a new ordering if valid, else None.\\n    \\\"\\\"\\\"\\n    n = len(A)\\n    if not affected:\\n        return order\\n\\n    base = [v for v in order if v not in affected]\\n    aff = sorted(affected)\\n\\n    if len(aff) > 6:\\n        return None\\n\\n    from itertools import permutations\\n\\n    for perm in permutations(aff):\\n        new_order = list(base)\\n        ok = True\\n        for v in perm:\\n            placed = False\\n            for pos in range(len(new_order) + 1):\\n                trial = new_order[:pos] + [v] + new_order[pos:]\\n                if _check_lb(A, trial):\\n                    new_order = trial\\n                    placed = True\\n                    break\\n            if not placed:\\n                ok = False\\n                break\\n        if ok and _check_lb(A, new_order):\\n            return new_order\\n\\n    return None\", \"new\": \"def _local_repair(A, order, affected):\\n    \\\"\\\"\\\"Try to repair the ordering by reinserting affected vertices.\\n\\n    Returns a new ordering if valid, else None.\\n    \\\"\\\"\\\"\\n    if not affected:\\n        return order\\n\\n    base = [v for v in order if v not in affected]\\n    aff = sorted(affected)\\n\\n    if len(aff) > 6:\\n        return None\\n\\n    from itertools import permutations\\n\\n    for perm in permutations(aff):\\n        new_order = list(base)\\n        ok = True\\n        for v in perm:\\n            placed = False\\n            for pos in range(len(new_order) + 1):\\n                trial = new_order[:pos] + [v] + new_order[pos:]\\n                if _check_lb(A, trial):\\n                    new_order = trial\\n                    placed = True\\n                    break\\n            if not placed:\\n                ok = False\\n                break\\n        if ok and _check_lb(A, new_order):\\n            return new_order\\n\\n    return None\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-887abd59aa672892",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-83d8c1b7efaa84b9",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-83d8c1b7efaa84b9",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a2f958d0f97aa72c",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen005_c01.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a2f958d0f97aa72c",
+      "content": "\"\"\"Dynamic LexBFS ordering.\n\nStrategy: maintain a valid LexBFS ordering. On each update, first check\nwhether the old ordering is still valid (cheap, O(n^3) worst case but\nusually fast); if not, try a local repair (reinsert affected vertices\ninto the base ordering); if the repair fails the (LB) 4-point\ncertificate, fall back to a full static LexBFS recomputation.\n\"\"\"\n\n\ndef _lexbfs_full(A):\n    \"\"\"Static LexBFS via label refinement. O(n^3) worst case.\n\n    Each vertex gets a label (tuple of 0/1) built by processing vertices\n    in order. At each step, pick the unprocessed vertex with the\n    lexicographically largest label (ties broken by vertex id).\n    \"\"\"\n    n = len(A)\n    if n == 0:\n        return []\n    unprocessed = set(range(n))\n    labels = {v: [] for v in range(n)}\n    order = []\n\n    while unprocessed:\n        best = min(unprocessed, key=lambda v: ([-x for x in labels[v]], v))\n        order.append(best)\n        unprocessed.remove(best)\n        for u in unprocessed:\n            labels[u].append(1 if A[best][u] else 0)\n\n    return order\n\n\ndef _check_lb(A, order):\n    \"\"\"Check the (LB) 4-point property.\n\n    For all positions a < b < c with ac in E and ab not in E,\n    there exists d < a with db in E and dc not in E.\n\n    Vectorized with bitmasks: for each a, the set of d < a that are\n    adjacent to b but not to c must be non-empty for every such triple.\n    \"\"\"\n    n = len(order)\n    if n == 0:\n        return True\n    adj = [0] * n\n    for v in range(n):\n        row = A[v]\n        m = 0\n        for u in range(n):\n            if row[u]:\n                m |= 1 << u\n        adj[v] = m\n    pos = [0] * n\n    for i, v in enumerate(order):\n        pos[v] = i\n    prefix = 0\n    for a in range(n):\n        va = order[a]\n        ma = adj[va]\n        for b in range(a + 1, n):\n            vb = order[b]\n            if (ma >> vb) & 1:\n                continue\n            mb = adj[vb]\n            for c in range(b + 1, n):\n                vc = order[c]\n                if not ((ma >> vc) & 1):\n                    continue\n                # Need some d with pos[d] < a, db in E, dc not in E.\n                if (mb & ~adj[vc] & prefix) == 0:\n                    return False\n        prefix |= 1 << va\n    return True\n\n\ndef _local_repair(A, order, affected):\n    \"\"\"Try to repair the ordering by reinserting affected vertices.\n\n    Returns a new ordering if valid, else None.\n    \"\"\"\n    if not affected:\n        return order\n\n    base = [v for v in order if v not in affected]\n    aff = sorted(affected)\n\n    if len(aff) > 6:\n        return None\n\n    from itertools import permutations\n\n    for perm in permutations(aff):\n        new_order = list(base)\n        ok = True\n        for v in perm:\n            placed = False\n            for pos in range(len(new_order) + 1):\n                trial = new_order[:pos] + [v] + new_order[pos:]\n                if _check_lb(A, trial):\n                    new_order = trial\n                    placed = True\n                    break\n            if not placed:\n                ok = False\n                break\n        if ok and _check_lb(A, new_order):\n            return new_order\n\n    return None\n\n\n\n\n\ndef init(graph):\n    A = [list(row) for row in graph]\n    order = _lexbfs_full(A)\n    return {'ordering': order, 'A': A}\n\n\ndef insert_edge(graph, edge, state):\n    A = [list(row) for row in graph]\n    u, v = edge\n\n    order = state['ordering']\n    # The old ordering may still be valid after an insertion.\n    if _check_lb(A, order):\n        return {'ordering': order, 'A': A}\n\n    affected = {u, v}\n    for x in range(len(A)):\n        if A[u][x] or A[v][x]:\n            affected.add(x)\n\n    new_order = _local_repair(A, order, affected)\n    if new_order is None:\n        new_order = _lexbfs_full(A)\n    return {'ordering': new_order, 'A': A}\n\n\ndef delete_edge(graph, edge, state):\n    A = [list(row) for row in graph]\n    u, v = edge\n\n    order = state['ordering']\n    # The old ordering may still be valid after a deletion.\n    if ...[331 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a780427ccae09e60",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    pos = [0] * n\\n    for i, v in enumerate(order):\\n        pos[v] = i\\n    prefix = 0\", \"new\": \"    prefix = 0\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a780427ccae09e60",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b50aac480856f590",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b50aac480856f590",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    }
+  ]
+}

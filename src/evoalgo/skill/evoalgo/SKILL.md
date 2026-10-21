@@ -44,7 +44,10 @@ Pick the task:
 5. Repeat. Correct first, then a lower `work_ratio`. Revert changes that
    break correctness or do not help.
 6. When `search` passes and you stop improving, run `evoalgo check --final`
-   once (n <= 5; up to ~12 minutes on directed problems), then
+   once (n <= 5; up to ~12 minutes on directed problems). Give the shell
+   command a timeout of at least 15 minutes (900000 ms): most agent shells
+   stop a command after 2-5 minutes by default, which kills the grade before
+   it reports. Then
    `evoalgo finish`, and report: final verdict, work ratio, the idea in two
    lines, and the workspace path.
 

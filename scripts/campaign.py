@@ -282,6 +282,17 @@ def _orchestrator_usage(path: Path) -> dict:
     return u
 
 
+def _specialist_gains(ev: list[dict]) -> int:
+    made = {e["id"] for e in ev if e.get("type") == "candidate_generated" and e.get("role") == "specialist"}
+    gains, prev = 0, None
+    for e in ev:
+        if e.get("type") == "gen_committed":
+            best = e.get("best_id")
+            gains += best != prev and best in made
+            prev = best
+    return gains
+
+
 def summarize_run(plan: dict, cell: dict) -> dict:
     path = run_dir(cell)
     row = {**cell, "attempts": len(aborted_attempts(cell)) + (1 if path.exists() else 0),
@@ -319,7 +330,10 @@ def summarize_run(plan: dict, cell: dict) -> dict:
         specialists_spawned=sum(e.get("type") == "agent_spawned" for e in ev),
         specialist_candidates=sum(e.get("type") == "candidate_generated"
                                   and e.get("role") == "specialist" for e in ev),
-        specialist_gains=sum(e.get("type") == "agent_retired" and bool(e.get("gained")) for e in ev),
+        # Generations in which a specialist's candidate became the new
+        # population best (counted from the log, so a specialist still active
+        # at the end of the run counts too).
+        specialist_gains=_specialist_gains(ev),
         final_by_specialist=bool(final) and any(
             e.get("type") == "candidate_generated" and e.get("role") == "specialist"
             and e.get("id") == (final or {}).get("id") for e in ev),
