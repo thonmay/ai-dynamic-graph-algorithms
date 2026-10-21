@@ -44,6 +44,7 @@ from .population import Population, _rank_key
 from .problem_definitions import ProblemDefinition, get_problem
 from .reflector import Reflector
 from .sandbox import Sandbox
+from . import specialists
 from .verifier import Verifier
 
 logger = logging.getLogger(__name__)
@@ -611,10 +612,47 @@ class Orchestrator:
                 self.events.emit("agent_failed", gen=gen, id=candidate_id,
                                  role="mutate" if parent_ids else "fresh")
 
+        # Specialist phase (dynamic agent generation): each active specialist
+        # derives one candidate from the population best.
+        if self.config.dynamic_agents and not self.stop_reason:
+            idx = repair_count + fresh_count
+            for spec in [s for s in specialists.specialists(read_events(self.run_dir)) if not s.retired]:
+                if self.model_calls >= self.config.model_call_budget:
+                    self.stop_reason = "model_call_budget_exhausted"
+                    break
+                best = self.population.best_candidate
+                if best is None:
+                    break
+                idx += 1
+                candidate_id = f"gen{gen:03d}_c{idx:02d}"
+                code_path = self.run_dir / "candidates" / f"{candidate_id}.py"
+                try:
+                    parent_code = Path(best.code_path).read_text()
+                except OSError:
+                    continue
+                if not self._before_call(gen, "specialist", candidate_id):
+                    break
+                with self._agent_call(gen, "specialist", candidate_id, spec.name, code_path.exists):
+                    self.provider.generate(
+                        problem_name=self.config.problem, parent_code=parent_code,
+                        candidate_filename=code_path.name, generation=gen,
+                        workdir=str(self.run_dir), focus=spec.focus,
+                    )
+                self.model_calls = self.provider.call_count
+                if code_path.exists():
+                    candidate = Candidate(id=candidate_id, code_path=str(code_path),
+                                          generation=gen, parent_ids=[best.id])
+                    new_candidates.append(candidate)
+                    self.events.emit("candidate_generated", id=candidate_id, gen=gen,
+                                     parent_ids=[best.id], role="specialist", agent=spec.name)
+                else:
+                    self.events.emit("agent_failed", gen=gen, id=candidate_id, role="specialist")
+
         if not new_candidates:
             logger.warning("Generation %d produced no candidates", gen)
             self._check_stop_conditions()
             self._commit_generation()
+            self._agent_boundary()
             return
 
         # Verify all new candidates
@@ -650,6 +688,7 @@ class Orchestrator:
 
         # Commit (includes stop_reason + consecutive_all_failed)
         self._commit_generation()
+        self._agent_boundary()
 
         # Dashboard
         if gen % self.config.dashboard_interval == 0:
@@ -689,6 +728,18 @@ class Orchestrator:
         )
         logger.info("Generation %d committed: best_fitness=%.2f, pop_size=%d",
                      self.generation, best, self.population.size)
+
+    def _agent_boundary(self) -> None:
+        """Dynamic agent generation: retire spent specialists, spawn one on a
+        plateau. Runs after a commit, so the decision sees this generation."""
+        if not self.config.dynamic_agents or self.stop_reason:
+            return
+        for kind, fields_ in specialists.boundary_actions(
+                read_events(self.run_dir), self.generation, self.config):
+            self.events.emit(kind, **fields_)
+            if kind == "agent_spawned":
+                logger.info("Plateau at generation %d: spawned %s (%s)",
+                            self.generation, fields_["agent"], fields_["kind"])
 
     def _check_stop_conditions(self) -> None:
         """Check all stop conditions and set stop_reason if met."""

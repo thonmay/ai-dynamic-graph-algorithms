@@ -28,7 +28,10 @@ Config schema (config.yaml):
     seed: 1337
   dashboard_interval: 10        # emit HTML every N generations
   plateau_window: 10            # generations for plateau detection
-  plateau_epsilon: 0.01         # min fitness improvement to avoid plateau
+  plateau_epsilon: 0.01         # min fitness gain or relative work-ratio gain to avoid a plateau
+  dynamic_agents: false         # spawn a specialist agent on a plateau (see specialists.py)
+  agent_budget: 3               # max concurrently active specialists
+  specialist_generations: 3     # candidates (one per generation) before a specialist retires
   max_consecutive_all_failed: 5 # stop after this many all-failed generations
   model_call_budget: 500        # max LLM invocations
   workdir: runs                 # run directory root
@@ -104,6 +107,11 @@ class RunConfig:
     dashboard_interval: int = 10
     plateau_window: int = 10
     plateau_epsilon: float = 0.01
+    # Dynamic agent generation (contribution 3, optional): on a plateau,
+    # spawn a specialist generator (evoalgo.specialists).
+    dynamic_agents: bool = False
+    agent_budget: int = 3
+    specialist_generations: int = 3
     max_consecutive_all_failed: int = 5
     model_call_budget: int = 500
     early_stop_on_success: bool = True
@@ -171,6 +179,14 @@ class RunConfig:
             errors.append(f"agent_max_seconds must be 10-7200, got {self.agent_max_seconds}")
         if not (0.0 <= self.agent_temperature <= 2.0):
             errors.append(f"agent_temperature must be 0.0-2.0, got {self.agent_temperature}")
+        if not (1 <= self.plateau_window <= 100):
+            errors.append(f"plateau_window must be 1-100, got {self.plateau_window}")
+        if not (0.0 <= self.plateau_epsilon <= 1.0):
+            errors.append(f"plateau_epsilon must be 0.0-1.0, got {self.plateau_epsilon}")
+        if not (1 <= self.agent_budget <= 10):
+            errors.append(f"agent_budget must be 1-10, got {self.agent_budget}")
+        if not (1 <= self.specialist_generations <= 50):
+            errors.append(f"specialist_generations must be 1-50, got {self.specialist_generations}")
         if not (1 <= self.population_size <= 50):
             errors.append(f"population_size must be 1-50, got {self.population_size}")
         if not (1 <= self.max_generations <= 1000):

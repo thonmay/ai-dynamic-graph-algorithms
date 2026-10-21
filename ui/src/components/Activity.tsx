@@ -4,6 +4,7 @@ import { duration, f3 } from '../format'
 
 const VERB: Record<string, string> = {
   seed: 'Seeding', fresh: 'Generating', mutate: 'Mutating', repair: 'Repairing', reflect: 'Reflecting',
+  specialist: 'Specialist on',
 }
 
 const REASON: Record<string, string> = {

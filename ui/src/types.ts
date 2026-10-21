@@ -45,7 +45,7 @@ export type RunStartEvent = Base & {
 export type RunEvent =
   | RunStartEvent
   | (Base & { type: 'gen_start'; gen: number })
-  | (Base & { type: 'candidate_generated'; id: string; gen: number; parent_ids?: string[]; role?: string })
+  | (Base & { type: 'candidate_generated'; id: string; gen: number; parent_ids?: string[]; role?: string; agent?: string })
   | (Base & {
       type: 'candidate_verified'
       id: string
@@ -76,6 +76,16 @@ export type RunEvent =
       model_calls: number | null
       stop_reason: string | null
     })
+  | (Base & {
+      type: 'plateau_detected'
+      gen: number
+      window: number
+      kind: string
+      signature: string
+      best_id: string | null
+    })
+  | (Base & { type: 'agent_spawned'; gen: number; agent: string; kind: string; signature: string; focus: string; generations: number })
+  | (Base & { type: 'agent_retired'; gen: number; agent: string; reason: string; candidates: number; gained: boolean })
   | (Base & { type: 'control_ack'; cmd_id: string; gen: number; cmd: string; text?: string; field?: string; value?: number })
   | (Base & { type: 'control_reject'; cmd_id: string; gen: number; cmd?: string; reason: string })
   | (Base & {
@@ -146,6 +156,7 @@ export interface LaunchBody {
   endpoint?: EndpointId
   n_max?: number
   early_stop_on_success?: boolean
+  dynamic_agents?: boolean
 }
 
 export type EndpointId = 'ericai' | 'openrouter' | 'openai'

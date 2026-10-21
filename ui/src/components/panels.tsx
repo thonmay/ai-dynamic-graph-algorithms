@@ -1,4 +1,4 @@
-import { rank, type Cand, type GenInfo, type LogEntry, type LogKind } from '../state'
+import { rank, type AgentInfo, type Cand, type GenInfo, type LogEntry, type LogKind } from '../state'
 import { clock, f3, isNum } from '../format'
 
 export type LogFilter = LogKind | 'all'
@@ -64,7 +64,7 @@ export function Population({ gen, cands, selected, onSelect }: {
               style={{ ['--i' as string]: i }}>
             <td className="mono"><i className={`dot ${p.state === 'PASS' ? 'pass' : 'fail'}`} />{p.id}</td>
             <td className="mono muted">{p.parent_ids[0] ?? 'seed'}</td>
-            <td className="muted">{cands[p.id]?.role ?? ''}</td>
+            <td className="muted">{cands[p.id]?.agent ?? cands[p.id]?.role ?? ''}</td>
             <td className="r num">{f3(p.fitness)}</td>
             <td>
               <div className="wr">
@@ -76,6 +76,29 @@ export function Population({ gen, cands, selected, onSelect }: {
             </td>
           </tr>
         ))}
+      </tbody>
+    </table>
+  )
+}
+
+/** Specialists spawned on a plateau (dynamic agent generation). */
+export function Agents({ agents, viewGen }: { agents: AgentInfo[]; viewGen: number }) {
+  const shown = agents.filter((a) => a.spawnedGen <= viewGen)
+  return (
+    <table className="pop">
+      <thead><tr><th>agent</th><th>focus</th><th className="r">spawned</th><th>status</th></tr></thead>
+      <tbody>
+        {shown.map((a, i) => {
+          const retired = a.retiredGen !== null && a.retiredGen <= viewGen
+          return (
+            <tr key={a.name} style={{ ['--i' as string]: i }} title={a.signature}>
+              <td className="mono"><i className={`dot ${retired ? '' : 'pass'}`} />{a.name}</td>
+              <td className="muted">{a.kind}</td>
+              <td className="r num">g{a.spawnedGen}</td>
+              <td className="muted">{retired ? `retired g${a.retiredGen} · ${(a.retireReason ?? '').replace('_', ' ')}` : 'active'}</td>
+            </tr>
+          )
+        })}
       </tbody>
     </table>
   )

@@ -121,6 +121,7 @@ class LaunchRequest(BaseModel):
     endpoint: Literal["ericai", "openrouter", "openai"] | None = None
     n_max: int | None = Field(None, ge=2, le=8)
     early_stop_on_success: bool | None = None
+    dynamic_agents: bool | None = None
 
 
 # Defaults for a pack launch; a pack has no config template of its own.
@@ -246,7 +247,7 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
                 raise HTTPException(404, "unknown config")
             config = RunConfig.load(template)
         for field in ("max_generations", "population_size", "model_call_budget", "model",
-                      "early_stop_on_success"):
+                      "early_stop_on_success", "dynamic_agents"):
             value = getattr(req, field)
             if value is not None:
                 setattr(config, field, value)

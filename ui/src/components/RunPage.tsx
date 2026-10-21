@@ -4,7 +4,7 @@ import { deriveStatus, genAt, type Live } from '../state'
 import { duration, f3, pct } from '../format'
 import { Activity } from './Activity'
 import { Lineage, Spark, WorkRatioChart } from './charts'
-import { EventLog, Population, type LogFilter } from './panels'
+import { Agents, EventLog, Population, type LogFilter } from './panels'
 import { Drawer } from './Drawer'
 import { Steer } from './Steer'
 import { Toast } from './Toast'
@@ -170,6 +170,13 @@ export function RunPage({ runId }: { runId: string }) {
           <div className="ph"><h3>Population</h3><span className="meta num">{gen ? `gen ${gen.gen}` : ''}</span></div>
           <Population gen={gen} cands={state.cands} selected={selected} onSelect={setSelected} />
         </section>
+
+        {state.agents.length > 0 && (
+          <section className="panel" style={delay(5)}>
+            <div className="ph"><h3>Specialist agents</h3><span className="meta">spawned on a plateau</span></div>
+            <Agents agents={state.agents} viewGen={live ? Infinity : popGen} />
+          </section>
+        )}
       </main>
 
       {!live && lastGen > 0 && (

@@ -39,6 +39,8 @@ def task_message(task: Task, has_pack: bool) -> str:
         parts += ["TASK: write a reflection for the failed candidate below.",
                   f"Output file: {out}", "", "FAILED CANDIDATE:", _code(task.failed_code or ""),
                   "", "FAILING CASE:", json.dumps(task.failing_case or {}, indent=2, default=str)]
+    if task.focus:
+        parts += ["", "SPECIALIST FOCUS:", task.focus.strip()]
     if has_pack:
         parts += ["", "More context: read_file('pack/brief.md') has the full research brief."]
     return "\n".join(parts).strip() + "\n"

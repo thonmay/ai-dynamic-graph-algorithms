@@ -78,3 +78,21 @@ describe('applyEvents', () => {
     expect(stop.status).toBe('stopped')
   })
 })
+
+describe('dynamic agent generation', () => {
+  it('tracks spawned and retired specialists and labels their candidates', () => {
+    let seq = 100
+    const ev = (e: Record<string, unknown>) => ({ seq: seq++, ts: '2026-01-01T00:01:00Z', ...e }) as RunEvent
+    const s = applyEvents(initialState(), [
+      ...stream().slice(0, -1),
+      ev({ type: 'plateau_detected', gen: 2, window: 2, kind: 'efficiency', signature: 'wr 0.2', best_id: 'gen002_c01' }),
+      ev({ type: 'agent_spawned', gen: 2, agent: 'specialist-1', kind: 'efficiency', signature: 'wr 0.2', focus: 'f', generations: 3 }),
+      ev({ type: 'candidate_generated', id: 'gen003_c02', gen: 3, parent_ids: ['gen002_c01'], role: 'specialist', agent: 'specialist-1' }),
+      ev({ type: 'agent_retired', gen: 3, agent: 'specialist-1', reason: 'no_gain', candidates: 1, gained: false }),
+    ])
+    expect(s.agents).toEqual([{ name: 'specialist-1', kind: 'efficiency', signature: 'wr 0.2',
+                                spawnedGen: 2, retiredGen: 3, retireReason: 'no_gain' }])
+    expect(s.cands['gen003_c02'].agent).toBe('specialist-1')
+    expect(s.log.some((l) => l.text === 'spawned specialist-1 · efficiency')).toBe(true)
+  })
+})

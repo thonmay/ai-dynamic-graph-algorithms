@@ -5,7 +5,7 @@ const pack = { name: 'dynamic_bfs', title: 't', tier: 'calibration', directed: t
   checker: 'dynamic_bfs', update_mode: 'mixed', lean: false, question: 'q', brief: 'b' } as const
 
 const form = { pack: 'dynamic_bfs', goal: '', preset: 'standard', gens: 10, pop: 4, budget: 200,
-  model: 'Qwen/Qwen3.8-27B-FP8', agent: 'ericai' as const, nMax: 5, stopAtFirst: false, runId: '' }
+  model: 'Qwen/Qwen3.8-27B-FP8', agent: 'ericai' as const, nMax: 5, stopAtFirst: false, dynamicAgents: false, runId: '' }
 
 const agents = {
   endpoints: [

@@ -70,7 +70,7 @@ export function Drawer({ runId, id, cands, onClose }: {
             <div><b className="num">{f3(c.fitness)}</b><span>fitness</span></div>
             <div><b className="num">{f3(c.workRatio)}</b><span>work ratio</span></div>
             <div><b className="num">{c.testsTotal ? `${c.testsPassed ?? 0}/${c.testsTotal}` : '-'}</b><span>tests</span></div>
-            <div><b>{c.role}</b><span>{c.parents[0] ? `← ${c.parents[0]}` : 'no parent'}</span></div>
+            <div><b>{c.agent ?? c.role}</b><span>{c.parents[0] ? `← ${c.parents[0]}` : 'no parent'}</span></div>
           </div>
         )}
         {fc && (

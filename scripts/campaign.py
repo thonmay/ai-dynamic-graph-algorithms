@@ -51,7 +51,7 @@ HARNESS_PROMPT = (
     "Create the workspace with run id {run_id}, --harness enlcode and --goal \"{goal}\". "
     "Do at most {max_checks} checks, then run the final check and finish."
 )
-ORCHESTRATOR_MODES = ("orchestrator", "no_reflection")
+ORCHESTRATOR_MODES = ("orchestrator", "no_reflection", "dynamic_agents")
 
 
 def load_plan(path: str) -> dict:
@@ -103,7 +103,10 @@ def orchestrator_config(plan: dict, cell: dict) -> Path:
     base = dict(plan["orchestrator"])
     base.update(pack=cell["pack"], problem=cell["pack"], research_goal=plan["goal"],
                 selection_seed=cell["seed"], workdir="runs",
-                reflection=cell["mode"] != "no_reflection")
+                reflection=cell["mode"] != "no_reflection",
+                dynamic_agents=cell["mode"] == "dynamic_agents")
+    if cell["mode"] == "dynamic_agents":
+        base.update(plan.get("dynamic_agents") or {})
     path = plan["out"] / "configs" / f"{cell['run_id']}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(base, sort_keys=True))
@@ -310,6 +313,16 @@ def summarize_run(plan: dict, cell: dict) -> dict:
         completion_tokens=usage["completion_tokens"],
         all_attempts_tokens=all_usage["prompt_tokens"] + all_usage["completion_tokens"],
         active_minutes=_active_minutes(ev),
+        # Dynamic agent generation: plateaus, specialists, and whether a
+        # specialist's candidate ever became the population best.
+        plateaus=sum(e.get("type") == "plateau_detected" for e in ev),
+        specialists_spawned=sum(e.get("type") == "agent_spawned" for e in ev),
+        specialist_candidates=sum(e.get("type") == "candidate_generated"
+                                  and e.get("role") == "specialist" for e in ev),
+        specialist_gains=sum(e.get("type") == "agent_retired" and bool(e.get("gained")) for e in ev),
+        final_by_specialist=bool(final) and any(
+            e.get("type") == "candidate_generated" and e.get("role") == "specialist"
+            and e.get("id") == (final or {}).get("id") for e in ev),
     )
     return row
 

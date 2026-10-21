@@ -103,11 +103,11 @@ class LLMProvider:
         return (result.summary or "done") if result.ok else None
 
     def generate(self, problem_name: str, parent_code: str | None, candidate_filename: str,
-                 generation: int, workdir: Path | str) -> str | None:
+                 generation: int, workdir: Path | str, focus: str | None = None) -> str | None:
         return self._call(Task(
             role="generate", candidate_id=Path(candidate_filename).stem, problem=problem_name,
             problem_prompt=self._build_problem_prompt(problem_name), run_dir=Path(workdir),
-            parent_code=parent_code))
+            parent_code=parent_code, focus=focus))
 
     def repair(self, problem_name: str, failed_code: str, reflection: str,
                candidate_filename: str, workdir: Path | str) -> str | None:

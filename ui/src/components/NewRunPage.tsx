@@ -35,6 +35,7 @@ interface Form {
   agent: EndpointId | 'enlcode'
   nMax: number
   stopAtFirst: boolean
+  dynamicAgents: boolean
   runId: string
 }
 
@@ -55,7 +56,7 @@ function initialForm(prefill: Partial<Form>): Form {
   const mem = remembered()
   const f: Form = {
     pack: '', goal: '', preset: mem.preset ?? std.id, gens: mem.gens ?? std.gens, pop: mem.pop ?? std.pop,
-    budget: mem.budget ?? std.budget, model: mem.model ?? '', agent: mem.agent ?? 'ericai', nMax: 5, stopAtFirst: false, runId: '',
+    budget: mem.budget ?? std.budget, model: mem.model ?? '', agent: mem.agent ?? 'ericai', nMax: 5, stopAtFirst: false, dynamicAgents: false, runId: '',
     ...(mem.pack ? { pack: mem.pack } : {}), ...prefill,
   }
   // A stale localStorage value, or a run from mock / a custom URL, has no menu entry.
@@ -78,7 +79,7 @@ function useFromRun(): { prefill: Partial<Form> | null; source: string | null } 
           budget: c.model_call_budget, model: c.model ?? '', nMax: c.bound?.n_max ?? 5,
           agent: c.provider === 'api' && ['ericai', 'openrouter', 'openai'].includes(c.api_base_url)
             ? c.api_base_url : c.provider === 'enlcode' ? 'enlcode' : 'ericai',
-          stopAtFirst: !!c.early_stop_on_success, preset: 'custom',
+          stopAtFirst: !!c.early_stop_on_success, dynamicAgents: !!c.dynamic_agents, preset: 'custom',
         })
       })
       .catch(() => setPrefill({}))
@@ -176,7 +177,8 @@ export function NewRunPage() {
       pack: pack.name, research_goal: form.goal.trim() || undefined, max_generations: form.gens,
       population_size: form.pop, model_call_budget: form.budget, model: form.model.trim() || undefined,
       ...(form.agent === 'enlcode' ? { provider: 'enlcode' } : { provider: 'api', endpoint: form.agent }),
-      n_max: form.nMax, early_stop_on_success: form.stopAtFirst, run_id: form.runId.trim() || undefined,
+      n_max: form.nMax, early_stop_on_success: form.stopAtFirst, dynamic_agents: form.dynamicAgents,
+      run_id: form.runId.trim() || undefined,
     }
     try {
       const r = await api<{ run_id: string }>('api/runs', { method: 'POST', body: JSON.stringify(body) })
@@ -313,6 +315,10 @@ export function NewRunPage() {
                     <input type="checkbox" checked={form.stopAtFirst} onChange={(e) => set({ stopAtFirst: e.target.checked })} />
                     <i />Stop at the first fully correct candidate
                   </label>
+                  <label className="toggle">
+                    <input type="checkbox" checked={form.dynamicAgents} onChange={(e) => set({ dynamicAgents: e.target.checked })} />
+                    <i />Spawn a specialist agent when the search plateaus
+                  </label>
                 </details>
               </section>
             )}
@@ -339,7 +345,8 @@ export function NewRunPage() {
                 <div className="rv-row" onClick={() => setStep(3)}>
                   <span className="rv-k">Verifier</span>
                   <span className="rv-v num">all non-isomorphic graphs, n ≤ {form.nMax} · {pack.update_mode.replace('_', ' ')} updates
-                    {form.stopAtFirst ? ' · stop at first correct' : ''}</span>
+                    {form.stopAtFirst ? ' · stop at first correct' : ''}
+                    {form.dynamicAgents ? ' · dynamic agents' : ''}</span>
                   <span className="rv-edit">Edit</span>
                 </div>
                 <div className="rv-row" onClick={() => setStep(3)}>

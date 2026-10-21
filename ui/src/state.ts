@@ -18,6 +18,18 @@ export interface Cand {
   error: string | null
   reflected: boolean
   discarded: boolean
+  /** Specialist agent that wrote it (dynamic agent generation). */
+  agent?: string
+}
+
+/** A specialist spawned on a plateau (dynamic agent generation). */
+export interface AgentInfo {
+  name: string
+  kind: string
+  signature: string
+  spawnedGen: number
+  retiredGen: number | null
+  retireReason: string | null
 }
 
 export interface GenInfo {
@@ -71,6 +83,8 @@ export interface RunState {
   pausedBefore: { role: string; id: string } | null
   /** Engine process liveness from the server; null until known. */
   engine: EngineState | null
+  /** Specialists in spawn order. */
+  agents: AgentInfo[]
 }
 
 export const LOG_LIMIT = 1000
@@ -80,7 +94,7 @@ export function initialState(): RunState {
     lastSeq: -1, meta: null, status: 'connecting', currentGen: 0, cands: {}, order: [],
     gens: [], log: [], activeHint: null, genHints: {}, modelCalls: 0, stopReason: null,
     firstTs: null, lastTs: null, pending: {}, handled: {}, call: null, pausedBefore: null,
-    engine: null,
+    engine: null, agents: [],
   }
 }
 
@@ -175,10 +189,24 @@ export function applyEvents(prev: RunState, events: RunEvent[]): RunState {
       case 'candidate_generated': {
         const parents = e.parent_ids ?? []
         const role = e.role ?? 'mutate'
-        upsert({ ...(s.cands[e.id] ?? newCand(e.id, e.gen)), parents, role, gen: e.gen })
-        log('agent', 'plain', `${role} ${e.id}${parents.length ? ` ← ${parents.join(', ')}` : ''}`, e.id)
+        upsert({ ...(s.cands[e.id] ?? newCand(e.id, e.gen)), parents, role, gen: e.gen,
+                 ...(e.agent ? { agent: e.agent } : {}) })
+        const who = e.agent ? `${e.agent} ` : ''
+        log('agent', 'plain', `${who}${role} ${e.id}${parents.length ? ` ← ${parents.join(', ')}` : ''}`, e.id)
         break
       }
+      case 'plateau_detected':
+        log('run', 'accent', `plateau over ${e.window} gens (${e.kind})`, e.best_id ?? undefined)
+        break
+      case 'agent_spawned':
+        s.agents = [...s.agents, { name: e.agent, kind: e.kind, signature: e.signature,
+                                   spawnedGen: e.gen, retiredGen: null, retireReason: null }]
+        log('agent', 'accent', `spawned ${e.agent} · ${e.kind}`)
+        break
+      case 'agent_retired':
+        s.agents = s.agents.map((a) => a.name === e.agent ? { ...a, retiredGen: e.gen, retireReason: e.reason } : a)
+        log('agent', 'muted', `retired ${e.agent} · ${e.reason.replace('_', ' ')} · ${e.candidates} candidates${e.gained ? ', improved best' : ''}`)
+        break
       case 'candidate_verified': {
         const c = s.cands[e.id] ?? newCand(e.id, e.gen)
         upsert({

@@ -35,6 +35,7 @@ class Task:
     failed_code: str | None = None
     reflection: str | None = None
     failing_case: dict[str, Any] | None = None
+    focus: str | None = None       # specialist agent's focus (dynamic agent generation)
 
     @property
     def output_path(self) -> Path:
