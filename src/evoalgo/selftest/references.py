@@ -222,6 +222,113 @@ def _recompute(graph):
 }
 
 
+# ---------------------------------------------------------------------------
+# Yang et al. fully dynamic DFS (VLDB 2019), basic algorithms
+# ---------------------------------------------------------------------------
+#
+# Algorithm 2 (framework) + 3 (ConstrainedDFS) + 4 (DFS-Insert) + 5
+# (DFS-Delete), as in Section 4-5 of the paper. A virtual root G (-1) points
+# to every vertex, so the tree spans all vertices; vertex 0 is G's first
+# child, so the subtree of 0 is exactly the set reachable from 0 (a vertex
+# reachable from 0 outside it would give a forward-cross edge, Lemma 1).
+# Intervals: L/R are the discovery/finish timestamps of the whole tree, one
+# shared counter. ConstrainedDFS iterates neighbours in order of their old
+# discovery time, so the unchanged tree path from the search root to
+# T[CI.left] is walked first and keeps its timestamps. The paper does not
+# state an order (it keeps children lists); this choice is ours, and it is
+# needed: mutation Y7 (plain vertex order) breaks the tree over update
+# sequences.
+# Not included: the Section 6 optimizations (refined candidate intervals).
+
+YANG_DFS_CODE = '''
+G = -1  # virtual root, an in-neighbour of every vertex
+
+
+def _out(graph, u):
+    n = len(graph)
+    if u == G:
+        return range(n)
+    return [v for v in range(n) if v != u and graph[u][v] == 1]
+
+
+def _report(st):
+    """The checked certificate: G's children (0 among them) have no parent."""
+    n = len(st["_L"]) - 1
+    return {"parent": {v: (None if st["_P"][v] == G else st["_P"][v]) for v in range(n)},
+            "discover": {v: st["_L"][v] for v in range(n)},
+            "finish": {v: st["_R"][v] for v in range(n)},
+            "_P": st["_P"], "_L": st["_L"], "_R": st["_R"]}
+
+
+def init(graph):
+    """Static DFS from G, visiting 0 first, then the rest in vertex order."""
+    P, L, R, ts = {G: None}, {}, {}, [0]
+
+    def dfs(u):
+        L[u] = ts[0]; ts[0] += 1
+        for v in ([0] + [w for w in range(1, len(graph))] if u == G else _out(graph, u)):
+            if v not in L:
+                P[v] = u
+                dfs(v)
+        R[u] = ts[0]; ts[0] += 1
+
+    dfs(G)
+    return _report({"_P": P, "_L": L, "_R": R})
+
+
+def _constrained_dfs(graph, st, root, cl, cr):
+    """Algorithms 2+3: re-run DFS from root over T(CI), CI = [cl, cr]."""
+    P, L0, R0 = dict(st["_P"]), st["_L"], st["_R"]
+    L, R = dict(L0), dict(R0)
+    in_ci = {v for v in L0 if cl <= L0[v] <= cr or cl <= R0[v] <= cr}
+    visited, ts = set(), [cl]
+
+    def cdfs(u):
+        visited.add(u)
+        if L0[u] >= cl:
+            L[u] = ts[0]; ts[0] += 1
+        for v in sorted((w for w in _out(graph, u) if w in in_ci), key=L0.get):
+            if v in visited:
+                continue
+            if L0[v] >= cl:
+                P[v] = u  # v becomes the next child of u
+            cdfs(v)
+        if R0[u] <= cr:
+            R[u] = ts[0]; ts[0] += 1
+
+    cdfs(root)
+    return _report({"_P": P, "_L": L, "_R": R})
+
+
+def _lca(st, a, b):
+    P, anc = st["_P"], set()
+    while a is not None:
+        anc.add(a)
+        a = P[a]
+    while b not in anc:
+        b = P[b]
+    return b
+
+
+def insert_edge(graph, edge, state):
+    """Algorithm 4 (DFS-Insert)."""
+    s, t = edge
+    L, R = state["_L"], state["_R"]
+    if s == t or R[s] > L[t]:  # not a forward-cross edge: tree stays valid
+        return state
+    r = _lca(state, s, t)
+    return _constrained_dfs(graph, state, r, R[s], R[r])
+
+
+def delete_edge(graph, edge, state):
+    """Algorithm 5 (DFS-Delete)."""
+    s, t = edge
+    if state["_P"].get(t) != s:  # non-tree edge: tree stays valid
+        return state
+    return _constrained_dfs(graph, state, G, state["_L"][t], state["_R"][G])
+'''
+
+
 def _assemble(blocks: dict[str, str], order: list[str],
               overrides: dict[str, str] | None = None) -> str:
     """Concatenate blocks in order, applying overrides, with a header."""
@@ -270,6 +377,44 @@ def reference_functions(problem_name: str) -> tuple:
     ns: dict = {}
     exec(compile(reference_code(problem_name), "<reference>", "exec"), ns)
     return ns["init"], ns["insert_edge"], ns["delete_edge"]
+
+
+# Mutations of the Yang reference (one textual change each) with the
+# smallest counterexample found by exhaustive search over n <= 5 single
+# updates; ``None`` means no single update breaks it and it only shows over
+# update sequences (Y7; the n <= 5 self-test catches it through its
+# multi-step sequences).
+YANG_DFS_MUTATIONS: list[dict] = [
+    {"id": "Y1", "description": "insert: candidate interval ends at R[s], not R[LCA]",
+     "old": "return _constrained_dfs(graph, state, r, R[s], R[r])",
+     "new": "return _constrained_dfs(graph, state, r, R[s], R[s])",
+     "counterexample": (2, [], ("insert", (0, 1)))},
+    {"id": "Y2", "description": "insert: search root t instead of LCA(s, t)",
+     "old": "    r = _lca(state, s, t)\n", "new": "    r = t\n",
+     "counterexample": (2, [], ("insert", (0, 1)))},
+    {"id": "Y3", "description": "insert: forward-cross test inverted",
+     "old": "if s == t or R[s] > L[t]:", "new": "if s == t or R[s] < L[t]:",
+     "counterexample": (2, [], ("insert", (0, 1)))},
+    {"id": "Y4", "description": "delete: candidate interval starts at R[t], not L[t]",
+     "old": 'state["_L"][t], state["_R"][G])', "new": 'state["_R"][t], state["_R"][G])',
+     "counterexample": (3, [(0, 1), (0, 2), (2, 1)], ("delete", (0, 1)))},
+    {"id": "Y5", "description": "ConstrainedDFS ignores the interval constraint on neighbours",
+     "old": "if w in in_ci), key=L0.get)", "new": "), key=L0.get)",
+     "counterexample": (5, [(0, 1), (1, 2), (1, 3), (1, 4)], ("insert", (3, 4)))},
+    {"id": "Y6", "description": "ConstrainedDFS keeps the old parent (no reassignment)",
+     "old": "                P[v] = u  # v becomes the next child of u\n", "new": "                pass\n",
+     "counterexample": (2, [], ("insert", (0, 1)))},
+    {"id": "Y7", "description": "ConstrainedDFS visits neighbours in vertex order, not old discovery order",
+     "old": "key=L0.get)", "new": "key=lambda w: w)",
+     "counterexample": None},
+]
+
+
+def yang_mutation_code(mutation: dict) -> str:
+    code = YANG_DFS_CODE.replace(mutation["old"], mutation["new"], 1)
+    if code == YANG_DFS_CODE:
+        raise ValueError(f"mutation {mutation['id']} does not apply")
+    return code
 
 
 # Convenience: the known-good source for each rooted problem.

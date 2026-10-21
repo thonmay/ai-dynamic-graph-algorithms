@@ -704,6 +704,16 @@ def _cmd_verify_corpus(problem, n_max: int, args, tmpdir: Path) -> int:
     print("\n  [known-good] validate-or-rebuild reference (must PASS)")
     record("known-good", "reference", reference_code(problem.name), "PASS")
 
+    if problem.name == "dynamic_dfs":
+        # 1b. Yang et al. fully dynamic DFS (Algorithms 2-5) must PASS, and
+        # every one-line mutation of it must be rejected.
+        from .selftest.references import YANG_DFS_CODE, YANG_DFS_MUTATIONS, yang_mutation_code
+        print("\n  [known-good] Yang et al. dynamic DFS, Algorithms 2-5 (must PASS)")
+        record("yang-dfs", "reference", YANG_DFS_CODE, "PASS")
+        print("\n  [faults] mutations of the Yang reference (must FAIL/CRASH)")
+        for m in YANG_DFS_MUTATIONS:
+            record(f"yang_{m['id']}", "fault", yang_mutation_code(m), "FAIL")
+
     # 2. every real fault must be REJECTED (FAIL/CRASH)
     print("\n  [faults] seeded real faults (must FAIL/CRASH)")
     for fault in real_faults(problem.name):
@@ -728,7 +738,7 @@ def _cmd_verify_corpus(problem, n_max: int, args, tmpdir: Path) -> int:
     rejected = sum(1 for r in real_fault_rows if r[4])
     n_real = len(real_fault_rows)
     zero_fn = (rejected == n_real) and n_real > 0
-    known_good_ok = rows[0][4]
+    known_good_ok = all(r[4] for r in rows if r[1] == "reference")
     controls_ok = all(r[4] for r in rows if r[1] == "control")
 
     print("\n  Zero-false-negative (n<=%d): %d/%d real faults rejected -> %s"

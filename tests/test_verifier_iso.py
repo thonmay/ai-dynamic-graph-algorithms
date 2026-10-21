@@ -386,3 +386,71 @@ def test_fault_corpus_metadata_complete():
                 if op != "init":
                     ot, (u, v) = op
                     assert ot in ("insert", "delete")
+
+
+def test_yang_dfs_reference_and_mutations_in_process():
+    """Fast (in-process): the Yang et al. reference keeps a valid DFS tree on
+    every single update of every non-isomorphic rooted digraph with n <= 4
+    and on random update sequences; each mutation's documented
+    counterexample breaks it, and Y7 breaks over random sequences."""
+    import random
+    from evoalgo.selftest.references import YANG_DFS_CODE, YANG_DFS_MUTATIONS, yang_mutation_code
+    p = get_problem("dynamic_dfs")
+
+    def fns(code):
+        ns: dict = {}
+        exec(compile(code, "<yang>", "exec"), ns)
+        return ns["init"], ns["insert_edge"], ns["delete_edge"]
+
+    def apply(fs, gl, op, st):
+        kind, (u, v) = op
+        g2 = [row[:] for row in gl]
+        g2[u][v] = 1 if kind == "insert" else 0
+        st2 = (fs[1] if kind == "insert" else fs[2])(g2, (u, v), copy.deepcopy(st))
+        return g2, st2
+
+    def random_sequences_ok(fs, trials=400, seed=11):
+        rng = random.Random(seed)
+        for _ in range(trials):
+            n = rng.choice([6, 8, 12])
+            gl = [[int(i != j and rng.random() < 0.25) for j in range(n)] for i in range(n)]
+            st = fs[0](gl)
+            for _ in range(30):
+                u, v = rng.sample(range(n), 2)
+                gl, st = apply(fs, gl, ("delete" if gl[u][v] else "insert", (u, v)), st)
+                if not p.check_invariant(st, np.array(gl), 0):
+                    return False
+        return True
+
+    good = fns(YANG_DFS_CODE)
+    for n in (2, 3, 4):
+        for g in load_nauty_rooted_digraphs(n):
+            gl = g.tolist()
+            st = good[0](gl)
+            assert p.check_invariant(st, g, 0)
+            for u in range(n):
+                for v in range(n):
+                    if u != v:
+                        g2, st2 = apply(good, gl, ("delete" if gl[u][v] else "insert", (u, v)), st)
+                        assert p.check_invariant(st2, np.array(g2), 0), (gl, (u, v))
+    assert random_sequences_ok(good)
+    for m in YANG_DFS_MUTATIONS:
+        bad = fns(yang_mutation_code(m))
+        if m["counterexample"] is None:
+            assert not random_sequences_ok(bad), m["id"]
+            continue
+        n, edges, op = m["counterexample"]
+        gl = [[0] * n for _ in range(n)]
+        for a, b in edges:
+            gl[a][b] = 1
+        g2, st2 = apply(bad, gl, op, bad[0](gl))
+        assert not p.check_invariant(st2, np.array(g2), 0), m["id"]
+
+
+@pytest.mark.slow
+def test_yang_dfs_reference_passes_n5(tmp_path):
+    """Completion signal of contribution 2: the engine validates Yang et al.
+    dynamic DFS on the full n <= 5 universe."""
+    from evoalgo.selftest.references import YANG_DFS_CODE
+    cand = _verify_code("dynamic_dfs", YANG_DFS_CODE, 5, tmp_path)
+    assert cand.state.value == "PASS", (cand.state.value, cand.failing_case)
