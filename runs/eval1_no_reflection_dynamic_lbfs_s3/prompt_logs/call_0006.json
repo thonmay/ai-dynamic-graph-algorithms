@@ -1,0 +1,374 @@
+{
+  "call_id": "call_0006",
+  "timestamp": "2026-10-20T16:07:36Z",
+  "backend": "api",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "type": "generate",
+  "candidate_id": "gen002_c02",
+  "messages_start": [
+    {
+      "role": "system",
+      "content": "You are the GENERATION role in an evolutionary search for dynamic graph algorithms. Produce one candidate algorithm and write it with `write_candidate`. You do not reflect, repair other candidates, or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the problem definition, research brief, run goal and any researcher hint in the task.\n2. If a parent candidate is given, derive your candidate from it: keep what works and change the part the goal or hint points at. If no parent is given, start from the offline algorithm and make it dynamic.\n3. Write the full module with `write_candidate`.\n4. Check it with `run_examples` (small public set). If it fails, fix the first failure with `edit_candidate` or a new `write_candidate`, then check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`. Each returns the new state.\n- `graph` is the current 0/1 adjacency matrix (list of lists, vertex ids 0..n-1) after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no `get_result()`, no imports beyond the Python standard library.\n- The maintained result (tree, ordering, partition, set) is part of the returned state, in the shape the problem definition describes.\n\n## Rules\n\n- Correct first, then cheaper: the hidden grade is correctness on every tested graph and update, then work relative to recomputing from scratch.\n- Prefer the smallest change that achieves the goal. Simpler code that is equally correct is better.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case, not just the examples.\n- If you are unsure about a graph-theory fact, say so in your report instead of guessing.\n\n## Report (final message, no tool call)\n\nCANDIDATE: <file written>\nAPPROACH: <one or two lines: idea and key data structures>\nEXAMPLES: <last run_examples verdict>\nNOTES: <assumptions or concerns, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: derive a NEW candidate from the parent below.\nOutput file: candidates/gen002_c02.py\n\nPARENT CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering (candidate gen001_c02).\n\nMaintains a valid LexBFS ordering under edge insertions and deletions.\n\nStrategy:\n  1. After each update, check if the current ordering still satisfies\n     the (LB) 4-point property (Corneil & Krueger certificate).\n  2. If valid, return it unchanged (O(n^3) check, no recompute).\n  3. If invalid, try targeted local repairs (move one of the vertices\n     in the first violating triple).\n  4. If local repair fails, fall back to a full static LexBFS\n     recomputation via partition refinement.\n\nThe static LexBFS uses the standard partition-refinement algorithm\n(Habib, McConnell, Paul, Viennot).  Tie-break: first element of the\nfirst bucket (deterministic, valid for any LexBFS).\n\"\"\"\n\n\ndef _static_lexbfs(graph):\n    \"\"\"Compute a valid LexBFS ordering from scratch via partition refinement.\n\n    Returns a list of vertices in LexBFS order.\n    \"\"\"\n    n = len(graph)\n    if n == 0:\n        return []\n\n    # Buckets: list of lists of vertices (all with the same label).\n    # Initially one bucket with all vertices in id order.\n    buckets = [[v for v in range(n)]]\n    ordering = []\n\n    while buckets:\n        # Pick the first bucket, take its first vertex.\n        b0 = buckets[0]\n        x = b0[0]\n        ordering.append(x)\n\n        # Remove x from its bucket.\n        b0.pop(0)\n        if not b0:\n            buckets.pop(0)\n\n        # Refine every remaining bucket by adjacency to x:\n        # split into (neighbors of x, non-neighbors of x), preserving order.\n        new_buckets = []\n        for b in buckets:\n            nb = [v for v in b if graph[x][v]]\n            nnb = [v for v in b if not graph[x][v]]\n            if nb:\n                new_buckets.append(nb)\n            if nnb:\n                new_buckets.append(nnb)\n        buckets = new_buckets\n\n    return ordering\n\n\ndef _check_lb_property(graph, ordering):\n    \"\"\"Check the (LB) 4-point property.\n\n    For all positions a < b < c (by index in ordering) with\n    ac in E and ab not in E, there must exist d < a with\n    db in E and dc not in E.\n\n    Returns True if the ordering is a valid LexBFS ordering.\n    \"\"\"\n    n = len(ordering)\n    for i in range(n):\n        a = ordering[i]\n        for j in range(i + 1, n):\n            b = ordering[j]\n            if graph[a][b]:\n                continue  # ab in E: condition not triggered\n            for k in range(j + 1, n):\n                c = ordering[k]\n                if not graph[a][c]:\n                    continue  # ac not in E: condition not triggered\n                # ac in E, ab not in E: need d < a with db in E, dc not in E\n                found = False\n                for d_idx in range(i):\n                    d = ordering[d_idx]\n                    if graph[d][b] and not graph[d][c]:\n                        found = True\n                        break\n                if not found:\n                    return False\n    return True\n\n\ndef _try_local_repair(graph, ordering):\n    \"\"\"Try to repair the ordering locally after an edge update.\n\n    Finds the first violating triple (a, b, c) and tries targeted\n    single-vertex moves.  Returns a valid ordering if successful,\n    None otherwise.\n    \"\"\"\n    n = len(ordering)\n    if n == 0:\n        return ordering\n\n    # Find the first violation.\n    for i in range(n):\n        a = ordering[i]\n        for j in range(i + 1, n):\n            b = ordering[j]\n            if graph[a][b]:\n                continue\n            for k in range(j + 1, n):\n                c = ordering[k]\n                if not graph[a][c]:\n                    continue\n                # Violation: ac in E, ab not in E, no d < a with db in E, dc not in E.\n                # Try targeted moves to fix this violation.\n                candidates = []\n\n                # Move b to just before a.\n                new_order = ordering[:i] + [b] + ordering[i:j] + ordering[j + 1:]\n                candidates.append(new_order)\n\n                # Move c to just before b.\n                new_order = ordering[:j] + [c] + ordering[j:k] + ordering[k + 1:]\n                candidates.append(new_order)\n\n                # Move a to just after c.\n                new_order = ordering[:i] + ordering[i + 1:k + 1] + [a] + ordering[k + 1:]\n                candidates.append(new_order)\n\n                for cand in candidates:\n                    if _check_lb_property(graph, cand):\n                        return cand\n\n    # No violation found (shouldn't happen if called after a failed check)\n    # or local repair failed.\n    return None\n\n\ndef init(graph):\n    \"\"\"Initialize the state with a valid LexBFS ordering.\"\"\"\n    ordering = _static_lexbfs(graph)\n    return {'ordering': ordering}\n\n\ndef insert_edge(graph, edge, state):\n    \"\"\"Handle edge insertion (u, v).\"\"\"\n    ordering = state['ordering']\n\n    # Check if the current ordering is still valid.\n    if _check_lb_property(graph, ordering):\n        return {'ordering': ordering}\n\n    # Try local repair.\n    repaired = _try_local_repair(graph, ordering)\n    if repaired is not None:\n        return {'ordering': repaired}\n\n    # Fallback: full recompute.\n    ordering = _static_lexbfs(graph)\n    return {'ordering': ordering}\n\n\ndef delete_edge(graph, edge, state):\n    \"\"\"Handle edge deletion (u, v).\"\"\"\n    ordering = state['ordering']\n\n    # Check if the current ordering is still valid.\n    if _check_lb_property(graph, ordering):\n        return {'ordering': ordering}\n\n    # Try local repair.\n    repaired = _try_local_repair(graph, ordering)\n    if repaired is not None:\n        return {'ordering': repaired}\n\n    # Fallback: full recompute.\n    ordering = _static_lexbfs(graph)\n    return {'ordering': ordering}\n```\n\nMore context: read_file('pack/brief.md') has the full research brief.\n"
+    }
+  ],
+  "duration_s": 51.4,
+  "steps": 16,
+  "tool_calls": [
+    "read_file",
+    "read_file",
+    "write_candidate",
+    "write_candidate",
+    "run_examples",
+    "edit_candidate",
+    "edit_candidate",
+    "run_examples",
+    "read_file",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples",
+    "read_file"
+  ],
+  "examples_runs": 5,
+  "usage": {
+    "prompt_tokens": 155698,
+    "completion_tokens": 6389
+  },
+  "ok": true,
+  "error": "step limit (16) reached",
+  "summary": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are the GENERATION role in an evolutionary search for dynamic graph algorithms. Produce one candidate algorithm and write it with `write_candidate`. You do not reflect, repair other candidates, or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the problem definition, research brief, run goal and any researcher hint in the task.\n2. If a parent candidate is given, derive your candidate from it: keep what works and change the part the goal or hint points at. If no parent is given, start from the offline algorithm and make it dynamic.\n3. Write the full module with `write_candidate`.\n4. Check it with `run_examples` (small public set). If it fails, fix the first failure with `edit_candidate` or a new `write_candidate`, then check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`. Each returns the new state.\n- `graph` is the current 0/1 adjacency matrix (list of lists, vertex ids 0..n-1) after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no `get_result()`, no imports beyond the Python standard library.\n- The maintained result (tree, ordering, partition, set) is part of the returned state, in the shape the problem definition describes.\n\n## Rules\n\n- Correct first, then cheaper: the hidden grade is correctness on every tested graph and update, then work relative to recomputing from scratch.\n- Prefer the smallest change that achieves the goal. Simpler code that is equally correct is better.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case, not just the examples.\n- If you are unsure about a graph-theory fact, say so in your report instead of guessing.\n\n## Report (final message, no tool call)\n\nCANDIDATE: <file written>\nAPPROACH: <one or two lines: idea and key data structures>\nEXAMPLES: <last run_examples verdict>\nNOTES: <assumptions or concerns, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: derive a NEW candidate from the parent below.\nOutput file: candidates/gen002_c02.py\n\nPARENT CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering (candidate gen001_c02).\n\nMaintains a valid LexBFS ordering under edge insertions and deletions.\n\nStrategy:\n  1. After each update, check if the current ordering still satisfies\n     the (LB) 4-point property (Corneil & Krueger certificate).\n  2. If valid, return it unchanged (O(n^3) check, no recompute).\n  3. If invalid, try targeted local repairs (move one of the vertices\n     in the first violating triple).\n  4. If local repair fails, fall back to a full static LexBFS\n     recomputation via partition refinement.\n\nThe static LexBFS uses the standard partition-refinement algorithm\n(Habib, McConnell, Paul, Viennot).  Tie-break: first element of the\nfirst bucket (deterministic, valid for any LexBFS).\n\"\"\"\n\n\ndef _static_lexbfs(graph):\n    \"\"\"Compute a valid LexBFS ordering from scratch via partition refinement.\n\n    Returns a list of vertices in LexBFS order.\n    \"\"\"\n    n = len(graph)\n    if n == 0:\n        return []\n\n    # Buckets: list of lists of vertices (all with the same label).\n    # Initially one bucket with all vertices in id order.\n    buckets = [[v for v in range(n)]]\n    ordering = []\n\n    while buckets:\n        # Pick the first bucket, take its first vertex.\n        b0 = buckets[0]\n        x = b0[0]\n        ordering.append(x)\n\n        # Remove x from its bucket.\n        b0.pop(0)\n        if not b0:\n            buckets.pop(0)\n\n        # Refine every remaining bucket by adjacency to x:\n        # split into (neighbors of x, non-neighbors of x), preserving order.\n        new_buckets = []\n        for b in buckets:\n            nb = [v for v in b if graph[x][v]]\n            nnb = [v for v in b if not graph[x][v]]\n            if nb:\n                new_buckets.append(nb)\n            if nnb:\n                new_buckets.append(nnb)\n        buckets = new_buckets\n\n    return ordering\n\n\ndef _check_lb_property(graph, ordering):\n    \"\"\"Check the (LB) 4-point property.\n\n    For all positions a < b < c (by index in ordering) with\n    ac in E and ab not in E, there must exist d < a with\n    db in E and dc not in E.\n\n    Retur ...[3666 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a118642e25d51c27",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"pack/brief.md\"}"
+          }
+        },
+        {
+          "id": "chatcmpl-tool-98c913bc3cd56408",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen001_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a118642e25d51c27",
+      "content": "# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-98c913bc3cd56408",
+      "content": "\"\"\"Dynamic LexBFS ordering (candidate gen001_c02).\n\nMaintains a valid LexBFS ordering under edge insertions and deletions.\n\nStrategy:\n  1. After each update, check if the current ordering still satisfies\n     the (LB) 4-point property (Corneil & Krueger certificate).\n  2. If valid, return it unchanged (O(n^3) check, no recompute).\n  3. If invalid, try targeted local repairs (move one of the vertices\n     in the first violating triple).\n  4. If local repair fails, fall back to a full static LexBFS\n     recomputation via partition refinement.\n\nThe static LexBFS uses the standard partition-refinement algorithm\n(Habib, McConnell, Paul, Viennot).  Tie-break: first element of the\nfirst bucket (deterministic, valid for any LexBFS).\n\"\"\"\n\n\ndef _static_lexbfs(graph):\n    \"\"\"Compute a valid LexBFS ordering from scratch via partition refinement.\n\n    Returns a list of vertices in LexBFS order.\n    \"\"\"\n    n = len(graph)\n    if n == 0:\n        return []\n\n    # Buckets: list of lists of vertices (all with the same label).\n    # Initially one bucket with all vertices in id order.\n    buckets = [[v for v in range(n)]]\n    ordering = []\n\n    while buckets:\n        # Pick the first bucket, take its first vertex.\n        b0 = buckets[0]\n        x = b0[0]\n        ordering.append(x)\n\n        # Remove x from its bucket.\n        b0.pop(0)\n        if not b0:\n            buckets.pop(0)\n\n        # Refine every remaining bucket by adjacency to x:\n        # split into (neighbors of x, non-neighbors of x), preserving order.\n        new_buckets = []\n        for b in buckets:\n            nb = [v for v in b if graph[x][v]]\n            nnb = [v for v in b if not graph[x][v]]\n            if nb:\n                new_buckets.append(nb)\n            if nnb:\n                new_buckets.append(nnb)\n        buckets = new_buckets\n\n    return ordering\n\n\ndef _check_lb_property(graph, ordering):\n    \"\"\"Check the (LB) 4-point property.\n\n    For all positions a < b < c (by index in ordering) with\n    ac in E and ab not in E, there must exist d < a with\n    db in E and dc not in E.\n\n    Returns True if the ordering is a valid LexBFS ordering.\n    \"\"\"\n    n = len(ordering)\n    for i in range(n):\n        a = ordering[i]\n        for j in range(i + 1, n):\n            b = ordering[j]\n            if graph[a][b]:\n                continue  # ab in E: condition not triggered\n            for k in range(j + 1, n):\n                c = ordering[k]\n                if not graph[a][c]:\n                    continue  # ac not in E: condition not triggered\n                # ac in E, ab not in E: need d < a with db in E, dc not in E\n                found = False\n                for d_idx in range(i):\n                    d = ordering[d_idx]\n                    if graph[d][b] and not graph[d][c]:\n                        found = True\n                        break\n                if not found:\n                    return False\n    return True\n\n\ndef _try_local_repair(graph, ordering):\n    \"\"\"Try to repair the ordering locally after an edge update.\n\n    Finds the first violating triple (a, b, c) and tries targeted\n    single-vertex moves.  Returns a valid ordering if successful,\n    None otherwise.\n    \"\"\"\n    n = len(ordering)\n    if n == 0:\n        return ordering\n\n    # Find the first violation.\n    for i in range(n):\n        a = ordering[i]\n        for j in range(i + 1, n):\n            b = ordering[j]\n            if graph[a][b]:\n                continue\n            for k in range(j + 1, n):\n                c = ordering[k]\n                if not graph[a][c]:\n                    continue\n                # Violation: ac in E, ab not in E, no d < a with db in E, dc not in E.\n                # Try targeted moves to fix this violation.\n                candidates = []\n\n                # Move b to just before a.\n                new_order = ordering[:i] + [b] + ordering[i:j] + ordering[j + 1:]\n                candidates.append(new_order)\n\n                # Move c to just before b.\n                new_order ...[1671 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-ba3cbe69f5e06db5",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering (candidate gen002_c02).\\n\\nMaintains a valid LexBFS ordering under edge insertions and deletions.\\n\\nStrategy:\\n  1. After each update, check if the current ordering still satisfies\\n     the (LB) 4-point property (Corneil & Krueger certificate).\\n  2. If valid, return it unchanged (no recompute).\\n  3. If invalid, try targeted local repairs (move one of the vertices\\n     in the first violating triple).\\n  4. If local repair fails, fall back to a full static LexBFS\\n     recomputation via partition refinement.\\n\\nThe static LexBFS uses the standard partition-refinement algorithm\\n(Habib, McConnell, Paul, Viennot).  Tie-break: first element of the\\nfirst bucket (deterministic, valid for any LexBFS).\\n\\\"\\\"\\\"\\n\\n\\ndef _static_lexbfs(graph):\\n    \\\"\\\"\\\"Compute a valid LexBFS ordering from scratch via partition refinement.\\n\\n    Returns a list of vertices in LexBFS order.\\n    \\\"\\\"\\\"\\n    n = len(graph)\\n    if n == 0:\\n        return []\\n\\n    # Buckets: list of lists of vertices (all with the same label).\\n    # Initially one bucket with all vertices in id order.\\n    buckets = [[v for v in range(n)]]\\n    ordering = []\\n\\n    while buckets:\\n        # Pick the first bucket, take its first vertex.\\n        b0 = buckets[0]\\n        x = b0[0]\\n        ordering.append(x)\\n\\n        # Remove x from its bucket.\\n        b0.pop(0)\\n        if not b0:\\n            buckets.pop(0)\\n\\n        # Refine every remaining bucket by adjacency to x:\\n        # split into (neighbors of x, non-neighbors of x), preserving order.\\n        new_buckets = []\\n        for b in buckets:\\n            nb = [v for v in b if graph[x][v]]\\n            nnb = [v for v in b if not graph[x][v]]\\n            if nb:\\n                new_buckets.append(nb)\\n            if nnb:\\n                new_buckets.append(nnb)\\n        buckets = new_buckets\\n\\n    return ordering\\n\\n\\ndef _check_lb_property(graph, ordering):\\n    \\\"\\\"\\\"Check the (LB) 4-point property.\\n\\n    For all positions a < b < c (by index in ordering) with\\n    ac in E and ab not in E, there must exist d < a with\\n    db in E and dc not in E.\\n\\n    Returns True if the ordering is a valid LexBFS ordering.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    for i in range(n):\\n        a = ordering[i]\\n        for j in range(i + 1, n):\\n            b = ordering[j]\\n            if graph[a][b]:\\n                continue  # ab in E: condition not triggered\\n            for k in range(j + 1, n):\\n                c = ordering[k]\\n                if not graph[a][c]:\\n                    continue  # ac not in E: condition not triggered\\n                # ac in E, ab not in E: need d < a with db in E, dc not in E\\n                found = False\\n                for d_idx in range(i):\\n                    d = ordering[d_idx]\\n                    if graph[d][b] and not graph[d][c]:\\n                        found = True\\n                        break\\n                if not found:\\n                    return False\\n    return True\\n\\n\\ndef _try_local_repair(graph, ordering):\\n    \\\"\\\"\\\"Try to repair the ordering locally after an edge update.\\n\\n    Finds the first violating triple (a, b, c) and tries targeted\\n    single-vertex moves.  Returns a valid ordering if successful,\\n    None otherwise.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    if n == 0:\\n        return ordering\\n\\n    # Find the first violation.\\n    for i in range(n):\\n        a = ordering[i]\\n        for j in range(i + 1, n):\\n            b = ordering[j]\\n            if graph[a][b]:\\n                continue\\n            for k in range(j + 1, n):\\n                c = ordering[k]\\n                if not graph[a][c]:\\n                    continue\\n                # Violation: ac in E, ab not in E, no d < a with db in E, dc not in E.\\n                # Try targeted moves to fix this violation.\\n                candidates = []\\n\\n                # Move b to just before a.\\n                new_order = ordering[:i] + [b] + ordering[ ...[1925 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-ba3cbe69f5e06db5",
+      "content": "error: bad arguments for write_candidate: Toolbox._t_write_candidate() got an unexpected keyword argument 'path'"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b3b2cb73307ab522",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering (candidate gen002_c02).\\n\\nMaintains a valid LexBFS ordering under edge insertions and deletions.\\n\\nStrategy:\\n  1. After each update, check if the current ordering still satisfies\\n     the (LB) 4-point property (Corneil & Krueger certificate).\\n  2. If valid, return it unchanged (no recompute).\\n  3. If invalid, try targeted local repairs (move one of the vertices\\n     in the first violating triple).\\n  4. If local repair fails, fall back to a full static LexBFS\\n     recomputation via partition refinement.\\n\\nThe static LexBFS uses the standard partition-refinement algorithm\\n(Habib, McConnell, Paul, Viennot).  Tie-break: first element of the\\nfirst bucket (deterministic, valid for any LexBFS).\\n\\\"\\\"\\\"\\n\\n\\ndef _static_lexbfs(graph):\\n    \\\"\\\"\\\"Compute a valid LexBFS ordering from scratch via partition refinement.\\n\\n    Returns a list of vertices in LexBFS order.\\n    \\\"\\\"\\\"\\n    n = len(graph)\\n    if n == 0:\\n        return []\\n\\n    # Buckets: list of lists of vertices (all with the same label).\\n    # Initially one bucket with all vertices in id order.\\n    buckets = [[v for v in range(n)]]\\n    ordering = []\\n\\n    while buckets:\\n        # Pick the first bucket, take its first vertex.\\n        b0 = buckets[0]\\n        x = b0[0]\\n        ordering.append(x)\\n\\n        # Remove x from its bucket.\\n        b0.pop(0)\\n        if not b0:\\n            buckets.pop(0)\\n\\n        # Refine every remaining bucket by adjacency to x:\\n        # split into (neighbors of x, non-neighbors of x), preserving order.\\n        new_buckets = []\\n        for b in buckets:\\n            nb = [v for v in b if graph[x][v]]\\n            nnb = [v for v in b if not graph[x][v]]\\n            if nb:\\n                new_buckets.append(nb)\\n            if nnb:\\n                new_buckets.append(nnb)\\n        buckets = new_buckets\\n\\n    return ordering\\n\\n\\ndef _check_lb_property(graph, ordering):\\n    \\\"\\\"\\\"Check the (LB) 4-point property.\\n\\n    For all positions a < b < c (by index in ordering) with\\n    ac in E and ab not in E, there must exist d < a with\\n    db in E and dc not in E.\\n\\n    Returns True if the ordering is a valid LexBFS ordering.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    for i in range(n):\\n        a = ordering[i]\\n        for j in range(i + 1, n):\\n            b = ordering[j]\\n            if graph[a][b]:\\n                continue  # ab in E: condition not triggered\\n            for k in range(j + 1, n):\\n                c = ordering[k]\\n                if not graph[a][c]:\\n                    continue  # ac not in E: condition not triggered\\n                # ac in E, ab not in E: need d < a with db in E, dc not in E\\n                found = False\\n                for d_idx in range(i):\\n                    d = ordering[d_idx]\\n                    if graph[d][b] and not graph[d][c]:\\n                        found = True\\n                        break\\n                if not found:\\n                    return False\\n    return True\\n\\n\\ndef _try_local_repair(graph, ordering):\\n    \\\"\\\"\\\"Try to repair the ordering locally after an edge update.\\n\\n    Finds the first violating triple (a, b, c) and tries targeted\\n    single-vertex moves.  Returns a valid ordering if successful,\\n    None otherwise.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    if n == 0:\\n        return ordering\\n\\n    # Find the first violation.\\n    for i in range(n):\\n        a = ordering[i]\\n        for j in range(i + 1, n):\\n            b = ordering[j]\\n            if graph[a][b]:\\n                continue\\n            for k in range(j + 1, n):\\n                c = ordering[k]\\n                if not graph[a][c]:\\n                    continue\\n                # Violation: ac in E, ab not in E, no d < a with db in E, dc not in E.\\n                # Try targeted moves to fix this violation.\\n                candidates = []\\n\\n                # Move b to just before a.\\n                new_order = ordering[:i] + [b] + ordering[ ...[1889 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b3b2cb73307ab522",
+      "content": "wrote candidates/gen002_c02.py (178 lines)"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b43b39b637e5d2b6",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b43b39b637e5d2b6",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-87c45ae94987e71e",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"                # Violation: ac in E, ab not in E, no d < a with db in E, dc not in E.\\n                # Try targeted moves to fix this violation.\\n                candidates = []\\n\\n                # Move b to just before a.\\n                new_order = ordering[:i] + [b] + ordering[i:j] + ordering[j + 1:]\\n                candidates.append(new_order)\\n\\n                # Move c to just before b.\\n                new_order = ordering[:j] + [c] + ordering[j:k] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                # Move a to just after c.\\n                new_order = ordering[:i] + ordering[i + 1:k + 1] + [a] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                for cand in candidates:\\n                    if _check_lb_property(graph, cand):\\n                        return cand\", \"new\": \"                # Violation: ac in E, ab not in E, no d < a with db in E, dc not in E.\\n                # Try targeted moves to fix this violation.\\n                candidates = []\\n\\n                # Move b to just before a.\\n                new_order = ordering[:i] + [b] + ordering[i:j] + ordering[j + 1:]\\n                candidates.append(new_order)\\n\\n                # Move c to just before b.\\n                new_order = ordering[:j] + [c] + ordering[j:k] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                # Move a to just after c.\\n                new_order = ordering[:i] + ordering[i + 1:k + 1] + [a] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                # Move b to just after c.\\n                new_order = ordering[:j] + ordering[j:k + 1] + [b] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                # Move c to just before a.\\n                new_order = ordering[:i] + [c] + ordering[i:j] + ordering[j:k] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                # Move a to just before b.\\n                new_order = ordering[:i] + ordering[i + 1:j] + [a] + ordering[j:k + 1] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                # Move a to just before c.\\n                new_order = ordering[:i] + ordering[i + 1:k] + [a] + ordering[k:j] + ordering[j:k + 1] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                # Move b to just before c.\\n                new_order = ordering[:j] + ordering[j:k] + [b] + ordering[k:j] + ordering[j + 1:k + 1] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                # Move c to just after b.\\n                new_order = ordering[:j] + ordering[j + 1:k + 1] + [c] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                # Move a to just after b.\\n                new_order = ordering[:i] + ordering[i + 1:j + 1] + [a] + ordering[j + 1:]\\n                candidates.append(new_order)\\n\\n                # Move a to the front.\\n                new_order = [a] + ordering[:i] + ordering[i + 1:]\\n                candidates.append(new_order)\\n\\n                # Move b to the front.\\n                new_order = [b] + ordering[:j] + ordering[j + 1:]\\n                candidates.append(new_order)\\n\\n                # Move c to the front.\\n                new_order = [c] + ordering[:k] + ordering[k + 1:]\\n                candidates.append(new_order)\\n\\n                for cand in candidates:\\n                    if _check_lb_property(graph, cand):\\n                        return cand\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-87c45ae94987e71e",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-881d2b341844eced",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"                # Move b to just before c.\\n                new_order = ordering[:j] + ordering[j:k] + [b] + ordering[k:j] + ordering[j + 1:k + 1] + ordering[k + 1:]\\n                candidates.append(new_order)\", \"new\": \"                # Move b to just before c.\\n                new_order = ordering[:j] + ordering[j + 1:k] + [b] + ordering[k:]\\n                candidates.append(new_order)\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-881d2b341844eced",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a4adb027419f2dfb",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a4adb027419f2dfb",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b70fe3fa067c58ca",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen002_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b70fe3fa067c58ca",
+      "content": "\"\"\"Dynamic LexBFS ordering (candidate gen002_c02).\n\nMaintains a valid LexBFS ordering under edge insertions and deletions.\n\nStrategy:\n  1. After each update, check if the current ordering still satisfies\n     the (LB) 4-point property (Corneil & Krueger certificate).\n  2. If valid, return it unchanged (no recompute).\n  3. If invalid, try targeted local repairs (move one of the vertices\n     in the first violating triple).\n  4. If local repair fails, fall back to a full static LexBFS\n     recomputation via partition refinement.\n\nThe static LexBFS uses the standard partition-refinement algorithm\n(Habib, McConnell, Paul, Viennot).  Tie-break: first element of the\nfirst bucket (deterministic, valid for any LexBFS).\n\"\"\"\n\n\ndef _static_lexbfs(graph):\n    \"\"\"Compute a valid LexBFS ordering from scratch via partition refinement.\n\n    Returns a list of vertices in LexBFS order.\n    \"\"\"\n    n = len(graph)\n    if n == 0:\n        return []\n\n    # Buckets: list of lists of vertices (all with the same label).\n    # Initially one bucket with all vertices in id order.\n    buckets = [[v for v in range(n)]]\n    ordering = []\n\n    while buckets:\n        # Pick the first bucket, take its first vertex.\n        b0 = buckets[0]\n        x = b0[0]\n        ordering.append(x)\n\n        # Remove x from its bucket.\n        b0.pop(0)\n        if not b0:\n            buckets.pop(0)\n\n        # Refine every remaining bucket by adjacency to x:\n        # split into (neighbors of x, non-neighbors of x), preserving order.\n        new_buckets = []\n        for b in buckets:\n            nb = [v for v in b if graph[x][v]]\n            nnb = [v for v in b if not graph[x][v]]\n            if nb:\n                new_buckets.append(nb)\n            if nnb:\n                new_buckets.append(nnb)\n        buckets = new_buckets\n\n    return ordering\n\n\ndef _check_lb_property(graph, ordering):\n    \"\"\"Check the (LB) 4-point property.\n\n    For all positions a < b < c (by index in ordering) with\n    ac in E and ab not in E, there must exist d < a with\n    db in E and dc not in E.\n\n    Returns True if the ordering is a valid LexBFS ordering.\n    \"\"\"\n    n = len(ordering)\n    for i in range(n):\n        a = ordering[i]\n        for j in range(i + 1, n):\n            b = ordering[j]\n            if graph[a][b]:\n                continue  # ab in E: condition not triggered\n            for k in range(j + 1, n):\n                c = ordering[k]\n                if not graph[a][c]:\n                    continue  # ac not in E: condition not triggered\n                # ac in E, ab not in E: need d < a with db in E, dc not in E\n                found = False\n                for d_idx in range(i):\n                    d = ordering[d_idx]\n                    if graph[d][b] and not graph[d][c]:\n                        found = True\n                        break\n                if not found:\n                    return False\n    return True\n\n\ndef _try_local_repair(graph, ordering):\n    \"\"\"Try to repair the ordering locally after an edge update.\n\n    Finds the first violating triple (a, b, c) and tries targeted\n    single-vertex moves.  Returns a valid ordering if successful,\n    None otherwise.\n    \"\"\"\n    n = len(ordering)\n    if n == 0:\n        return ordering\n\n    # Find the first violation.\n    for i in range(n):\n        a = ordering[i]\n        for j in range(i + 1, n):\n            b = ordering[j]\n            if graph[a][b]:\n                continue\n            for k in range(j + 1, n):\n                c = ordering[k]\n                if not graph[a][c]:\n                    continue\n                # Violation: ac in E, ab not in E, no d < a with db in E, dc not in E.\n                # Try targeted moves to fix this violation.\n                candidates = []\n\n                # Move b to just before a.\n                new_order = ordering[:i] + [b] + ordering[i:j] + ordering[j + 1:]\n                candidates.append(new_order)\n\n                # Move c to just before b.\n                new_order = ordering[:j ...[3404 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-95d3af09c9d810fa",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"                # Move a to just before c.\\n                new_order = ordering[:i] + ordering[i + 1:k] + [a] + ordering[k:j] + ordering[j:k + 1] + ordering[k + 1:]\\n                candidates.append(new_order)\", \"new\": \"                # Move a to just before c.\\n                new_order = ordering[:i] + ordering[i + 1:j] + ordering[j:k] + [a] + ordering[k:]\\n                candidates.append(new_order)\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-95d3af09c9d810fa",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-ba79a40b2139cfcf",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-ba79a40b2139cfcf",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-abb7a84630a4464c",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _check_lb_property(graph, ordering):\\n    \\\"\\\"\\\"Check the (LB) 4-point property.\\n\\n    For all positions a < b < c (by index in ordering) with\\n    ac in E and ab not in E, there must exist d < a with\\n    db in E and dc not in E.\\n\\n    Returns True if the ordering is a valid LexBFS ordering.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    for i in range(n):\\n        a = ordering[i]\\n        for j in range(i + 1, n):\\n            b = ordering[j]\\n            if graph[a][b]:\\n                continue  # ab in E: condition not triggered\\n            for k in range(j + 1, n):\\n                c = ordering[k]\\n                if not graph[a][c]:\\n                    continue  # ac not in E: condition not triggered\\n                # ac in E, ab not in E: need d < a with db in E, dc not in E\\n                found = False\\n                for d_idx in range(i):\\n                    d = ordering[d_idx]\\n                    if graph[d][b] and not graph[d][c]:\\n                        found = True\\n                        break\\n                if not found:\\n                    return False\\n    return True\", \"new\": \"def _check_lb_property(graph, ordering):\\n    \\\"\\\"\\\"Check the (LB) 4-point property.\\n\\n    For all positions a < b < c (by index in ordering) with\\n    ac in E and ab not in E, there must exist d < a with\\n    db in E and dc not in E.\\n\\n    Returns True if the ordering is a valid LexBFS ordering.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    for i in range(n):\\n        a = ordering[i]\\n        for j in range(i + 1, n):\\n            b = ordering[j]\\n            if graph[a][b]:\\n                continue  # ab in E: condition not triggered\\n            for k in range(j + 1, n):\\n                c = ordering[k]\\n                if not graph[a][c]:\\n                    continue  # ac not in E: condition not triggered\\n                # ac in E, ab not in E: need d < a with db in E, dc not in E\\n                found = False\\n                for d_idx in range(i):\\n                    d = ordering[d_idx]\\n                    if graph[d][b] and not graph[d][c]:\\n                        found = True\\n                        break\\n                if not found:\\n                    return False\\n    return True\\n\\n\\ndef _check_lb_property_fast(graph, ordering):\\n    \\\"\\\"\\\"Faster check of the (LB) 4-point property using bitsets.\\n\\n    For each vertex v, precompute:\\n      - adj[v]: bitset of neighbors of v\\n      - pos[v]: position of v in the ordering\\n\\n    For each triple (a, b, c) with a < b < c (by position),\\n    ac in E, ab not in E:\\n      need d < a with db in E and dc not in E.\\n      Equivalently: (adj[b] & ~adj[c] & prefix_mask[a]) != 0\\n      where prefix_mask[a] has bits set for all vertices at positions < pos[a].\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    if n == 0:\\n        return True\\n\\n    # Build position map and prefix masks.\\n    pos = [0] * n\\n    for idx, v in enumerate(ordering):\\n        pos[v] = idx\\n\\n    # prefix_mask[i] = bitset of vertices at positions < i\\n    prefix_masks = [0] * (n + 1)\\n    mask = 0\\n    for i in range(n):\\n        prefix_masks[i] = mask\\n        mask |= (1 << ordering[i])\\n\\n    # For each a (by position i), check all b, c after it.\\n    for i in range(n):\\n        a = ordering[i]\\n        adj_a = graph[a]\\n        prefix_a = prefix_masks[i]\\n        for j in range(i + 1, n):\\n            b = ordering[j]\\n            if adj_a[b]:\\n                continue  # ab in E: condition not triggered\\n            adj_b = graph[b]\\n            for k in range(j + 1, n):\\n                c = ordering[k]\\n                if not adj_a[c]:\\n                    continue  # ac not in E: condition not triggered\\n                # Need d < a with db in E and dc not in E.\\n                # d must be in prefix_a, adjacent to b, not adjacent to c.\\n                if (adj_b & ~graph[c] & prefix_a) != 0:\\n                    continue  # found such d\\n                return False\\n    return True\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-abb7a84630a4464c",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-94c1f37c7e408724",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # Check if the current ordering is still valid.\\n    if _check_lb_property(graph, ordering):\\n        return {'ordering': ordering}\\n\\n    # Try local repair.\\n    repaired = _try_local_repair(graph, ordering)\\n    if repaired is not None:\\n        return {'ordering': repaired}\\n\\n    # Fallback: full recompute.\\n    ordering = _static_lexbfs(graph)\\n    return {'ordering': ordering}\\n\\n\\ndef delete_edge(graph, edge, state):\\n    \\\"\\\"\\\"Handle edge deletion (u, v).\\\"\\\"\\\"\\n    ordering = state['ordering']\\n\\n    # Check if the current ordering is still valid.\\n    if _check_lb_property(graph, ordering):\\n        return {'ordering': ordering}\", \"new\": \"    # Check if the current ordering is still valid.\\n    if _check_lb_property_fast(graph, ordering):\\n        return {'ordering': ordering}\\n\\n    # Try local repair.\\n    repaired = _try_local_repair(graph, ordering)\\n    if repaired is not None:\\n        return {'ordering': repaired}\\n\\n    # Fallback: full recompute.\\n    ordering = _static_lexbfs(graph)\\n    return {'ordering': ordering}\\n\\n\\ndef delete_edge(graph, edge, state):\\n    \\\"\\\"\\\"Handle edge deletion (u, v).\\\"\\\"\\\"\\n    ordering = state['ordering']\\n\\n    # Check if the current ordering is still valid.\\n    if _check_lb_property_fast(graph, ordering):\\n        return {'ordering': ordering}\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-94c1f37c7e408724",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-abac7700159c51fb",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-abac7700159c51fb",
+      "content": "{\n \"verdict\": \"CRASH\",\n \"passed\": 3,\n \"total\": 4,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"crash\",\n  \"error\": \"TypeError: bad operand type for unary ~: 'list' at line 137: if (adj_b & ~graph[c] & prefix_a) != 0:\"\n },\n \"error\": \"TypeError: bad operand type for unary ~: 'list' at line 137: if (adj_b & ~graph[c] & prefix_a) != 0:\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-93f05440cbbed40b",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # For each a (by position i), check all b, c after it.\\n    for i in range(n):\\n        a = ordering[i]\\n        adj_a = graph[a]\\n        prefix_a = prefix_masks[i]\\n        for j in range(i + 1, n):\\n            b = ordering[j]\\n            if adj_a[b]:\\n                continue  # ab in E: condition not triggered\\n            adj_b = graph[b]\\n            for k in range(j + 1, n):\\n                c = ordering[k]\\n                if not adj_a[c]:\\n                    continue  # ac not in E: condition not triggered\\n                # Need d < a with db in E and dc not in E.\\n                # d must be in prefix_a, adjacent to b, not adjacent to c.\\n                if (adj_b & ~graph[c] & prefix_a) != 0:\\n                    continue  # found such d\\n                return False\\n    return True\", \"new\": \"    # Precompute adjacency bitsets.\\n    adj_bits = [0] * n\\n    for v in range(n):\\n        bits = 0\\n        row = graph[v]\\n        for w in range(n):\\n            if row[w]:\\n                bits |= (1 << w)\\n        adj_bits[v] = bits\\n\\n    # For each a (by position i), check all b, c after it.\\n    for i in range(n):\\n        a = ordering[i]\\n        adj_a_bits = adj_bits[a]\\n        prefix_a = prefix_masks[i]\\n        for j in range(i + 1, n):\\n            b = ordering[j]\\n            if (adj_a_bits >> b) & 1:\\n                continue  # ab in E: condition not triggered\\n            adj_b_bits = adj_bits[b]\\n            for k in range(j + 1, n):\\n                c = ordering[k]\\n                if not ((adj_a_bits >> c) & 1):\\n                    continue  # ac not in E: condition not triggered\\n                # Need d < a with db in E and dc not in E.\\n                # d must be in prefix_a, adjacent to b, not adjacent to c.\\n                if (adj_b_bits & ~adj_bits[c] & prefix_a) != 0:\\n                    continue  # found such d\\n                return False\\n    return True\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-93f05440cbbed40b",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-bafe08b0eb94e2a5",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-bafe08b0eb94e2a5",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8c20dd09bb0b5458",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen002_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8c20dd09bb0b5458",
+      "content": "\"\"\"Dynamic LexBFS ordering (candidate gen002_c02).\n\nMaintains a valid LexBFS ordering under edge insertions and deletions.\n\nStrategy:\n  1. After each update, check if the current ordering still satisfies\n     the (LB) 4-point property (Corneil & Krueger certificate).\n  2. If valid, return it unchanged (no recompute).\n  3. If invalid, try targeted local repairs (move one of the vertices\n     in the first violating triple).\n  4. If local repair fails, fall back to a full static LexBFS\n     recomputation via partition refinement.\n\nThe static LexBFS uses the standard partition-refinement algorithm\n(Habib, McConnell, Paul, Viennot).  Tie-break: first element of the\nfirst bucket (deterministic, valid for any LexBFS).\n\"\"\"\n\n\ndef _static_lexbfs(graph):\n    \"\"\"Compute a valid LexBFS ordering from scratch via partition refinement.\n\n    Returns a list of vertices in LexBFS order.\n    \"\"\"\n    n = len(graph)\n    if n == 0:\n        return []\n\n    # Buckets: list of lists of vertices (all with the same label).\n    # Initially one bucket with all vertices in id order.\n    buckets = [[v for v in range(n)]]\n    ordering = []\n\n    while buckets:\n        # Pick the first bucket, take its first vertex.\n        b0 = buckets[0]\n        x = b0[0]\n        ordering.append(x)\n\n        # Remove x from its bucket.\n        b0.pop(0)\n        if not b0:\n            buckets.pop(0)\n\n        # Refine every remaining bucket by adjacency to x:\n        # split into (neighbors of x, non-neighbors of x), preserving order.\n        new_buckets = []\n        for b in buckets:\n            nb = [v for v in b if graph[x][v]]\n            nnb = [v for v in b if not graph[x][v]]\n            if nb:\n                new_buckets.append(nb)\n            if nnb:\n                new_buckets.append(nnb)\n        buckets = new_buckets\n\n    return ordering\n\n\ndef _check_lb_property(graph, ordering):\n    \"\"\"Check the (LB) 4-point property.\n\n    For all positions a < b < c (by index in ordering) with\n    ac in E and ab not in E, there must exist d < a with\n    db in E and dc not in E.\n\n    Returns True if the ordering is a valid LexBFS ordering.\n    \"\"\"\n    n = len(ordering)\n    for i in range(n):\n        a = ordering[i]\n        for j in range(i + 1, n):\n            b = ordering[j]\n            if graph[a][b]:\n                continue  # ab in E: condition not triggered\n            for k in range(j + 1, n):\n                c = ordering[k]\n                if not graph[a][c]:\n                    continue  # ac not in E: condition not triggered\n                # ac in E, ab not in E: need d < a with db in E, dc not in E\n                found = False\n                for d_idx in range(i):\n                    d = ordering[d_idx]\n                    if graph[d][b] and not graph[d][c]:\n                        found = True\n                        break\n                if not found:\n                    return False\n    return True\n\n\ndef _check_lb_property_fast(graph, ordering):\n    \"\"\"Faster check of the (LB) 4-point property using bitsets.\n\n    For each vertex v, precompute:\n      - adj[v]: bitset of neighbors of v\n      - pos[v]: position of v in the ordering\n\n    For each triple (a, b, c) with a < b < c (by position),\n    ac in E, ab not in E:\n      need d < a with db in E and dc not in E.\n      Equivalently: (adj[b] & ~adj[c] & prefix_mask[a]) != 0\n      where prefix_mask[a] has bits set for all vertices at positions < pos[a].\n    \"\"\"\n    n = len(ordering)\n    if n == 0:\n        return True\n\n    # Build position map and prefix masks.\n    pos = [0] * n\n    for idx, v in enumerate(ordering):\n        pos[v] = idx\n\n    # prefix_mask[i] = bitset of vertices at positions < i\n    prefix_masks = [0] * (n + 1)\n    mask = 0\n    for i in range(n):\n        prefix_masks[i] = mask\n        mask |= (1 << ordering[i])\n\n    # Precompute adjacency bitsets.\n    adj_bits = [0] * n\n    for v in range(n):\n        bits = 0\n        row = graph[v]\n        for w in range(n):\n            if row[w]:\n                bits |= (1 ...[4035 chars]"
+    }
+  ]
+}

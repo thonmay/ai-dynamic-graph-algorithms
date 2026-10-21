@@ -43,6 +43,7 @@ REPO = Path(__file__).resolve().parents[1]
 EVOALGO = REPO / ".venv" / "bin" / "evoalgo"
 sys.path.insert(0, str(REPO / "src"))
 
+from evoalgo.agents.harness import harness_env  # noqa: E402
 from evoalgo.events import read_events  # noqa: E402
 
 HARNESS_PROMPT = (
@@ -77,6 +78,25 @@ def is_done(path: Path) -> bool:
 
 def aborted_attempts(cell: dict) -> list[Path]:
     return sorted(run_dir(cell).parent.glob(cell["run_id"] + "_aborted_*"))
+
+
+RETRY_REASONS = ("aborted", "agent_stopped")  # infrastructure, not the agent's result
+
+
+def _retry_harness(plan: dict, cell: dict, path: Path) -> bool:
+    """An ended harness attempt that the agent did not finish is retried
+    (up to max_attempts); a timeout or a finished session is final."""
+    if cell["mode"] != "harness":
+        return False
+    events = read_events(path)
+    end = next((e for e in reversed(events) if e.get("type") == "run_end"), {})
+    # An attempt that already found a passing candidate is kept: retrying
+    # would move it aside and report the cell from the new attempt only.
+    passed = any(e.get("type") in ("candidate_verified", "final_graded") and e.get("state") == "PASS"
+                 for e in events)
+    tries = len(aborted_attempts(cell)) + 1
+    return (end.get("stop_reason") in RETRY_REASONS and not passed
+            and tries < plan["harness"]["max_attempts"])
 
 
 def orchestrator_config(plan: dict, cell: dict) -> Path:
@@ -138,14 +158,21 @@ def _run(cmd: list[str], out: Path, timeout: int, env: dict) -> str:
 
 def run_cell(plan: dict, cell: dict, dry: bool) -> dict:
     path = run_dir(cell)
-    if path.exists() and is_done(path):
+    if path.exists() and is_done(path) and not _retry_harness(plan, cell, path):
         return {**cell, "status": "skipped (done)"}
     # Temp files of every child (sandbox runner scripts, example checks) go to
     # the project scratch area, not /tmp.
     scratch = Path(plan.get("scratch", "/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch")) / cell["run_id"]
     scratch.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, PATH=f"{REPO / '.venv' / 'bin'}:{os.environ.get('PATH', '')}",
-               TMPDIR=str(scratch))
+    # Allow-listed environment (no unrelated keys/passwords for the agent);
+    # the orchestrator modes also need the key variable of their endpoint.
+    env = harness_env("enlcode", PATH=f"{REPO / '.venv' / 'bin'}:{os.environ.get('PATH', '')}",
+                      TMPDIR=str(scratch))
+    key_vars = {"ERICAI_ACCESS_TOKEN", "OPENROUTER_API_KEY", "OPENAI_API_KEY",
+                (plan.get("orchestrator") or {}).get("api_key_env")}
+    for name in key_vars:
+        if cell["mode"] in ORCHESTRATOR_MODES and name and name in os.environ:
+            env[name] = os.environ[name]
     logs = plan["out"] / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     if cell["mode"] in ORCHESTRATOR_MODES:
@@ -159,7 +186,7 @@ def run_cell(plan: dict, cell: dict, dry: bool) -> dict:
                 end_harness_run(path, "gave_up", move=False)
             return {**cell, "status": f"gave up after {tries} attempts"}
         if path.exists() and not dry:
-            end_harness_run(path, "aborted", move=True)
+            end_harness_run(path, "aborted", move=True)  # keeps an existing run_end
         prompt = HARNESS_PROMPT.format(pack=cell["pack"], goal=plan["goal"], run_id=cell["run_id"],
                                        max_checks=plan["harness"]["max_checks"])
         cmd = [plan["harness"]["bin"], "run", "-m", plan["harness"]["model"],
@@ -175,6 +202,10 @@ def run_cell(plan: dict, cell: dict, dry: bool) -> dict:
     if cell["mode"] == "harness" and code == "timeout" and path.exists() and not is_done(path):
         # The cell ends as a timeout (counts as no PASS) instead of being retried.
         end_harness_run(path, "timeout", move=False)
+    if cell["mode"] == "harness" and code != "timeout" and path.exists() and not is_done(path):
+        # The agent stopped without `evoalgo finish` (e.g. an empty final
+        # turn). End the attempt here; the next `run` retries the cell.
+        end_harness_run(path, "agent_stopped", move=False)
     status = "done" if path.exists() and is_done(path) else f"incomplete (exit {code})"
     shutil.rmtree(scratch, ignore_errors=True)
     return {**cell, "status": status, "minutes": round((time.time() - started) / 60, 1)}
@@ -283,16 +314,57 @@ def summarize_run(plan: dict, cell: dict) -> dict:
     return row
 
 
+def cmd_reference(args) -> int:
+    """Grade the recompute-from-scratch candidate of each problem with the
+    final grade, so work ratios can be read against plain recomputation
+    (the offline baseline runs on a numpy array and is slower than the same
+    algorithm on lists, so recompute scores well below 1)."""
+    from evoalgo.candidate import Candidate
+    from evoalgo.cli import _generate_known_good_candidate
+    from evoalgo.config import RunConfig
+    from evoalgo.workspace import _verifier
+    from evoalgo.packs import resolve_pack
+    plan = load_plan(args.plan)
+    ref_path = plan["out"] / "reference.json"
+    refs = json.loads(ref_path.read_text()) if ref_path.is_file() else {}
+    scratch = Path(plan.get("scratch", "/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch")) / "reference"
+    scratch.mkdir(parents=True, exist_ok=True)
+    for pack in plan["problems"]:
+        if pack in refs:
+            continue
+        cfg = RunConfig(pack=pack, problem=pack, **{k: v for k, v in plan["orchestrator"].items()
+                                                   if k in ("final_timeout_seconds", "bound")})
+        f = scratch / f"{pack}_recompute.py"
+        f.write_text(_generate_known_good_candidate(pack))
+        started = time.time()
+        r = _verifier(pack, cfg, "full", resolve_pack(pack).update_mode).verify(
+            Candidate(id="recompute", code_path=str(f), generation=0))
+        refs[pack] = {"state": r.state.value, "work_ratio": r.work_ratio, "tests_total": r.tests_total,
+                      "minutes": round((time.time() - started) / 60, 1)}
+        ref_path.parent.mkdir(parents=True, exist_ok=True)
+        ref_path.write_text(json.dumps(refs, indent=2) + "\n")
+        print(pack, refs[pack], flush=True)
+    shutil.rmtree(scratch, ignore_errors=True)
+    return 0
+
+
 def cmd_report(args) -> int:
     plan = load_plan(args.plan)
     rows = [summarize_run(plan, c) for c in cells(plan)]
+    ref_path = plan["out"] / "reference.json"
+    refs = json.loads(ref_path.read_text()) if ref_path.is_file() else {}
+    for r in rows:
+        ref = (refs.get(r["pack"]) or {}).get("work_ratio")
+        wr = r.get("final_work_ratio")
+        # < 1: cheaper than recomputing from scratch on the same graphs.
+        r["work_vs_recompute"] = round(wr / ref, 3) if wr is not None and ref else None
     out = plan["out"]
     out.mkdir(parents=True, exist_ok=True)
     keys: list[str] = []
     for r in rows:
         keys += [k for k in r if k not in keys]
     with open(out / "results.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=keys)
+        w = csv.DictWriter(f, fieldnames=keys, lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
 
@@ -301,16 +373,18 @@ def cmd_report(args) -> int:
         return round(median(xs), 3) if xs else "-"
 
     lines = [f"# Campaign {plan['name']}", "",
-             "Medians over ended runs. Work ratio over final-grade PASS runs only.", "",
-             "| mode | problem | ended | final PASS | work ratio | min to first PASS | LLM turns | tokens (k) |",
-             "|---|---|---|---|---|---|---|---|"]
+             "Medians over ended runs. Work ratios over final-grade PASS runs only;",
+             "'vs recompute' divides by the recompute-from-scratch candidate's ratio",
+             "(reference.json), so 1.0 = no better than recomputing.", "",
+             "| mode | problem | ended | final PASS | work ratio | vs recompute | min to first PASS | LLM turns | tokens (k) |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for pack in plan["problems"]:
         for mode in plan["modes"]:
             rs = [r for r in rows if r["mode"] == mode and r["pack"] == pack and r.get("ended")]
             ok = [r for r in rs if r.get("final_pass")]
             lines.append(
                 f"| {mode} | {pack} | {len(rs)}/{len(plan['seeds'])} | {len(ok)}/{len(rs)} | "
-                f"{med([r['final_work_ratio'] for r in ok])} | "
+                f"{med([r['final_work_ratio'] for r in ok])} | {med([r['work_vs_recompute'] for r in ok])} | "
                 f"{med([r['first_pass_minutes'] for r in rs])} | {med([r['llm_turns'] for r in rs])} | "
                 f"{med([(r['prompt_tokens'] + r['completion_tokens']) / 1000 for r in rs])} |")
     (out / "summary.md").write_text("\n".join(lines) + "\n")
@@ -327,8 +401,10 @@ def main() -> int:
     r.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("report")
     p.add_argument("plan")
+    f = sub.add_parser("reference", help="grade recompute-from-scratch per problem (once)")
+    f.add_argument("plan")
     args = ap.parse_args()
-    return cmd_run(args) if args.cmd == "run" else cmd_report(args)
+    return {"run": cmd_run, "report": cmd_report, "reference": cmd_reference}[args.cmd](args)
 
 
 if __name__ == "__main__":

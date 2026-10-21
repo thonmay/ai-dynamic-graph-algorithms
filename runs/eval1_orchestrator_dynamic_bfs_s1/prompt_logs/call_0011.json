@@ -1,0 +1,374 @@
+{
+  "call_id": "call_0011",
+  "timestamp": "2026-10-20T12:55:51Z",
+  "backend": "api",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "type": "repair",
+  "candidate_id": "gen002_c03",
+  "messages_start": [
+    {
+      "role": "system",
+      "content": "You are the REPAIR role in an evolutionary search for dynamic graph algorithms. Take one failed candidate and its reflection and produce a repaired candidate with `write_candidate` (or `write_candidate` followed by `edit_candidate`). You do not write reflections or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the failed candidate and the reflection in the task.\n2. Trace the failing case through the code yourself before changing anything. If your trace contradicts the reflection's root cause, fix the cause you traced and say so in your report.\n3. Write the failed candidate to your output file with `write_candidate`, then apply the smallest change that removes the root cause with `edit_candidate`. Do not rewrite working parts.\n4. Check it with `run_examples`. If it still fails, fix the first failure and check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`, each returning the new state.\n- `graph` is the current 0/1 adjacency matrix after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no imports beyond the Python standard library.\n\n## Rules\n\n- Target the root cause; leave unrelated code and style alone.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case.\n\n## Report (final message, no tool call)\n\nREPAIRED: <file written>\nCHANGE: <one or two lines: what changed and why>\nEXAMPLES: <last run_examples verdict>\nCONCERNS: <remaining doubts, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_bfs\nGraph mode: directed\nNeeds root/source: yes (vertex 0)\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'parent' and 'distances' (lists indexed by vertex, or dicts).\nparent[root] = None; parent[v] = None for unreachable v.\ndistances[v] = BFS distance from the root; -1 or None for unreachable v.\nOther keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic BFS tree maintenance\n\nResearch question: can a BFS tree from a fixed root be maintained incrementally\nunder edge insertions and deletions, with work well below full recomputation?\n\nThe graph is directed; a fixed root r is given. After every update the state\nmust contain a valid BFS tree: it spans exactly the vertices reachable from r,\nevery non-root vertex has one parent that is a true in-neighbor, and the\nparent of v sits one BFS distance closer to r than v does.\n\nKnown territory: Frigioni et al. give a semi-dynamic BFS algorithm with O(mn)\ntotal work; the fully dynamic case is harder. A structurally different correct\napproach is interesting even where a known solution exists.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based. Correctness is\nchecked by the invariant above, not by equality with a specific tree.\n\nThis is a calibration problem: the system should solve it without help, and it\nvalidates the pipeline end to end.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: repair the failed candidate below using the reflection.\nOutput file: candidates/gen002_c03.py\n\nFAILED CANDIDATE:\n```python\n\"\"\"Dynamic BFS tree from root 0 under single-edge insertions/deletions.\n\nState dict keys:\n  parent:    list, parent[v] or None (root and unreachable are None)\n  distances: list, BFS distance from root, -1 for unreachable\n  adj:       current adjacency matrix (kept in sync; equals the graph arg)\n  in_adj:    reverse adjacency matrix\n  n:         number of vertices\n\nInsertion: if the new edge (u,v) improves v's distance (dist[u]+1 < dist[v]),\nre-root the BFS subtree of v at the new parent and fix distances of the\naffected subtree.  Otherwise nothing changes.\n\nDeletion: if the deleted edge is not the tree edge of its head, nothing\nchanges.  Otherwise the subtree rooted at the head may lose its only\nshortest-path parent; we recompute distances for that subtree (and any\nvertices whose distance grows) with a bounded BFS, and re-parent affected\nvertices to the best in-neighbor at distance d-1.\n\"\"\"\n\nINF = float('inf')\n\n\ndef _bfs_full(adj, n):\n    dist = [INF] * n\n    parent = [None] * n\n    dist[0] = 0\n    queue = [0]\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        du = dist[u]\n        for v in range(n):\n            if adj[u][v] and dist[v] == INF:\n                dist[v] = du + 1\n                parent[v] = u\n                queue.append(v)\n    return parent, dist\n\n\ndef init(graph):\n    n = len(graph)\n    adj = [list(row) for row in graph]\n    in_adj = [[0] * n for _ in range(n)]\n    for u in range(n):\n        row = adj[u]\n        for v in range(n):\n            if row[v]:\n                in_adj[v][u] = 1\n    parent, dist = _bfs_full(adj, n)\n    dist = [d if d != INF else -1 for d in dist]\n    return {'parent': parent, 'distances': dist, 'adj': adj,\n            'in_adj': in_adj, 'n': n}\n\n\ndef _fix_subtree(state, v, new_parent):\n    \"\"\"v's parent changes to new_parent (or is deleted); recompute\n    distances/parents for the subtree of v and any vertices whose distance\n    changes as a result.\"\"\"\n    adj = state['adj']\n    in_adj = state['in_adj']\n    parent = state['parent']\n    dist = state['distances']\n    n = state['n']\n\n    # Collect the old subtree of v (tree edges).\n    children = [[] for _ in range(n)]\n    for x in range(n):\n        p = parent[x]\n        if p is not None:\n            children[p].append(x)\n\n    sub = []\n    stack = [v]\n    while stack:\n        u = stack.pop()\n        sub.append(u)\n        for c in children[u]:\n            stack.append(c)\n\n    in_sub = [False] * n\n    for x in sub:\n        in_sub[x] = True\n\n    # For each subtree vertex, find the best in-neighbor outside the subtree.\n    best_out = [INF] * n\n    for x in sub:\n        for y in range(n):\n            if in_adj[x][y] and not in_sub[y]:\n                d = dist[y]\n                if d != -1:\n                    cand = d + 1\n                    if cand < best_out[x]:\n                        best_out[x] = cand\n\n    # BFS within the subtree using all edges among subtree vertices,\n    # seeded with best_out.\n    import heapq\n    heap = []\n    new_dist = [INF] * n\n    for x in sub:\n        if best_out[x] < INF:\n            new_dist[x] = best_out[x]\n            heapq.heappush(heap, (best_out[x], x))\n\n    while heap:\n        d, u = heapq.heappop(heap)\n        if d > new_dist[u]:\n            continue\n        for w in range(n):\n            if adj[u][w] and in_sub[w]:\n                nd2 = d + 1\n                if nd2 < new_dist[w]:\n                    new_dist[w] = nd2\n                    heapq.heappush(heap, (nd2, w))\n\n    # Update parent and dist for affected vertices.\n    for x in sub:\n        old_d = dist[x]\n        new_d = new_dist[x]\n        if new_d == INF:\n            dist[x] = -1\n            parent[x] = None\n        elif new_d != old_d:\n            dist[x] = new_d\n            # find parent: in-neighbor at distance new_d - 1\n            found = None\n            for y in range(n):\n                if in_adj[x][y] and not in_sub[y] and dist[y] == new_d - 1:\n                    found = y\n                    break\n            if found is None:\n                for y in range(n):\n                    if in_adj[x][y] and in_sub[y] and dist[y] == new_d - 1:\n                        found = y\n                        break\n            parent[x] = found\n        # else: distance unchanged, keep old parent\n\n    state['parent'] = parent\n    state['distances'] = dist\n    return state\n\n\ndef insert_edge(graph, edge, state):\n    u, v = edge\n    adj = state['adj']\n    in_adj = state['in_adj']\n    parent = state['parent']\n    dist = state['distances']\n    n = state['n']\n\n    adj[u][v] = 1\n    in_adj[v][u] = 1\n\n    du = dist[u]\n    if du == -1:\n        return state\n\n    dv = dist[v]\n    if dv != -1 and du + 1 >= dv:\n        return state\n\n    # v's distance improves to du+1 (or v was unreachable)\n    parent[v] = u\n    dist[v] = du + 1\n    return _fix_subtree(state, v, u)\n\n\ndef delete_edge(graph, edge, state):\n    u, v = edge\n    adj = state['adj']\n    in_adj = state['in_adj']\n    parent = state['parent']\n    dist = state['distances']\n    n = state['n']\n\n    adj[u][v] = 0\n    in_adj[v][u] = 0\n\n    if parent[v] != u:\n        return state\n\n    return _fix_subtree(state, v, None)\n```\n\nREFLECTION:\n## FAILURE_DESCRIPTION\nThe verifier reported `{\"operation\": \"timeout\", \"chunk_start\": 0}` — the candidate never produced a result within the time budget on the first test chunk. No expected-vs-actual state comparison was reached; the failure is a runtime/performance failure, not (yet) an observed invariant violation.\n\n## ROOT_CAUSE\nThe candidate is a quadratic-in-n algorithm on every update, and the test graphs are adjacency matrices (so n is large). The hot path is `_fix_subtree`, which is called on every \"interesting\" update (any insertion that improves a distance, any deletion of a tree edge):\n\n1. `best_out` scan: `for x in sub: for y in range(n): if in_adj[x][y] and not in_sub[y]` — O(|sub|·n) per update.\n2. Dijkstra-style heap loop: `for w in range(n): if adj[u][w] and in_sub[w]` — O(|sub|·n) per update.\n3. Parent reassignment: two `for y in range(n)` scans over `in_adj[x][y]` per changed vertex — O(|sub|·n) per update.\n\nSo a single update costs O(n²) (and O(n² log n) with the heap), and a chunk of many updates costs O(k·n²). With matrix-sized n this blows the time budget. `init` is also O(n²) (fine, one-time), but the per-update cost is the killer.\n\nNote: the failure is a timeout, so I cannot confirm from this case alone whether the algorithm is also *correct* — but there is a second, real correctness bug visible in the code that the repair should not miss: in the final loop of `_fix_subtree`, when `new_d != old_d` the parent search checks `dist[y] == new_d - 1` using the *partially updated* `dist` list. For in-subtree candidates this reads values that were already overwritten earlier in the same loop (and for out-of-subtree candidates it is fine), so the found parent can be wrong or `None` even when a valid parent exists. This is a latent bug independent of the timeout.\n\n## REPAIR_HINTS\nSmallest change that fixes the timeout: stop scanning full n-length rows.\n\n1. Maintain adjacency as **sets of out-neighbors** (`out_adj[u]`) and **sets of in-neighbors** (`in_adj[v]`) in the state (build in `init` from the matrix, update on insert/delete). Then:\n   - `best_out` scan becomes `for y in in_adj[x]` (only true in-neighbors) — O(in-degree) instead of O(n).\n   - The heap relaxation becomes `for w in out_adj[u]` — O(out-degree) instead of O(n).\n   - Parent search becomes `for y in in_adj[x]` — O(in-degree).\n   Total per update drops to O(affected edges · log n), i.e. near-linear in the affected region.\n2. Keep the `adj`/`in_adj` matrices only if the verifier needs them (it does not — it reads `parent` and `distances`); the sets are sufficient.\n3. Also fix the latent correctness bug in the final loop of `_fix_subtree`: compute all `new_dist` values first, then assign `dist[x] = new_dist[x]` for the whole subtree, and only *then* do the parent search using the fully-updated distances (or search using `new_dist` for in-subtree candidates and `dist` for out-of-subtree ones). Searching `dist[y] == new_d - 1` while `dist` is mid-mutation is the bug.\n4. Approaches that will not work: keeping the matrix and just adding early breaks (the scans are dense in the worst case); switching to a full BFS recompute per update (that is O(n²) too and defeats the research goal).\n\nMore context: read_file('pack/brief.md') has the full research brief.\n"
+    }
+  ],
+  "duration_s": 23.7,
+  "steps": 16,
+  "tool_calls": [
+    "read_file",
+    "read_file",
+    "write_candidate",
+    "edit_candidate",
+    "edit_candidate",
+    "edit_candidate",
+    "edit_candidate",
+    "edit_candidate",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples",
+    "read_file"
+  ],
+  "examples_runs": 4,
+  "usage": {
+    "prompt_tokens": 117503,
+    "completion_tokens": 4576
+  },
+  "ok": true,
+  "error": "step limit (16) reached",
+  "summary": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are the REPAIR role in an evolutionary search for dynamic graph algorithms. Take one failed candidate and its reflection and produce a repaired candidate with `write_candidate` (or `write_candidate` followed by `edit_candidate`). You do not write reflections or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the failed candidate and the reflection in the task.\n2. Trace the failing case through the code yourself before changing anything. If your trace contradicts the reflection's root cause, fix the cause you traced and say so in your report.\n3. Write the failed candidate to your output file with `write_candidate`, then apply the smallest change that removes the root cause with `edit_candidate`. Do not rewrite working parts.\n4. Check it with `run_examples`. If it still fails, fix the first failure and check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`, each returning the new state.\n- `graph` is the current 0/1 adjacency matrix after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no imports beyond the Python standard library.\n\n## Rules\n\n- Target the root cause; leave unrelated code and style alone.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case.\n\n## Report (final message, no tool call)\n\nREPAIRED: <file written>\nCHANGE: <one or two lines: what changed and why>\nEXAMPLES: <last run_examples verdict>\nCONCERNS: <remaining doubts, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_bfs\nGraph mode: directed\nNeeds root/source: yes (vertex 0)\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'parent' and 'distances' (lists indexed by vertex, or dicts).\nparent[root] = None; parent[v] = None for unreachable v.\ndistances[v] = BFS distance from the root; -1 or None for unreachable v.\nOther keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic BFS tree maintenance\n\nResearch question: can a BFS tree from a fixed root be maintained incrementally\nunder edge insertions and deletions, with work well below full recomputation?\n\nThe graph is directed; a fixed root r is given. After every update the state\nmust contain a valid BFS tree: it spans exactly the vertices reachable from r,\nevery non-root vertex has one parent that is a true in-neighbor, and the\nparent of v sits one BFS distance closer to r than v does.\n\nKnown territory: Frigioni et al. give a semi-dynamic BFS algorithm with O(mn)\ntotal work; the fully dynamic case is harder. A structurally different correct\napproach is interesting even where a known solution exists.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based. Correctness is\nchecked by the invariant above, not by equality with a specific tree.\n\nThis is a calibration problem: the system should solve it without help, and it\nvalidates the pipeline end to end.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: repair the failed candidate below using the reflection.\nOutput file: candidates/gen002_c03.py\n\nFAILED CANDIDATE:\n```python\n\"\"\"Dynamic BFS tree from root 0 under single-edge insertions/deletions.\n\nState dict keys:\n  parent:    list, parent[v] or None (root and unreachable are None)\n  distances: list, BFS distance from root, -1 for unreachable\n  adj:       current adjacency matrix (kept in sync; equals the graph arg)\n  in_adj:    reverse adjacency matrix\n  n:         number of vertices\n\nInsertion: if the new edge (u,v) improves v's distance (dist[u]+1 < dist[v]),\nre-root the BFS subtree of v at the new parent and fix distances of the\naffected subtree.  Otherwise nothing changes.\n\nDeletion: if the deleted edge is not the tree edge of its head, nothing\nchanges.  Otherwise the subtree rooted at the head may lose its only\nshortest-path parent; we recompute distances for that subtree (and any\nvertices whose distance grows) with a bounded BFS, and re-parent affected\nvertices to the best in-neighbor at distance d-1.\n\"\"\"\n\nINF = float('inf')\n\n\ndef _bfs_full(adj, n):\n    dist = [INF] * n\n    parent = [None] * n\n    dist[0] = 0\n    queue = [0]\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        du = dist[u]\n        for v in range(n):\n            if adj[u][v] and dist[v] == INF:\n                dist[v] = du + 1\n                parent[v] = u\n                queue.append(v)\n    return parent, dist\n\n\ndef init(graph):\n    n = len(graph)\n    adj = [list(row) for row in graph]\n    in_adj = [[0] * n for _ in range(n)]\n    for u in range(n):\n        row = adj[u]\n        for v in range(n):\n            if row[v]:\n                in_adj[v][u] = 1\n    parent, dist = _bfs_full(adj, n)\n    dist = [d if d != INF else -1 for d in dist]\n    return {'parent': parent, 'distances': dist, 'adj': adj,\n            'in_adj': in_adj, 'n': n}\n\n\ndef _fix_subtree(state, v, new_parent):\n    \"\"\"v's parent changes to new_parent (or is deleted); recompute\n    distances/parents for the subtree of v and any vertices whose distance\n    changes as a result.\"\"\"\n    adj ...[6497 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a74b2be9566a0e73",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen002_c03.py\"}"
+          }
+        },
+        {
+          "id": "chatcmpl-tool-a8338ce8e09f903e",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"pack/brief.md\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a74b2be9566a0e73",
+      "content": "error: no such file: candidates/gen002_c03.py; files in candidates/: gen001_c01.py, gen001_c02.py, gen001_c03.py, gen001_c04.py, gen002_c01.py, gen002_c02.py"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a8338ce8e09f903e",
+      "content": "# Research brief: Dynamic BFS tree maintenance\n\nResearch question: can a BFS tree from a fixed root be maintained incrementally\nunder edge insertions and deletions, with work well below full recomputation?\n\nThe graph is directed; a fixed root r is given. After every update the state\nmust contain a valid BFS tree: it spans exactly the vertices reachable from r,\nevery non-root vertex has one parent that is a true in-neighbor, and the\nparent of v sits one BFS distance closer to r than v does.\n\nKnown territory: Frigioni et al. give a semi-dynamic BFS algorithm with O(mn)\ntotal work; the fully dynamic case is harder. A structurally different correct\napproach is interesting even where a known solution exists.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based. Correctness is\nchecked by the invariant above, not by equality with a specific tree.\n\nThis is a calibration problem: the system should solve it without help, and it\nvalidates the pipeline end to end.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b5e1279ed2139fb7",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic BFS tree from root 0 under single-edge insertions/deletions.\\n\\nState dict keys:\\n  parent:    list, parent[v] or None (root and unreachable are None)\\n  distances: list, BFS distance from root, -1 for unreachable\\n  adj:       current adjacency matrix (kept in sync; equals the graph arg)\\n  in_adj:    reverse adjacency matrix\\n  n:         number of vertices\\n\\nInsertion: if the new edge (u,v) improves v's distance (dist[u]+1 < dist[v]),\\nre-root the BFS subtree of v at the new parent and fix distances of the\\naffected subtree.  Otherwise nothing changes.\\n\\nDeletion: if the deleted edge is not the tree edge of its head, nothing\\nchanges.  Otherwise the subtree rooted at the head may lose its only\\nshortest-path parent; we recompute distances for that subtree (and any\\nvertices whose distance grows) with a bounded BFS, and re-parent affected\\nvertices to the best in-neighbor at distance d-1.\\n\\\"\\\"\\\"\\n\\nINF = float('inf')\\n\\n\\ndef _bfs_full(adj, n):\\n    dist = [INF] * n\\n    parent = [None] * n\\n    dist[0] = 0\\n    queue = [0]\\n    head = 0\\n    while head < len(queue):\\n        u = queue[head]\\n        head += 1\\n        du = dist[u]\\n        for v in range(n):\\n            if adj[u][v] and dist[v] == INF:\\n                dist[v] = du + 1\\n                parent[v] = u\\n                queue.append(v)\\n    return parent, dist\\n\\n\\ndef init(graph):\\n    n = len(graph)\\n    adj = [list(row) for row in graph]\\n    in_adj = [[0] * n for _ in range(n)]\\n    for u in range(n):\\n        row = adj[u]\\n        for v in range(n):\\n            if row[v]:\\n                in_adj[v][u] = 1\\n    parent, dist = _bfs_full(adj, n)\\n    dist = [d if d != INF else -1 for d in dist]\\n    return {'parent': parent, 'distances': dist, 'adj': adj,\\n            'in_adj': in_adj, 'n': n}\\n\\n\\ndef _fix_subtree(state, v, new_parent):\\n    \\\"\\\"\\\"v's parent changes to new_parent (or is deleted); recompute\\n    distances/parents for the subtree of v and any vertices whose distance\\n    changes as a result.\\\"\\\"\\\"\\n    adj = state['adj']\\n    in_adj = state['in_adj']\\n    parent = state['parent']\\n    dist = state['distances']\\n    n = state['n']\\n\\n    # Collect the old subtree of v (tree edges).\\n    children = [[] for _ in range(n)]\\n    for x in range(n):\\n        p = parent[x]\\n        if p is not None:\\n            children[p].append(x)\\n\\n    sub = []\\n    stack = [v]\\n    while stack:\\n        u = stack.pop()\\n        sub.append(u)\\n        for c in children[u]:\\n            stack.append(c)\\n\\n    in_sub = [False] * n\\n    for x in sub:\\n        in_sub[x] = True\\n\\n    # For each subtree vertex, find the best in-neighbor outside the subtree.\\n    best_out = [INF] * n\\n    for x in sub:\\n        for y in range(n):\\n            if in_adj[x][y] and not in_sub[y]:\\n                d = dist[y]\\n                if d != -1:\\n                    cand = d + 1\\n                    if cand < best_out[x]:\\n                        best_out[x] = cand\\n\\n    # BFS within the subtree using all edges among subtree vertices,\\n    # seeded with best_out.\\n    import heapq\\n    heap = []\\n    new_dist = [INF] * n\\n    for x in sub:\\n        if best_out[x] < INF:\\n            new_dist[x] = best_out[x]\\n            heapq.heappush(heap, (best_out[x], x))\\n\\n    while heap:\\n        d, u = heapq.heappop(heap)\\n        if d > new_dist[u]:\\n            continue\\n        for w in range(n):\\n            if adj[u][w] and in_sub[w]:\\n                nd2 = d + 1\\n                if nd2 < new_dist[w]:\\n                    new_dist[w] = nd2\\n                    heapq.heappush(heap, (nd2, w))\\n\\n    # Update parent and dist for affected vertices.\\n    for x in sub:\\n        old_d = dist[x]\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            dist[x] = -1\\n            parent[x] = None\\n        elif new_d != old_d:\\n            dist[x] = new_d\\n            # find parent: in-neighbor at distance new_d - 1\\n            found = None\\n            f ...[1374 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b5e1279ed2139fb7",
+      "content": "wrote candidates/gen002_c03.py (185 lines)"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-bad453787beed40b",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def init(graph):\\n    n = len(graph)\\n    adj = [list(row) for row in graph]\\n    in_adj = [[0] * n for _ in range(n)]\\n    for u in range(n):\\n        row = adj[u]\\n        for v in range(n):\\n            if row[v]:\\n                in_adj[v][u] = 1\\n    parent, dist = _bfs_full(adj, n)\\n    dist = [d if d != INF else -1 for d in dist]\\n    return {'parent': parent, 'distances': dist, 'adj': adj,\\n            'in_adj': in_adj, 'n': n}\", \"new\": \"def init(graph):\\n    n = len(graph)\\n    adj = [list(row) for row in graph]\\n    in_adj = [[0] * n for _ in range(n)]\\n    out_adj = [set() for _ in range(n)]\\n    in_adj_sets = [set() for _ in range(n)]\\n    for u in range(n):\\n        row = adj[u]\\n        for v in range(n):\\n            if row[v]:\\n                in_adj[v][u] = 1\\n                out_adj[u].add(v)\\n                in_adj_sets[v].add(u)\\n    parent, dist = _bfs_full(adj, n)\\n    dist = [d if d != INF else -1 for d in dist]\\n    return {'parent': parent, 'distances': dist, 'adj': adj,\\n            'in_adj': in_adj, 'n': n,\\n            'out_adj': out_adj, 'in_adj_sets': in_adj_sets}\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-bad453787beed40b",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a792eb01f4c132cc",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # For each subtree vertex, find the best in-neighbor outside the subtree.\\n    best_out = [INF] * n\\n    for x in sub:\\n        for y in range(n):\\n            if in_adj[x][y] and not in_sub[y]:\\n                d = dist[y]\\n                if d != -1:\\n                    cand = d + 1\\n                    if cand < best_out[x]:\\n                        best_out[x] = cand\", \"new\": \"    # For each subtree vertex, find the best in-neighbor outside the subtree.\\n    best_out = [INF] * n\\n    in_adj_sets = state['in_adj_sets']\\n    for x in sub:\\n        for y in in_adj_sets[x]:\\n            if not in_sub[y]:\\n                d = dist[y]\\n                if d != -1:\\n                    cand = d + 1\\n                    if cand < best_out[x]:\\n                        best_out[x] = cand\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a792eb01f4c132cc",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a4f6460a78f54ca5",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    while heap:\\n        d, u = heapq.heappop(heap)\\n        if d > new_dist[u]:\\n            continue\\n        for w in range(n):\\n            if adj[u][w] and in_sub[w]:\\n                nd2 = d + 1\\n                if nd2 < new_dist[w]:\\n                    new_dist[w] = nd2\\n                    heapq.heappush(heap, (nd2, w))\", \"new\": \"    out_adj = state['out_adj']\\n    while heap:\\n        d, u = heapq.heappop(heap)\\n        if d > new_dist[u]:\\n            continue\\n        for w in out_adj[u]:\\n            if in_sub[w]:\\n                nd2 = d + 1\\n                if nd2 < new_dist[w]:\\n                    new_dist[w] = nd2\\n                    heapq.heappush(heap, (nd2, w))\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a4f6460a78f54ca5",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a4c411f921640e83",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # Update parent and dist for affected vertices.\\n    for x in sub:\\n        old_d = dist[x]\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            dist[x] = -1\\n            parent[x] = None\\n        elif new_d != old_d:\\n            dist[x] = new_d\\n            # find parent: in-neighbor at distance new_d - 1\\n            found = None\\n            for y in range(n):\\n                if in_adj[x][y] and not in_sub[y] and dist[y] == new_d - 1:\\n                    found = y\\n                    break\\n            if found is None:\\n                for y in range(n):\\n                    if in_adj[x][y] and in_sub[y] and dist[y] == new_d - 1:\\n                        found = y\\n                        break\\n            parent[x] = found\\n        # else: distance unchanged, keep old parent\", \"new\": \"    # First pass: commit all new distances for the subtree so that the\\n    # parent search below reads fully-updated values.\\n    for x in sub:\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            dist[x] = -1\\n        else:\\n            dist[x] = new_d\\n\\n    # Second pass: reassign parents for vertices whose distance changed.\\n    for x in sub:\\n        old_d = dist[x]\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            parent[x] = None\\n        elif new_d != old_d:\\n            # find parent: in-neighbor at distance new_d - 1\\n            found = None\\n            for y in in_adj_sets[x]:\\n                if dist[y] == new_d - 1:\\n                    found = y\\n                    break\\n            parent[x] = found\\n        # else: distance unchanged, keep old parent\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a4c411f921640e83",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a20b9748f9ba5791",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    adj[u][v] = 1\\n    in_adj[v][u] = 1\\n\\n    du = dist[u]\", \"new\": \"    adj[u][v] = 1\\n    in_adj[v][u] = 1\\n    state['out_adj'][u].add(v)\\n    state['in_adj_sets'][v].add(u)\\n\\n    du = dist[u]\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a20b9748f9ba5791",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b81a4577e1c96baa",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    adj[u][v] = 0\\n    in_adj[v][u] = 0\\n\\n    if parent[v] != u:\", \"new\": \"    adj[u][v] = 0\\n    in_adj[v][u] = 0\\n    state['out_adj'][u].discard(v)\\n    state['in_adj_sets'][v].discard(u)\\n\\n    if parent[v] != u:\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b81a4577e1c96baa",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b435e8f3480906ba",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b435e8f3480906ba",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 21,\n \"total\": 22,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_bfs\",\n  \"result\": \"[None, None, 0]\",\n  \"expected\": \"{'parent': {0: None, 2: 0, 1: 2}, 'distances': {0: 0, 2: 1, 1: 2}}\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"graph\": [\n   [\n    0,\n    0,\n    1\n   ],\n   [\n    0,\n    0,\n    0\n   ],\n   [\n    0,\n    1,\n    0\n   ]\n  ],\n  \"root\": 0,\n  \"wrong_vertices\": [\n   {\n    \"vertex\": 1,\n    \"expected_distance\": 2,\n    \"your_distance\": -1,\n    \"your_parent\": null\n   }\n  ],\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-9971b0692295c65a",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # First pass: commit all new distances for the subtree so that the\\n    # parent search below reads fully-updated values.\\n    for x in sub:\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            dist[x] = -1\\n        else:\\n            dist[x] = new_d\\n\\n    # Second pass: reassign parents for vertices whose distance changed.\\n    for x in sub:\\n        old_d = dist[x]\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            parent[x] = None\\n        elif new_d != old_d:\\n            # find parent: in-neighbor at distance new_d - 1\\n            found = None\\n            for y in in_adj_sets[x]:\\n                if dist[y] == new_d - 1:\\n                    found = y\\n                    break\\n            parent[x] = found\\n        # else: distance unchanged, keep old parent\", \"new\": \"    # Commit all new distances for the subtree first so that the parent\\n    # search below reads fully-updated values.\\n    for x in sub:\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            dist[x] = -1\\n        else:\\n            dist[x] = new_d\\n\\n    # Reassign parents for every subtree vertex (except the root of the\\n    # subtree, whose parent was already set by the caller).  This also\\n    # covers vertices whose distance did not change but whose old parent\\n    # is no longer at distance d-1 (e.g. the old parent's distance grew).\\n    for x in sub:\\n        if x == v:\\n            continue\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            parent[x] = None\\n        else:\\n            # find parent: in-neighbor at distance new_d - 1\\n            found = None\\n            for y in in_adj_sets[x]:\\n                if dist[y] == new_d - 1:\\n                    found = y\\n                    break\\n            parent[x] = found\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9971b0692295c65a",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a48f02a774a0c70d",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a48f02a774a0c70d",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 4,\n \"total\": 5,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_bfs\",\n  \"result\": \"[None, 0]\",\n  \"expected\": \"{'parent': {0: None}, 'distances': {0: 0}}\",\n  \"graph_shape\": [\n   2,\n   2\n  ],\n  \"graph\": [\n   [\n    0,\n    0\n   ],\n   [\n    0,\n    0\n   ]\n  ],\n  \"root\": 0,\n  \"wrong_vertices\": [\n   {\n    \"vertex\": 1,\n    \"expected_distance\": -1,\n    \"your_distance\": -1,\n    \"your_parent\": 0\n   }\n  ],\n  \"graph_n\": 2,\n  \"sequence_idx\": 0,\n  \"operation\": \"delete (0, 1)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8cf6eca66a0dbd33",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # Reassign parents for every subtree vertex (except the root of the\\n    # subtree, whose parent was already set by the caller).  This also\\n    # covers vertices whose distance did not change but whose old parent\\n    # is no longer at distance d-1 (e.g. the old parent's distance grew).\\n    for x in sub:\\n        if x == v:\\n            continue\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            parent[x] = None\\n        else:\\n            # find parent: in-neighbor at distance new_d - 1\\n            found = None\\n            for y in in_adj_sets[x]:\\n                if dist[y] == new_d - 1:\\n                    found = y\\n                    break\\n            parent[x] = found\", \"new\": \"    # Reassign parents for every subtree vertex (except the root of the\\n    # subtree, whose parent was already set by the caller).  This also\\n    # covers vertices whose distance did not change but whose old parent\\n    # is no longer at distance d-1 (e.g. the old parent's distance grew).\\n    for x in sub:\\n        if x == v:\\n            continue\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            parent[x] = None\\n        else:\\n            # find parent: in-neighbor at distance new_d - 1\\n            found = None\\n            for y in in_adj_sets[x]:\\n                if dist[y] == new_d - 1:\\n                    found = y\\n                    break\\n            if found is not None:\\n                parent[x] = found\\n            elif parent[x] is not None and dist[parent[x]] != new_d - 1:\\n                # old parent no longer valid; no valid parent found\\n                parent[x] = None\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8cf6eca66a0dbd33",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8e606e8ccbf5052b",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8e606e8ccbf5052b",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 4,\n \"total\": 5,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_bfs\",\n  \"result\": \"[None, 0]\",\n  \"expected\": \"{'parent': {0: None}, 'distances': {0: 0}}\",\n  \"graph_shape\": [\n   2,\n   2\n  ],\n  \"graph\": [\n   [\n    0,\n    0\n   ],\n   [\n    0,\n    0\n   ]\n  ],\n  \"root\": 0,\n  \"wrong_vertices\": [\n   {\n    \"vertex\": 1,\n    \"expected_distance\": -1,\n    \"your_distance\": -1,\n    \"your_parent\": 0\n   }\n  ],\n  \"graph_n\": 2,\n  \"sequence_idx\": 0,\n  \"operation\": \"delete (0, 1)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-ad4747cf0cdb5b2c",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # Reassign parents for every subtree vertex (except the root of the\\n    # subtree, whose parent was already set by the caller).  This also\\n    # covers vertices whose distance did not change but whose old parent\\n    # is no longer at distance d-1 (e.g. the old parent's distance grew).\\n    for x in sub:\\n        if x == v:\\n            continue\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            parent[x] = None\\n        else:\\n            # find parent: in-neighbor at distance new_d - 1\\n            found = None\\n            for y in in_adj_sets[x]:\\n                if dist[y] == new_d - 1:\\n                    found = y\\n                    break\\n            if found is not None:\\n                parent[x] = found\\n            elif parent[x] is not None and dist[parent[x]] != new_d - 1:\\n                # old parent no longer valid; no valid parent found\\n                parent[x] = None\", \"new\": \"    # Reassign parents for every subtree vertex (except the root of the\\n    # subtree, whose parent was already set by the caller).  This also\\n    # covers vertices whose distance did not change but whose old parent\\n    # is no longer at distance d-1 (e.g. the old parent's distance grew).\\n    for x in sub:\\n        if x == v:\\n            continue\\n        new_d = new_dist[x]\\n        if new_d == INF:\\n            parent[x] = None\\n        else:\\n            # find parent: in-neighbor at distance new_d - 1\\n            found = None\\n            for y in in_adj_sets[x]:\\n                if dist[y] == new_d - 1:\\n                    found = y\\n                    break\\n            parent[x] = found\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-ad4747cf0cdb5b2c",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b753a6847e4f169a",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b753a6847e4f169a",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 4,\n \"total\": 5,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_bfs\",\n  \"result\": \"[None, 0]\",\n  \"expected\": \"{'parent': {0: None}, 'distances': {0: 0}}\",\n  \"graph_shape\": [\n   2,\n   2\n  ],\n  \"graph\": [\n   [\n    0,\n    0\n   ],\n   [\n    0,\n    0\n   ]\n  ],\n  \"root\": 0,\n  \"wrong_vertices\": [\n   {\n    \"vertex\": 1,\n    \"expected_distance\": -1,\n    \"your_distance\": -1,\n    \"your_parent\": 0\n   }\n  ],\n  \"graph_n\": 2,\n  \"sequence_idx\": 0,\n  \"operation\": \"delete (0, 1)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-aef810ad1a8815c3",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen002_c03.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-aef810ad1a8815c3",
+      "content": "\"\"\"Dynamic BFS tree from root 0 under single-edge insertions/deletions.\n\nState dict keys:\n  parent:    list, parent[v] or None (root and unreachable are None)\n  distances: list, BFS distance from root, -1 for unreachable\n  adj:       current adjacency matrix (kept in sync; equals the graph arg)\n  in_adj:    reverse adjacency matrix\n  n:         number of vertices\n\nInsertion: if the new edge (u,v) improves v's distance (dist[u]+1 < dist[v]),\nre-root the BFS subtree of v at the new parent and fix distances of the\naffected subtree.  Otherwise nothing changes.\n\nDeletion: if the deleted edge is not the tree edge of its head, nothing\nchanges.  Otherwise the subtree rooted at the head may lose its only\nshortest-path parent; we recompute distances for that subtree (and any\nvertices whose distance grows) with a bounded BFS, and re-parent affected\nvertices to the best in-neighbor at distance d-1.\n\"\"\"\n\nINF = float('inf')\n\n\ndef _bfs_full(adj, n):\n    dist = [INF] * n\n    parent = [None] * n\n    dist[0] = 0\n    queue = [0]\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        du = dist[u]\n        for v in range(n):\n            if adj[u][v] and dist[v] == INF:\n                dist[v] = du + 1\n                parent[v] = u\n                queue.append(v)\n    return parent, dist\n\n\ndef init(graph):\n    n = len(graph)\n    adj = [list(row) for row in graph]\n    in_adj = [[0] * n for _ in range(n)]\n    out_adj = [set() for _ in range(n)]\n    in_adj_sets = [set() for _ in range(n)]\n    for u in range(n):\n        row = adj[u]\n        for v in range(n):\n            if row[v]:\n                in_adj[v][u] = 1\n                out_adj[u].add(v)\n                in_adj_sets[v].add(u)\n    parent, dist = _bfs_full(adj, n)\n    dist = [d if d != INF else -1 for d in dist]\n    return {'parent': parent, 'distances': dist, 'adj': adj,\n            'in_adj': in_adj, 'n': n,\n            'out_adj': out_adj, 'in_adj_sets': in_adj_sets}\n\n\ndef _fix_subtree(state, v, new_parent):\n    \"\"\"v's parent changes to new_parent (or is deleted); recompute\n    distances/parents for the subtree of v and any vertices whose distance\n    changes as a result.\"\"\"\n    adj = state['adj']\n    in_adj = state['in_adj']\n    parent = state['parent']\n    dist = state['distances']\n    n = state['n']\n\n    # Collect the old subtree of v (tree edges).\n    children = [[] for _ in range(n)]\n    for x in range(n):\n        p = parent[x]\n        if p is not None:\n            children[p].append(x)\n\n    sub = []\n    stack = [v]\n    while stack:\n        u = stack.pop()\n        sub.append(u)\n        for c in children[u]:\n            stack.append(c)\n\n    in_sub = [False] * n\n    for x in sub:\n        in_sub[x] = True\n\n    # For each subtree vertex, find the best in-neighbor outside the subtree.\n    best_out = [INF] * n\n    in_adj_sets = state['in_adj_sets']\n    for x in sub:\n        for y in in_adj_sets[x]:\n            if not in_sub[y]:\n                d = dist[y]\n                if d != -1:\n                    cand = d + 1\n                    if cand < best_out[x]:\n                        best_out[x] = cand\n\n    # BFS within the subtree using all edges among subtree vertices,\n    # seeded with best_out.\n    import heapq\n    heap = []\n    new_dist = [INF] * n\n    for x in sub:\n        if best_out[x] < INF:\n            new_dist[x] = best_out[x]\n            heapq.heappush(heap, (best_out[x], x))\n\n    out_adj = state['out_adj']\n    while heap:\n        d, u = heapq.heappop(heap)\n        if d > new_dist[u]:\n            continue\n        for w in out_adj[u]:\n            if in_sub[w]:\n                nd2 = d + 1\n                if nd2 < new_dist[w]:\n                    new_dist[w] = nd2\n                    heapq.heappush(heap, (nd2, w))\n\n    # Commit all new distances for the subtree first so that the parent\n    # search below reads fully-updated values.\n    for x in sub:\n        new_d = new_dist[x]\n        if new_d == INF:\n            dist[x] = -1\n        else:\n            dis ...[1726 chars]"
+    }
+  ]
+}

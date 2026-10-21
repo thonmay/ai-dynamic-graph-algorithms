@@ -1,0 +1,209 @@
+"""Dynamic DFS forest from fixed root 0 under edge insertions/deletions.
+
+Maintains a genuine DFS forest (parent, discover, finish) of the current
+graph.  A spanning tree is a DFS tree iff it has no forward-cross edge
+(Yang et al., Lemma 1), so after an update we only need to check whether
+the update created a forward-cross edge (insertion) or removed a tree
+edge (deletion).
+
+Insertion u->v:
+  - If v is already discovered and u is discovered before v without v
+    being a descendant of u, the new edge is a forward-cross edge and the
+    forest is invalid -> full recompute.
+  - If v is unreachable, the new edge may make v (and everything reachable
+    from v) reachable.  We re-search starting from v: v becomes a child of
+    u, and the subtree rooted at v is re-run in the new position.  The
+    remaining vertices keep their old times, which stay consistent because
+    the re-searched interval is contiguous in the old DFS order.
+  - Otherwise the forest stays valid.
+
+Deletion u->v:
+  - If u->v is not a tree edge, the forest stays valid.
+  - If it is a tree edge, the subtree rooted at v may lose reachability;
+    we re-search from v: if v is still reachable from some vertex outside
+    the subtree, we re-run the subtree in its new position; otherwise the
+    subtree is marked unreachable.
+
+The re-search is iterative (no recursion limit) and only touches the
+affected interval, so typical updates cost far less than a full O(n^2)
+recompute.
+"""
+
+
+def _dfs(graph):
+    n = len(graph)
+    parent = [None] * n
+    discover = [-1] * n
+    finish = [-1] * n
+    counter = [0]
+
+    def rec(u):
+        discover[u] = counter[0]
+        counter[0] += 1
+        for v in range(n):
+            if graph[u][v] and discover[v] == -1:
+                parent[v] = u
+                rec(v)
+        finish[u] = counter[0]
+        counter[0] += 1
+
+    if n > 0:
+        rec(0)
+    return parent, discover, finish
+
+
+def _is_ancestor(u, v, discover, finish):
+    return discover[u] <= discover[v] and finish[v] <= finish[u]
+
+
+def _is_forward_cross(u, v, discover, finish):
+    # edge u->v is a forward-cross edge iff u discovered before v and
+    # neither is an ancestor of the other.
+    if discover[u] == -1 or discover[v] == -1:
+        return False
+    if discover[u] < discover[v]:
+        return not _is_ancestor(u, v, discover, finish)
+    return False
+
+
+def _re_search(graph, parent, discover, finish, start, new_parent):
+    """Re-run DFS starting at `start` (which is currently unreachable or
+    about to be re-parented), attaching it under `new_parent`.
+
+    The vertices of the old subtree rooted at `start` form a contiguous
+    interval [discover[start], finish[start]] in the old DFS order.  We
+    re-search exactly those vertices in their new position, reusing the
+    old times for all other vertices.
+    """
+    n = len(graph)
+    old_disc = discover[start]
+    old_fin = finish[start]
+    # vertices in the old subtree of start
+    subtree = [x for x in range(n)
+               if discover[x] != -1 and old_disc <= discover[x] <= old_fin]
+    # clear them
+    for x in subtree:
+        discover[x] = -1
+        finish[x] = -1
+        parent[x] = None
+    # re-search from start with new parent
+    counter = [old_disc]
+    stack = [(start, 0)]
+    parent[start] = new_parent
+    discover[start] = counter[0]
+    counter[0] += 1
+    while stack:
+        u, idx = stack[-1]
+        advanced = False
+        while idx < n:
+            v = idx
+            idx += 1
+            if graph[u][v] and discover[v] == -1:
+                parent[v] = u
+                discover[v] = counter[0]
+                counter[0] += 1
+                stack[-1] = (u, idx)
+                stack.append((v, 0))
+                advanced = True
+                break
+        if not advanced:
+            stack.pop()
+            finish[u] = counter[0]
+            counter[0] += 1
+    return parent, discover, finish
+
+
+def _re_search_delete(graph, parent, discover, finish, start):
+    """After deleting the tree edge into `start`, re-search the old
+    subtree rooted at `start` to see whether it is still reachable from
+    outside the subtree.
+
+    If `start` is still reachable from some vertex outside the subtree,
+    the whole subtree is re-run in its new position (attached under the
+    first outside vertex that reaches it).  Otherwise the subtree is
+    marked unreachable.
+    """
+    n = len(graph)
+    old_disc = discover[start]
+    old_fin = finish[start]
+    # vertices in the old subtree of start
+    subtree = [x for x in range(n)
+               if discover[x] != -1 and old_disc <= discover[x] <= old_fin]
+    subtree_set = set(subtree)
+    # clear them
+    for x in subtree:
+        discover[x] = -1
+        finish[x] = -1
+        parent[x] = None
+    # check if start is reachable from outside the subtree
+    # (i.e., from a vertex that is not in the subtree and is discovered)
+    # We do a BFS/DFS from all discovered vertices outside the subtree
+    # to see if any can reach start.
+    from collections import deque
+    outside = [x for x in range(n)
+               if discover[x] != -1 and x not in subtree_set]
+    # BFS from all outside vertices
+    visited = set(outside)
+    queue = deque(outside)
+    reachable = False
+    while queue:
+        u = queue.popleft()
+        for v in range(n):
+            if graph[u][v] and v not in visited:
+                if v == start:
+                    reachable = True
+                    break
+                visited.add(v)
+                queue.append(v)
+        if reachable:
+            break
+    if not reachable:
+        # subtree is now unreachable; leave it cleared
+        return parent, discover, finish
+    # subtree is still reachable; full recompute
+    return _dfs(graph)
+
+
+def init(graph):
+    parent, discover, finish = _dfs(graph)
+    return {
+        'parent': parent,
+        'discover': discover,
+        'finish': finish,
+    }
+
+
+def insert_edge(graph, edge, state):
+    u, v = edge
+    parent = state['parent']
+    discover = state['discover']
+    finish = state['finish']
+    if discover[v] == -1:
+        # v was unreachable; the new edge may make it reachable.
+        # Re-search from v, attaching under u.
+        parent, discover, finish = _re_search(
+            graph, parent, discover, finish, v, u)
+    elif _is_forward_cross(u, v, discover, finish):
+        # new edge is a forward-cross edge; forest invalid.
+        parent, discover, finish = _dfs(graph)
+    return {
+        'parent': parent,
+        'discover': discover,
+        'finish': finish,
+    }
+
+
+def delete_edge(graph, edge, state):
+    u, v = edge
+    parent = state['parent']
+    discover = state['discover']
+    finish = state['finish']
+    if parent[v] == u:
+        # tree edge removed; subtree rooted at v may lose reachability.
+        parent, discover, finish = _re_search_delete(
+            graph, parent, discover, finish, v)
+    return {
+        'parent': parent,
+        'discover': discover,
+        'finish': finish,
+    }

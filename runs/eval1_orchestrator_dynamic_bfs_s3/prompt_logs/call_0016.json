@@ -1,0 +1,360 @@
+{
+  "call_id": "call_0016",
+  "timestamp": "2026-10-20T15:26:11Z",
+  "backend": "api",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "type": "repair",
+  "candidate_id": "gen003_c02",
+  "messages_start": [
+    {
+      "role": "system",
+      "content": "You are the REPAIR role in an evolutionary search for dynamic graph algorithms. Take one failed candidate and its reflection and produce a repaired candidate with `write_candidate` (or `write_candidate` followed by `edit_candidate`). You do not write reflections or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the failed candidate and the reflection in the task.\n2. Trace the failing case through the code yourself before changing anything. If your trace contradicts the reflection's root cause, fix the cause you traced and say so in your report.\n3. Write the failed candidate to your output file with `write_candidate`, then apply the smallest change that removes the root cause with `edit_candidate`. Do not rewrite working parts.\n4. Check it with `run_examples`. If it still fails, fix the first failure and check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`, each returning the new state.\n- `graph` is the current 0/1 adjacency matrix after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no imports beyond the Python standard library.\n\n## Rules\n\n- Target the root cause; leave unrelated code and style alone.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case.\n\n## Report (final message, no tool call)\n\nREPAIRED: <file written>\nCHANGE: <one or two lines: what changed and why>\nEXAMPLES: <last run_examples verdict>\nCONCERNS: <remaining doubts, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_bfs\nGraph mode: directed\nNeeds root/source: yes (vertex 0)\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'parent' and 'distances' (lists indexed by vertex, or dicts).\nparent[root] = None; parent[v] = None for unreachable v.\ndistances[v] = BFS distance from the root; -1 or None for unreachable v.\nOther keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic BFS tree maintenance\n\nResearch question: can a BFS tree from a fixed root be maintained incrementally\nunder edge insertions and deletions, with work well below full recomputation?\n\nThe graph is directed; a fixed root r is given. After every update the state\nmust contain a valid BFS tree: it spans exactly the vertices reachable from r,\nevery non-root vertex has one parent that is a true in-neighbor, and the\nparent of v sits one BFS distance closer to r than v does.\n\nKnown territory: Frigioni et al. give a semi-dynamic BFS algorithm with O(mn)\ntotal work; the fully dynamic case is harder. A structurally different correct\napproach is interesting even where a known solution exists.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based. Correctness is\nchecked by the invariant above, not by equality with a specific tree.\n\nThis is a calibration problem: the system should solve it without help, and it\nvalidates the pipeline end to end.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: repair the failed candidate below using the reflection.\nOutput file: candidates/gen003_c02.py\n\nFAILED CANDIDATE:\n```python\n\"\"\"Dynamic BFS tree from a fixed root (vertex 0) under edge insertions/deletions.\n\nState dict:\n  parent:    list, parent[v] = BFS parent or None (root/unreachable)\n  distances: list, distances[v] = BFS distance or -1\n  adj:       list of sets, current out-neighborhoods (kept in sync with graph)\n  in_adj:    list of sets, current in-neighborhoods\n\nInsertion: if the new edge (u,v) can shorten v's distance (dist[u]+1 < dist[v]),\nrecompute BFS from v (with the new edge) and patch the affected subtree.\nDeletion: if the deleted edge is the tree edge of v, recompute BFS from v\n(restricted to the old subtree) and patch.\nOtherwise the BFS tree is unchanged and no work is done.\n\"\"\"\n\n\ndef _bfs_from(start, adj, dist, parent, start_dist=None, start_parent=None):\n    \"\"\"BFS from `start` using `adj`, but never going to a vertex w with\n    dist[w] < dist[start] (those are already settled at smaller distance).\n    Returns (dist, parent) for the affected region: dist[w] is the new BFS\n    distance for vertices in the affected region, parent[w] the new parent.\n    Vertices not reached keep their old values (caller handles).\n\n    If start_dist is None, the caller must have already set dist[start] to\n    start's new distance. If start_dist == -1, start is unreachable and is\n    not enqueued (its out-neighbors are not reached through it).\n    \"\"\"\n    if start_dist is None:\n        start_dist = dist[start]\n        start_parent = parent[start]\n    new_dist = {}\n    new_parent = {}\n    if start_dist != -1:\n        new_dist[start] = start_dist\n        new_parent[start] = start_parent\n    queue = [start] if start_dist != -1 else []\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        du = new_dist[u]\n        for w in adj[u]:\n            if w in new_dist:\n                continue\n            if dist[w] != -1 and dist[w] < start_dist:\n                # settled at a strictly smaller distance; cannot be affected\n                continue\n            if dist[w] != -1 and dist[w] <= du + 1:\n                # already at distance <= du+1; a BFS from start cannot improve\n                # it (any path through start has length >= d0 + (du+1-d0) = du+1)\n                continue\n            new_dist[w] = du + 1\n            new_parent[w] = u\n            queue.append(w)\n    # If start is unreachable, any vertex reached through it is also\n    # unreachable; mark them all as such so the caller can patch them.\n    if start_dist == -1:\n        for w in new_dist:\n            new_dist[w] = -1\n            new_parent[w] = None\n    return new_dist, new_parent\n\n\ndef _mark_unreachable(v, adj, dist, parent):\n    \"\"\"Mark v and every vertex whose only paths from the root went through v\n    as unreachable. Returns (new_dist, new_parent) for the patch, where\n    every entry has dist -1 and parent None.\n    \"\"\"\n    new_dist = {v: -1}\n    new_parent = {v: None}\n    queue = [v]\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        for w in adj[u]:\n            if w in new_dist:\n                continue\n            if dist[w] == -1:\n                continue\n            if parent[w] != u:\n                # w has a different parent; it may still be reachable via\n                # that parent (or another in-neighbor), so do not mark it.\n                continue\n            new_dist[w] = -1\n            new_parent[w] = None\n            queue.append(w)\n    return new_dist, new_parent\n\n\ndef _apply_patch(state, new_dist, new_parent):\n    parent = state['parent']\n    distances = state['distances']\n    for v, d in new_dist.items():\n        parent[v] = new_parent[v]\n        distances[v] = d\n\n\ndef init(graph):\n    n = len(graph)\n    adj = [set() for _ in range(n)]\n    in_adj = [set() for _ in range(n)]\n    for u in range(n):\n        row = graph[u]\n        for v in range(n):\n            if row[v]:\n                adj[u].add(v)\n                in_adj[v].add(u)\n    parent = [None] * n\n    distances = [-1] * n\n    # BFS from root 0\n    if n > 0:\n        distances[0] = 0\n        queue = [0]\n        head = 0\n        while head < len(queue):\n            u = queue[head]\n            head += 1\n            for w in adj[u]:\n                if distances[w] == -1:\n                    distances[w] = distances[u] + 1\n                    parent[w] = u\n                    queue.append(w)\n    return {'parent': parent, 'distances': distances, 'adj': adj, 'in_adj': in_adj}\n\n\ndef insert_edge(graph, edge, state):\n    u, v = edge\n    adj = state['adj']\n    in_adj = state['in_adj']\n    adj[u].add(v)\n    in_adj[v].add(u)\n    distances = state['distances']\n    parent = state['parent']\n    # Only useful if u is reachable and the edge shortens v\n    if distances[u] != -1 and distances[v] != -1 and distances[u] + 1 < distances[v]:\n        distances[v] = distances[u] + 1\n        parent[v] = u\n        new_dist, new_parent = _bfs_from(v, adj, distances, parent)\n        _apply_patch(state, new_dist, new_parent)\n    elif distances[u] != -1 and distances[v] == -1:\n        # v becomes reachable\n        distances[v] = distances[u] + 1\n        parent[v] = u\n        new_dist, new_parent = _bfs_from(v, adj, distances, parent)\n        _apply_patch(state, new_dist, new_parent)\n    return state\n\n\ndef delete_edge(graph, edge, state):\n    u, v = edge\n    adj = state['adj']\n    in_adj = state['in_adj']\n    adj[u].discard(v)\n    in_adj[v].discard(u)\n    distances = state['distances']\n    parent = state['parent']\n    # Only a problem if this was v's tree edge\n    if parent[v] == u and v != 0:\n        # v may be reachable again via another in-neighbor at the same\n        # distance; find the best such parent (or None if unreachable).\n        best_d = -1\n        best_p = None\n        for w in in_adj[v]:\n            dw = distances[w]\n            if dw != -1 and (best_d == -1 or dw < best_d):\n                best_d = dw\n                best_p = w\n        if best_p is None:\n            # v and its whole old subtree may be affected; BFS from v with\n            # v marked unreachable (dist -1) so it is not re-added.\n            distances[v] = -1\n            parent[v] = None\n            new_dist, new_parent = _bfs_from(v, adj, distances, parent,\n                                             start_dist=-1, start_parent=None)\n            _apply_patch(state, new_dist, new_parent)\n        else:\n            distances[v] = best_d + 1\n            parent[v] = best_p\n            new_dist, new_parent = _bfs_from(v, adj, distances, parent)\n            _apply_patch(state, new_dist, new_parent)\n    return state\n```\n\nREFLECTION:\n## FAILURE_DESCRIPTION\n\n3-vertex directed graph (0/1 adjacency matrix), root 0:\n\n```\ngraph = [[0,0,0],\n         [1,0,1],\n         [0,0,0]]\n```\n\nEdges: 1->0 and 1->2. Only vertex 0 (the root) is reachable; vertices 1 and 2 are unreachable.\n\nFailing update (sequence_idx 0): `delete_edge(graph, (0, 1), state)` — delete edge 0->1.\n\nExpected after the update: `distances = [0, -1, -1]`, `parent = [None, None, None]` (vertex 2 unreachable, expected_distance -1).\n\nActual: `distances = [0, -1, 2]`, `parent = [None, None, 1]` — vertex 2 is reported reachable at distance 2 with parent 1, even though 1 is unreachable and no path from 0 reaches 2.\n\n## ROOT_CAUSE\n\nThe bug is in `delete_edge`, in the `best_p is None` branch (the \"v becomes unreachable\" path):\n\n```python\nif best_p is None:\n    # v and its whole old subtree may be affected; BFS from v with\n    # v marked unreachable (dist -1) so it is not re-added.\n    distances[v] = -1\n    parent[v] = None\n    new_dist, new_parent = _bfs_from(v, adj, distances, parent,\n                                     start_dist=-1, start_parent=None)\n    _apply_patch(state, new_dist, new_parent)\n```\n\nWhen `start_dist == -1`, `_bfs_from` does:\n\n```python\nqueue = [start] if start_dist != -1 else []   # queue = []  <-- empty\n...\nwhile head < len(queue):                       # never executes\n```\n\nSo the BFS body never runs, `new_dist`/`new_parent` stay empty, and `_apply_patch` patches nothing. The only state change is `distances[v] = -1; parent[v] = None` for the head `v` itself.\n\nThe comment says \"v and its whole old subtree may be affected\", but the code only marks `v`. Every tree descendant of `v` (vertices whose only path from the root went through `v`) keeps its stale distance and parent. In the failing case, the pre-deletion state (with edge 0->1 present) had `dist = [0, 1, 2]`, `parent = [None, 0, 1]` — vertex 2's tree parent is 1. After deleting 0->1, `best_p` is None (1's only in-neighbor is 0, and 0 has no edge to 1), so the branch sets `dist[1] = -1, parent[1] = None`, but vertex 2 is left at `dist[2] = 2, parent[2] = 1` — a parent that is itself unreachable. The invariant \"parent[v] is a true in-neighbor at distance dist[v]-1\" is violated.\n\nNote the dead helper `_mark_unreachable(v, adj, dist, parent)` exists in the file and does exactly the intended subtree walk (follows `parent[w] == u` edges, marks dist -1 / parent None), but `delete_edge` never calls it — the author replaced it with the `start_dist=-1` call to `_bfs_from`, which is a no-op.\n\n## REPAIR_HINTS\n\nSmallest fix, in `delete_edge`'s `best_p is None` branch: after setting `distances[v] = -1; parent[v] = None`, walk v's old BFS-tree subtree and mark every descendant unreachable. The existing (currently unused) `_mark_unreachable` helper does this correctly:\n\n```python\nif best_p is None:\n    new_dist, new_parent = _mark_unreachable(v, adj, distances, parent)\n    _apply_patch(state, new_dist, new_parent)\n```\n\n(`_mark_unreachable` starts with `{v: -1}` and follows `parent[w] == u` edges, so it covers v and exactly the vertices whose only tree path went through v.)\n\nTwo caveats to verify after the fix:\n\n1. `_mark_unreachable` only marks vertices whose tree parent is the vertex being processed. A descendant w whose parent is NOT in the marked set is skipped (\"it may still be reachable via that parent\"). That is correct for the BFS-tree structure: if w's parent p is not a descendant of v, then w's path to the root does not go through v, so w is unaffected. Keep this logic.\n\n2. The `best_p is not None` branch (v gets a new parent at `best_d + 1`) has a related latent issue: `_bfs_from(v, ...)` with the updated `distances[v] = best_d + 1` only propagates to vertices whose old distance is `> du + 1` (the skip `dist[w] <= du + 1`). If v's new distance is LARGER than its old one (the replacement parent is farther), descendants whose old distance is smaller than the new value are skipped and keep stale, too-small distances. This case does not trigger in the failing test, but the repair role should either (a) restrict that branch to `best_d + 1 == old dist[v]` (same-level re-parenting, where the skip logic is sound) and fall back to a full BFS when `best_d + 1 > old dist[v]`, or (b) recompute the whole subtree of v with a multi-source BFS seeded from in-neighbors outside the subtree (as gen002_c01/c04 do). Do not \"fix\" the unreachable branch by making `_bfs_from` enqueue `start` when `start_dist == -1` — that would re-add v as reachable, the opposite of what is needed.\n\nMore context: read_file('pack/brief.md') has the full research brief.\n"
+    }
+  ],
+  "duration_s": 29.2,
+  "steps": 16,
+  "tool_calls": [
+    "read_file",
+    "read_file",
+    "read_file",
+    "read_file",
+    "read_file",
+    "write_candidate",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples",
+    "read_file",
+    "edit_candidate",
+    "run_examples",
+    "read_file"
+  ],
+  "examples_runs": 4,
+  "usage": {
+    "prompt_tokens": 202702,
+    "completion_tokens": 3748
+  },
+  "ok": true,
+  "error": "step limit (16) reached",
+  "summary": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are the REPAIR role in an evolutionary search for dynamic graph algorithms. Take one failed candidate and its reflection and produce a repaired candidate with `write_candidate` (or `write_candidate` followed by `edit_candidate`). You do not write reflections or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the failed candidate and the reflection in the task.\n2. Trace the failing case through the code yourself before changing anything. If your trace contradicts the reflection's root cause, fix the cause you traced and say so in your report.\n3. Write the failed candidate to your output file with `write_candidate`, then apply the smallest change that removes the root cause with `edit_candidate`. Do not rewrite working parts.\n4. Check it with `run_examples`. If it still fails, fix the first failure and check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`, each returning the new state.\n- `graph` is the current 0/1 adjacency matrix after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no imports beyond the Python standard library.\n\n## Rules\n\n- Target the root cause; leave unrelated code and style alone.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case.\n\n## Report (final message, no tool call)\n\nREPAIRED: <file written>\nCHANGE: <one or two lines: what changed and why>\nEXAMPLES: <last run_examples verdict>\nCONCERNS: <remaining doubts, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_bfs\nGraph mode: directed\nNeeds root/source: yes (vertex 0)\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'parent' and 'distances' (lists indexed by vertex, or dicts).\nparent[root] = None; parent[v] = None for unreachable v.\ndistances[v] = BFS distance from the root; -1 or None for unreachable v.\nOther keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic BFS tree maintenance\n\nResearch question: can a BFS tree from a fixed root be maintained incrementally\nunder edge insertions and deletions, with work well below full recomputation?\n\nThe graph is directed; a fixed root r is given. After every update the state\nmust contain a valid BFS tree: it spans exactly the vertices reachable from r,\nevery non-root vertex has one parent that is a true in-neighbor, and the\nparent of v sits one BFS distance closer to r than v does.\n\nKnown territory: Frigioni et al. give a semi-dynamic BFS algorithm with O(mn)\ntotal work; the fully dynamic case is harder. A structurally different correct\napproach is interesting even where a known solution exists.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based. Correctness is\nchecked by the invariant above, not by equality with a specific tree.\n\nThis is a calibration problem: the system should solve it without help, and it\nvalidates the pipeline end to end.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: repair the failed candidate below using the reflection.\nOutput file: candidates/gen003_c02.py\n\nFAILED CANDIDATE:\n```python\n\"\"\"Dynamic BFS tree from a fixed root (vertex 0) under edge insertions/deletions.\n\nState dict:\n  parent:    list, parent[v] = BFS parent or None (root/unreachable)\n  distances: list, distances[v] = BFS distance or -1\n  adj:       list of sets, current out-neighborhoods (kept in sync with graph)\n  in_adj:    list of sets, current in-neighborhoods\n\nInsertion: if the new edge (u,v) can shorten v's distance (dist[u]+1 < dist[v]),\nrecompute BFS from v (with the new edge) and patch the affected subtree.\nDeletion: if the deleted edge is the tree edge of v, recompute BFS from v\n(restricted to the old subtree) and patch.\nOtherwise the BFS tree is unchanged and no work is done.\n\"\"\"\n\n\ndef _bfs_from(start, adj, dist, parent, start_dist=None, start_parent=None):\n    \"\"\"BFS from `start` using `adj`, but never going to a vertex w with\n    dist[w] < dist[start] (those are already settled at smaller distance).\n    Returns (dist, parent) for the affected region: dist[w] is the new BFS\n    distance for vertices in the affected region, parent[w] the new parent.\n    Vertices not reached keep their old values (caller handles).\n\n    If start_dist is None, the caller must have already set dist[start] to\n    start's new distance. If start_dist == -1, start is unreachable and is\n    not enqueued (its out-neighbors are not reached through it).\n    \"\"\"\n    if start_dist is None:\n        start_dist = dist[start]\n        start_parent = parent[start]\n    new_dist = {}\n    new_parent = {}\n    if start_dist != -1:\n        new_dist[start] = start_dist\n        new_parent[start] = start_parent\n    queue = [start] if start_dist != -1 else []\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        du = new_dist[u]\n        for w in adj[u]:\n            if w in new_dist:\n                continue\n            if dist[w] != -1 and dist[w] < start_dist:\n                # settled at a strictly smaller distance; cannot be affected\n                c ...[9218 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b6dbab544471fd40",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen003_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b6dbab544471fd40",
+      "content": "error: no such file: candidates/gen003_c02.py; files in candidates/: gen001_c01.py, gen001_c02.py, gen001_c03.py, gen001_c04.py, gen002_c01.py, gen002_c02.py, gen002_c03.py, gen002_c04.py, gen003_c01.py"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b6d4820e9ef96bfd",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen002_c01.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b6d4820e9ef96bfd",
+      "content": "\"\"\"Dynamic BFS tree from a fixed root (vertex 0) under edge insertions/deletions.\n\nState dict:\n  'parent':    list, parent[v] = p (BFS parent) or None (root/unreachable)\n  'distances': list, distances[v] = BFS distance from root, -1 if unreachable\n  'adj':       list of sets, current out-neighborhood of each vertex\n  'rad':       list, rad[v] = number of in-neighbors u with dist[u] == dist[v]-1\n               (only meaningful for reachable v)\n\nCorrectness invariant after every update:\n  - parent[root] is None; parent[v] is None iff v is unreachable.\n  - for reachable v != root: parent[v] is a true in-neighbor and\n    distances[parent[v]] == distances[v] - 1.\n  - distances are the true BFS distances.\n\nUpdate strategy:\n  - Insertion: if the new edge can shorten some vertices, run a local BFS\n    restricted to vertices whose distance actually decreases. The improved\n    set is closed (a vertex not improved cannot be improved via an improved\n    vertex), so this is exact. Otherwise O(1).\n  - Deletion: if the deleted edge is not the BFS parent edge of its head,\n    O(1) (distances can only increase on deletion, and the head still has a\n    shortest path via its parent). Otherwise the affected subtree may lose\n    its BFS property; we recompute distances/parents for exactly the affected\n    vertices (those in the subtree of the deleted edge's head) with a local\n    BFS that reuses the old distances as upper bounds. Vertices outside the\n    subtree keep valid distances: their old parent chains do not go through\n    the deleted edge, so their distances are still achievable, and they\n    cannot be improved (deletion only increases distances).\n\"\"\"\n\n\ndef _bfs_full(adj, n, root):\n    \"\"\"Full BFS from root. Returns (parent, distances).\"\"\"\n    parent = [None] * n\n    dist = [-1] * n\n    dist[root] = 0\n    queue = [root]\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        du = dist[u]\n        for v in adj[u]:\n            if dist[v] == -1:\n                dist[v] = du + 1\n                parent[v] = u\n                queue.append(v)\n    return parent, dist\n\n\ndef _build_rad(adj, dist, n):\n    \"\"\"rad[v] = number of in-neighbors u with dist[u] == dist[v] - 1.\"\"\"\n    rad = [0] * n\n    for u in range(n):\n        du = dist[u]\n        if du < 0:\n            continue\n        for v in adj[u]:\n            if dist[v] == du + 1:\n                rad[v] += 1\n    return rad\n\n\ndef init(graph):\n    n = len(graph)\n    adj = [set() for _ in range(n)]\n    for u in range(n):\n        row = graph[u]\n        for v in range(n):\n            if row[v]:\n                adj[u].add(v)\n    root = 0\n    parent, dist = _bfs_full(adj, n, root)\n    rad = _build_rad(adj, dist, n)\n    return {\n        'parent': parent,\n        'distances': dist,\n        'adj': adj,\n        'rad': rad,\n        'graph': [list(row) for row in graph],\n    }\n\n\ndef insert_edge(graph, edge, state):\n    u, v = edge\n    adj = state['adj']\n    n = len(adj)\n    adj[u].add(v)\n    dist = state['distances']\n    parent = state['parent']\n    rad = state['rad']\n    if dist[v] >= 0:\n        rad[v] += 1\n\n    du = dist[u]\n    if du < 0:\n        # u unreachable: edge cannot help anyone.\n        return state\n\n    if dist[v] == -1:\n        # v becomes reachable at du+1; propagate to newly reachable vertices.\n        improved = {v}\n        newdist = {v: du + 1}\n        newparent = {v: u}\n        queue = [v]\n        head = 0\n        while head < len(queue):\n            x = queue[head]\n            head += 1\n            dx = newdist[x]\n            for y in adj[x]:\n                if dist[y] == -1 and y not in improved:\n                    improved.add(y)\n                    newdist[y] = dx + 1\n                    newparent[y] = x\n                    queue.append(y)\n        for x in improved:\n            dist[x] = newdist[x]\n            parent[x] = newparent[x]\n        # recompute rad for improved vertices\n        for x in improved:\n            dx = newdist[x]\n            c = 0\n      ...[4034 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-936e0469c3b38624",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"pack/brief.md\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-936e0469c3b38624",
+      "content": "# Research brief: Dynamic BFS tree maintenance\n\nResearch question: can a BFS tree from a fixed root be maintained incrementally\nunder edge insertions and deletions, with work well below full recomputation?\n\nThe graph is directed; a fixed root r is given. After every update the state\nmust contain a valid BFS tree: it spans exactly the vertices reachable from r,\nevery non-root vertex has one parent that is a true in-neighbor, and the\nparent of v sits one BFS distance closer to r than v does.\n\nKnown territory: Frigioni et al. give a semi-dynamic BFS algorithm with O(mn)\ntotal work; the fully dynamic case is harder. A structurally different correct\napproach is interesting even where a known solution exists.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based. Correctness is\nchecked by the invariant above, not by equality with a specific tree.\n\nThis is a calibration problem: the system should solve it without help, and it\nvalidates the pipeline end to end.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-ae57f23eef44ad66",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen002_c04.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-ae57f23eef44ad66",
+      "content": "\"\"\"Dynamic BFS tree from fixed root 0 under single-edge insert/delete.\n\nState dict:\n  parent:    list, parent[v] or None (root/unreachable)\n  distances: list, BFS distance from root, -1 if unreachable\n  adj:       list of sets of out-neighbors (kept in sync with graph)\n  in_adj:    list of sets of in-neighbors\n  n:         number of vertices\n\nInsert: if the new edge (u,v) can shorten v's distance (dist[u]+1 < dist[v]),\nrecompute BFS only over the affected region (distance decreases only).\nOtherwise no change.\n\nDelete: if the deleted edge is not the tree edge of v (parent[v]==u), the BFS\ntree is still valid and distances remain correct. If it is the tree edge,\nrun a local \"increase\" repair: v (and possibly descendants) may need a new\nparent at the same level, a longer path, or become unreachable. Only the\nsubtree rooted at v is touched; the rest of the tree is provably unaffected.\n\"\"\"\n\nfrom collections import deque\n\n\ndef _bfs_full(adj, n):\n    \"\"\"Full BFS from root 0. Returns (parent, distances).\"\"\"\n    parent = [None] * n\n    dist = [-1] * n\n    dist[0] = 0\n    q = deque([0])\n    while q:\n        u = q.popleft()\n        for v in adj[u]:\n            if dist[v] == -1:\n                dist[v] = dist[u] + 1\n                parent[v] = u\n                q.append(v)\n    return parent, dist\n\n\ndef _recompute_region(adj, in_adj, n, parent, dist, seeds):\n    \"\"\"Recompute distances/parents for vertices whose distance may have DECREASED.\n\n    seeds: iterable of vertices that are known to have a valid (possibly new,\n    smaller) distance and whose out-edges should be relaxed. We run a BFS\n    restricted to vertices whose current dist is >= the minimum seed dist,\n    because only those can change. Vertices with smaller dist are unaffected.\n\n    This is only sound for distance decreases (edge insertions).\n    \"\"\"\n    if not seeds:\n        return parent, dist\n\n    min_sd = min(dist[s] for s in seeds)\n\n    new_dist = {}\n    new_parent = {}\n\n    # Initialize queue with seeds\n    q = deque()\n    for s in seeds:\n        new_dist[s] = dist[s]\n        new_parent[s] = parent[s]\n        q.append(s)\n\n    # Also add affected vertices that have an unaffected in-neighbor\n    # (an in-neighbor u with dist[u] < min_sd, i.e., u is unaffected)\n    for v in range(n):\n        if v in new_dist:\n            continue\n        if dist[v] != -1 and dist[v] < min_sd:\n            continue  # unaffected\n        # v is affected (dist >= min_sd or -1); check in-neighbors\n        for u in in_adj[v]:\n            if dist[u] != -1 and dist[u] < min_sd:\n                # u is unaffected, so v can be reached at dist[u]+1\n                new_dist[v] = dist[u] + 1\n                new_parent[v] = u\n                q.append(v)\n                break\n\n    # BFS relaxation\n    while q:\n        u = q.popleft()\n        du = new_dist[u]\n        for v in adj[u]:\n            # v can only be improved if it is affected (dist[v] >= min_sd or -1)\n            if dist[v] != -1 and dist[v] < min_sd:\n                continue  # unaffected, cannot change\n            cand = du + 1\n            if v not in new_dist or cand < new_dist[v]:\n                new_dist[v] = cand\n                new_parent[v] = u\n                q.append(v)\n\n    # Apply: for vertices in new_dist, update; for affected vertices NOT in\n    # new_dist, they become unreachable.\n    for v in range(n):\n        if dist[v] != -1 and dist[v] < min_sd:\n            continue  # unaffected\n        if v in new_dist:\n            dist[v] = new_dist[v]\n            parent[v] = new_parent[v]\n        else:\n            dist[v] = -1\n            parent[v] = None\n\n    return parent, dist\n\n\ndef _repair_after_tree_edge_delete(adj, in_adj, n, parent, dist, v):\n    \"\"\"Repair the BFS tree after the tree edge (parent[v], v) was deleted.\n\n    Only vertices in the subtree rooted at v (in the old tree) can change.\n    For each such vertex x, its new distance is\n        min( old_dist[x] + 1,  1 + min{ dist[u] : u in in_adj[x], u not in subtree } )\n    where t ...[4034 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-93e9cef5705c90a2",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen003_c01.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-93e9cef5705c90a2",
+      "content": "\"\"\"Dynamic BFS tree from fixed root 0 under single-edge insert/delete.\n\nState dict:\n  parent:    list, parent[v] or None (root/unreachable)\n  distances: list, BFS distance from root, -1 if unreachable\n  adj:       list of sets of out-neighbors (kept in sync with graph)\n  in_adj:    list of sets of in-neighbors\n  n:         number of vertices\n\nInsert: if the new edge (u,v) can shorten v's distance (dist[u]+1 < dist[v]),\nrecompute BFS only over the affected region (distance decreases only).\nOtherwise no change.\n\nDelete: if the deleted edge is not the tree edge of v (parent[v]==u), the BFS\ntree is still valid and distances remain correct. If it is the tree edge,\nrun a local \"increase\" repair: v (and possibly descendants) may need a new\nparent at the same level, a longer path, or become unreachable. Only the\nsubtree rooted at v is touched; the rest of the tree is provably unaffected.\n\"\"\"\n\nfrom collections import deque\n\n\ndef _bfs_full(adj, n):\n    \"\"\"Full BFS from root 0. Returns (parent, distances).\"\"\"\n    parent = [None] * n\n    dist = [-1] * n\n    dist[0] = 0\n    q = deque([0])\n    while q:\n        u = q.popleft()\n        for v in adj[u]:\n            if dist[v] == -1:\n                dist[v] = dist[u] + 1\n                parent[v] = u\n                q.append(v)\n    return parent, dist\n\n\ndef _recompute_region(adj, in_adj, n, parent, dist, seeds):\n    \"\"\"Recompute distances/parents for vertices whose distance may have DECREASED.\n\n    seeds: iterable of vertices that are known to have a valid (possibly new,\n    smaller) distance and whose out-edges should be relaxed. We run a BFS\n    restricted to vertices whose current dist is >= the minimum seed dist,\n    because only those can change. Vertices with smaller dist are unaffected.\n\n    This is only sound for distance decreases (edge insertions).\n    \"\"\"\n    if not seeds:\n        return parent, dist\n\n    min_sd = min(dist[s] for s in seeds)\n\n    new_dist = {}\n    new_parent = {}\n\n    # Initialize queue with seeds\n    q = deque()\n    for s in seeds:\n        new_dist[s] = dist[s]\n        new_parent[s] = parent[s]\n        q.append(s)\n\n    # Also add affected vertices that have an unaffected in-neighbor\n    # (an in-neighbor u with dist[u] < min_sd, i.e., u is unaffected)\n    for v in range(n):\n        if v in new_dist:\n            continue\n        if dist[v] != -1 and dist[v] < min_sd:\n            continue  # unaffected\n        # v is affected (dist >= min_sd or -1); check in-neighbors\n        for u in in_adj[v]:\n            if dist[u] != -1 and dist[u] < min_sd:\n                # u is unaffected, so v can be reached at dist[u]+1\n                new_dist[v] = dist[u] + 1\n                new_parent[v] = u\n                q.append(v)\n                break\n\n    # BFS relaxation\n    while q:\n        u = q.popleft()\n        du = new_dist[u]\n        for v in adj[u]:\n            # v can only be improved if it is affected (dist[v] >= min_sd or -1)\n            if dist[v] != -1 and dist[v] < min_sd:\n                continue  # unaffected, cannot change\n            cand = du + 1\n            if v not in new_dist or cand < new_dist[v]:\n                new_dist[v] = cand\n                new_parent[v] = u\n                q.append(v)\n\n    # Apply: for vertices in new_dist, update. For affected vertices NOT in\n    # new_dist, verify reachability explicitly: if x has an in-neighbor y\n    # with a valid (already-correct) distance dist[y] != -1 and\n    # dist[y] + 1 == dist[x], then x is still reachable at its old distance\n    # (an insertion cannot increase any distance), so keep x reachable and\n    # re-parent it to y. Otherwise x is genuinely unreachable.\n    for v in range(n):\n        if dist[v] != -1 and dist[v] < min_sd:\n            continue  # unaffected\n        if v in new_dist:\n            dist[v] = new_dist[v]\n            parent[v] = new_parent[v]\n        elif dist[v] != -1:\n            # x was reachable at dist[v] >= min_sd but the restricted BFS\n            # did not discover it. Check whether ...[4035 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a8bb1d9156e6b25d",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic BFS tree from a fixed root (vertex 0) under edge insertions/deletions.\\n\\nState dict:\\n  parent:    list, parent[v] = BFS parent or None (root/unreachable)\\n  distances: list, distances[v] = BFS distance or -1\\n  adj:       list of sets, current out-neighborhoods (kept in sync with graph)\\n  in_adj:    list of sets, current in-neighborhoods\\n\\nInsertion: if the new edge (u,v) can shorten v's distance (dist[u]+1 < dist[v]),\\nrecompute BFS from v (with the new edge) and patch the affected subtree.\\nDeletion: if the deleted edge is the tree edge of v, recompute BFS from v\\n(restricted to the old subtree) and patch.\\nOtherwise the BFS tree is unchanged and no work is done.\\n\\\"\\\"\\\"\\n\\n\\ndef _bfs_from(start, adj, dist, parent, start_dist=None, start_parent=None):\\n    \\\"\\\"\\\"BFS from `start` using `adj`, but never going to a vertex w with\\n    dist[w] < dist[start] (those are already settled at smaller distance).\\n    Returns (dist, parent) for the affected region: dist[w] is the new BFS\\n    distance for vertices in the affected region, parent[w] the new parent.\\n    Vertices not reached keep their old values (caller handles).\\n\\n    If start_dist is None, the caller must have already set dist[start] to\\n    start's new distance. If start_dist == -1, start is unreachable and is\\n    not enqueued (its out-neighbors are not reached through it).\\n    \\\"\\\"\\\"\\n    if start_dist is None:\\n        start_dist = dist[start]\\n        start_parent = parent[start]\\n    new_dist = {}\\n    new_parent = {}\\n    if start_dist != -1:\\n        new_dist[start] = start_dist\\n        new_parent[start] = start_parent\\n    queue = [start] if start_dist != -1 else []\\n    head = 0\\n    while head < len(queue):\\n        u = queue[head]\\n        head += 1\\n        du = new_dist[u]\\n        for w in adj[u]:\\n            if w in new_dist:\\n                continue\\n            if dist[w] != -1 and dist[w] < start_dist:\\n                # settled at a strictly smaller distance; cannot be affected\\n                continue\\n            if dist[w] != -1 and dist[w] <= du + 1:\\n                # already at distance <= du+1; a BFS from start cannot improve\\n                # it (any path through start has length >= d0 + (du+1-d0) = du+1)\\n                continue\\n            new_dist[w] = du + 1\\n            new_parent[w] = u\\n            queue.append(w)\\n    # If start is unreachable, any vertex reached through it is also\\n    # unreachable; mark them all as such so the caller can patch them.\\n    if start_dist == -1:\\n        for w in new_dist:\\n            new_dist[w] = -1\\n            new_parent[w] = None\\n    return new_dist, new_parent\\n\\n\\ndef _mark_unreachable(v, adj, dist, parent):\\n    \\\"\\\"\\\"Mark v and every vertex whose only paths from the root went through v\\n    as unreachable. Returns (new_dist, new_parent) for the patch, where\\n    every entry has dist -1 and parent None.\\n    \\\"\\\"\\\"\\n    new_dist = {v: -1}\\n    new_parent = {v: None}\\n    queue = [v]\\n    head = 0\\n    while head < len(queue):\\n        u = queue[head]\\n        head += 1\\n        for w in adj[u]:\\n            if w in new_dist:\\n                continue\\n            if dist[w] == -1:\\n                continue\\n            if parent[w] != u:\\n                # w has a different parent; it may still be reachable via\\n                # that parent (or another in-neighbor), so do not mark it.\\n                continue\\n            new_dist[w] = -1\\n            new_parent[w] = None\\n            queue.append(w)\\n    return new_dist, new_parent\\n\\n\\ndef _apply_patch(state, new_dist, new_parent):\\n    parent = state['parent']\\n    distances = state['distances']\\n    for v, d in new_dist.items():\\n        parent[v] = new_parent[v]\\n        distances[v] = d\\n\\n\\ndef init(graph):\\n    n = len(graph)\\n    adj = [set() for _ in range(n)]\\n    in_adj = [set() for _ in range(n)]\\n    for u in range(n):\\n        row = graph[u]\\n        for v in range(n):\\n            if row[v ...[2780 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a8bb1d9156e6b25d",
+      "content": "wrote candidates/gen003_c02.py (182 lines)"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-975bc0278d87b38f",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"        if best_p is None:\\n            # v and its whole old subtree may be affected; BFS from v with\\n            # v marked unreachable (dist -1) so it is not re-added.\\n            distances[v] = -1\\n            parent[v] = None\\n            new_dist, new_parent = _bfs_from(v, adj, distances, parent,\\n                                             start_dist=-1, start_parent=None)\\n            _apply_patch(state, new_dist, new_parent)\", \"new\": \"        if best_p is None:\\n            # v and its whole old subtree may be affected; walk the old\\n            # BFS-tree subtree and mark every descendant unreachable.\\n            new_dist, new_parent = _mark_unreachable(v, adj, distances, parent)\\n            _apply_patch(state, new_dist, new_parent)\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-975bc0278d87b38f",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-bff2e2bc586a875f",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-bff2e2bc586a875f",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 98,\n \"total\": 99,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_bfs\",\n  \"result\": \"[None, 2, 1]\",\n  \"expected\": \"{'parent': {0: None}, 'distances': {0: 0}}\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"graph\": [\n   [\n    0,\n    0,\n    0\n   ],\n   [\n    0,\n    0,\n    1\n   ],\n   [\n    0,\n    1,\n    0\n   ]\n  ],\n  \"root\": 0,\n  \"wrong_vertices\": [\n   {\n    \"vertex\": 1,\n    \"expected_distance\": -1,\n    \"your_distance\": 3,\n    \"your_parent\": 2\n   },\n   {\n    \"vertex\": 2,\n    \"expected_distance\": -1,\n    \"your_distance\": 2,\n    \"your_parent\": 1\n   }\n  ],\n  \"graph_n\": 3,\n  \"sequence_idx\": 0,\n  \"operation\": \"delete (0, 1)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-bee57af1ac4f026a",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"        if best_p is None:\\n            # v and its whole old subtree may be affected; walk the old\\n            # BFS-tree subtree and mark every descendant unreachable.\\n            new_dist, new_parent = _mark_unreachable(v, adj, distances, parent)\\n            _apply_patch(state, new_dist, new_parent)\", \"new\": \"        if best_p is None:\\n            # v and its whole old subtree may be affected; walk the old\\n            # BFS-tree subtree and mark every descendant unreachable.\\n            new_dist, new_parent = _mark_unreachable(v, adj, distances, parent)\\n            _apply_patch(state, new_dist, new_parent)\\n            # After marking, some descendants may still be reachable via\\n            # in-neighbors outside the marked set (e.g., a cycle back to\\n            # an ancestor). Run a BFS from each such vertex to propagate\\n            # reachability to its own descendants.\\n            for w in list(new_dist.keys()):\\n                if distances[w] == -1:\\n                    # check if w has an in-neighbor with a valid distance\\n                    for a in in_adj[w]:\\n                        if distances[a] != -1:\\n                            # w is reachable at distances[a]+1\\n                            distances[w] = distances[a] + 1\\n                            parent[w] = a\\n                            nd, np = _bfs_from(w, adj, distances, parent)\\n                            _apply_patch(state, nd, np)\\n                            break\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-bee57af1ac4f026a",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a0bf657933ec81b4",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a0bf657933ec81b4",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 98,\n \"total\": 99,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_bfs\",\n  \"result\": \"[None, 2, 1]\",\n  \"expected\": \"{'parent': {0: None}, 'distances': {0: 0}}\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"graph\": [\n   [\n    0,\n    0,\n    0\n   ],\n   [\n    0,\n    0,\n    1\n   ],\n   [\n    0,\n    1,\n    0\n   ]\n  ],\n  \"root\": 0,\n  \"wrong_vertices\": [\n   {\n    \"vertex\": 1,\n    \"expected_distance\": -1,\n    \"your_distance\": 3,\n    \"your_parent\": 2\n   },\n   {\n    \"vertex\": 2,\n    \"expected_distance\": -1,\n    \"your_distance\": 2,\n    \"your_parent\": 1\n   }\n  ],\n  \"graph_n\": 3,\n  \"sequence_idx\": 0,\n  \"operation\": \"delete (0, 1)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-846bfeb9ffc9ea4c",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"        if best_p is None:\\n            # v and its whole old subtree may be affected; walk the old\\n            # BFS-tree subtree and mark every descendant unreachable.\\n            new_dist, new_parent = _mark_unreachable(v, adj, distances, parent)\\n            _apply_patch(state, new_dist, new_parent)\\n            # After marking, some descendants may still be reachable via\\n            # in-neighbors outside the marked set (e.g., a cycle back to\\n            # an ancestor). Run a BFS from each such vertex to propagate\\n            # reachability to its own descendants.\\n            for w in list(new_dist.keys()):\\n                if distances[w] == -1:\\n                    # check if w has an in-neighbor with a valid distance\\n                    for a in in_adj[w]:\\n                        if distances[a] != -1:\\n                            # w is reachable at distances[a]+1\\n                            distances[w] = distances[a] + 1\\n                            parent[w] = a\\n                            nd, np = _bfs_from(w, adj, distances, parent)\\n                            _apply_patch(state, nd, np)\\n                            break\", \"new\": \"        if best_p is None:\\n            # v and its whole old subtree may be affected; walk the old\\n            # BFS-tree subtree and mark every descendant unreachable.\\n            new_dist, new_parent = _mark_unreachable(v, adj, distances, parent)\\n            _apply_patch(state, new_dist, new_parent)\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-846bfeb9ffc9ea4c",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8f06b5fafad4dae3",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8f06b5fafad4dae3",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 98,\n \"total\": 99,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_bfs\",\n  \"result\": \"[None, 2, 1]\",\n  \"expected\": \"{'parent': {0: None}, 'distances': {0: 0}}\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"graph\": [\n   [\n    0,\n    0,\n    0\n   ],\n   [\n    0,\n    0,\n    1\n   ],\n   [\n    0,\n    1,\n    0\n   ]\n  ],\n  \"root\": 0,\n  \"wrong_vertices\": [\n   {\n    \"vertex\": 1,\n    \"expected_distance\": -1,\n    \"your_distance\": 3,\n    \"your_parent\": 2\n   },\n   {\n    \"vertex\": 2,\n    \"expected_distance\": -1,\n    \"your_distance\": 2,\n    \"your_parent\": 1\n   }\n  ],\n  \"graph_n\": 3,\n  \"sequence_idx\": 0,\n  \"operation\": \"delete (0, 1)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-90e8184e6ec93d7d",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen003_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-90e8184e6ec93d7d",
+      "content": "\"\"\"Dynamic BFS tree from a fixed root (vertex 0) under edge insertions/deletions.\n\nState dict:\n  parent:    list, parent[v] = BFS parent or None (root/unreachable)\n  distances: list, distances[v] = BFS distance or -1\n  adj:       list of sets, current out-neighborhoods (kept in sync with graph)\n  in_adj:    list of sets, current in-neighborhoods\n\nInsertion: if the new edge (u,v) can shorten v's distance (dist[u]+1 < dist[v]),\nrecompute BFS from v (with the new edge) and patch the affected subtree.\nDeletion: if the deleted edge is the tree edge of v, recompute BFS from v\n(restricted to the old subtree) and patch.\nOtherwise the BFS tree is unchanged and no work is done.\n\"\"\"\n\n\ndef _bfs_from(start, adj, dist, parent, start_dist=None, start_parent=None):\n    \"\"\"BFS from `start` using `adj`, but never going to a vertex w with\n    dist[w] < dist[start] (those are already settled at smaller distance).\n    Returns (dist, parent) for the affected region: dist[w] is the new BFS\n    distance for vertices in the affected region, parent[w] the new parent.\n    Vertices not reached keep their old values (caller handles).\n\n    If start_dist is None, the caller must have already set dist[start] to\n    start's new distance. If start_dist == -1, start is unreachable and is\n    not enqueued (its out-neighbors are not reached through it).\n    \"\"\"\n    if start_dist is None:\n        start_dist = dist[start]\n        start_parent = parent[start]\n    new_dist = {}\n    new_parent = {}\n    if start_dist != -1:\n        new_dist[start] = start_dist\n        new_parent[start] = start_parent\n    queue = [start] if start_dist != -1 else []\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        du = new_dist[u]\n        for w in adj[u]:\n            if w in new_dist:\n                continue\n            if dist[w] != -1 and dist[w] < start_dist:\n                # settled at a strictly smaller distance; cannot be affected\n                continue\n            if dist[w] != -1 and dist[w] <= du + 1:\n                # already at distance <= du+1; a BFS from start cannot improve\n                # it (any path through start has length >= d0 + (du+1-d0) = du+1)\n                continue\n            new_dist[w] = du + 1\n            new_parent[w] = u\n            queue.append(w)\n    # If start is unreachable, any vertex reached through it is also\n    # unreachable; mark them all as such so the caller can patch them.\n    if start_dist == -1:\n        for w in new_dist:\n            new_dist[w] = -1\n            new_parent[w] = None\n    return new_dist, new_parent\n\n\ndef _mark_unreachable(v, adj, dist, parent):\n    \"\"\"Mark v and every vertex whose only paths from the root went through v\n    as unreachable. Returns (new_dist, new_parent) for the patch, where\n    every entry has dist -1 and parent None.\n    \"\"\"\n    new_dist = {v: -1}\n    new_parent = {v: None}\n    queue = [v]\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        for w in adj[u]:\n            if w in new_dist:\n                continue\n            if dist[w] == -1:\n                continue\n            if parent[w] != u:\n                # w has a different parent; it may still be reachable via\n                # that parent (or another in-neighbor), so do not mark it.\n                continue\n            new_dist[w] = -1\n            new_parent[w] = None\n            queue.append(w)\n    return new_dist, new_parent\n\n\ndef _apply_patch(state, new_dist, new_parent):\n    parent = state['parent']\n    distances = state['distances']\n    for v, d in new_dist.items():\n        parent[v] = new_parent[v]\n        distances[v] = d\n\n\ndef init(graph):\n    n = len(graph)\n    adj = [set() for _ in range(n)]\n    in_adj = [set() for _ in range(n)]\n    for u in range(n):\n        row = graph[u]\n        for v in range(n):\n            if row[v]:\n                adj[u].add(v)\n                in_adj[v].add(u)\n    parent = [None] * n\n    distances = [-1] * n\n    # BFS from roo ...[2437 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a9086d1a9a77621c",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _mark_unreachable(v, adj, dist, parent):\\n    \\\"\\\"\\\"Mark v and every vertex whose only paths from the root went through v\\n    as unreachable. Returns (new_dist, new_parent) for the patch, where\\n    every entry has dist -1 and parent None.\\n    \\\"\\\"\\\"\\n    new_dist = {v: -1}\\n    new_parent = {v: None}\\n    queue = [v]\\n    head = 0\\n    while head < len(queue):\\n        u = queue[head]\\n        head += 1\\n        for w in adj[u]:\\n            if w in new_dist:\\n                continue\\n            if dist[w] == -1:\\n                continue\\n            if parent[w] != u:\\n                # w has a different parent; it may still be reachable via\\n                # that parent (or another in-neighbor), so do not mark it.\\n                continue\\n            new_dist[w] = -1\\n            new_parent[w] = None\\n            queue.append(w)\\n    return new_dist, new_parent\", \"new\": \"def _mark_unreachable(v, adj, dist, parent):\\n    \\\"\\\"\\\"Mark v and every vertex whose only paths from the root went through v\\n    as unreachable. Returns (new_dist, new_parent) for the patch, where\\n    every entry has dist -1 and parent None.\\n    \\\"\\\"\\\"\\n    new_dist = {v: -1}\\n    new_parent = {v: None}\\n    queue = [v]\\n    head = 0\\n    while head < len(queue):\\n        u = queue[head]\\n        head += 1\\n        for w in adj[u]:\\n            if w in new_dist:\\n                continue\\n            if dist[w] == -1:\\n                continue\\n            if parent[w] != u:\\n                # w has a different parent; it may still be reachable via\\n                # that parent (or another in-neighbor), so do not mark it.\\n                continue\\n            new_dist[w] = -1\\n            new_parent[w] = None\\n            queue.append(w)\\n    # After marking, some descendants may still be reachable via in-neighbors\\n    # outside the marked set (e.g., a cycle back to an ancestor). Run a BFS\\n    # from each such vertex to propagate reachability to its descendants.\\n    for w in list(new_dist.keys()):\\n        if dist[w] == -1:\\n            # check if w has an in-neighbor with a valid distance\\n            for a in range(len(dist)):\\n                if dist[a] != -1 and w in adj[a]:\\n                    # w is reachable at dist[a]+1\\n                    new_dist[w] = dist[a] + 1\\n                    new_parent[w] = a\\n                    break\\n    # Now propagate: for each vertex in new_dist with a valid distance,\\n    # run a BFS to update its descendants.\\n    for w in list(new_dist.keys()):\\n        if new_dist[w] != -1:\\n            nd, np = _bfs_from(w, adj, dist, parent,\\n                               start_dist=new_dist[w], start_parent=new_parent[w])\\n            for k, val in nd.items():\\n                new_dist[k] = val\\n                new_parent[k] = np[k]\\n    return new_dist, new_parent\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a9086d1a9a77621c",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-85375f8001f7e253",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-85375f8001f7e253",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 98,\n \"total\": 99,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_bfs\",\n  \"result\": \"[None, 2, 1]\",\n  \"expected\": \"{'parent': {0: None}, 'distances': {0: 0}}\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"graph\": [\n   [\n    0,\n    0,\n    0\n   ],\n   [\n    0,\n    0,\n    1\n   ],\n   [\n    0,\n    1,\n    0\n   ]\n  ],\n  \"root\": 0,\n  \"wrong_vertices\": [\n   {\n    \"vertex\": 1,\n    \"expected_distance\": -1,\n    \"your_distance\": 3,\n    \"your_parent\": 2\n   },\n   {\n    \"vertex\": 2,\n    \"expected_distance\": -1,\n    \"your_distance\": 2,\n    \"your_parent\": 1\n   }\n  ],\n  \"graph_n\": 3,\n  \"sequence_idx\": 0,\n  \"operation\": \"delete (0, 1)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8010052b180ad41b",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen003_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8010052b180ad41b",
+      "content": "\"\"\"Dynamic BFS tree from a fixed root (vertex 0) under edge insertions/deletions.\n\nState dict:\n  parent:    list, parent[v] = BFS parent or None (root/unreachable)\n  distances: list, distances[v] = BFS distance or -1\n  adj:       list of sets, current out-neighborhoods (kept in sync with graph)\n  in_adj:    list of sets, current in-neighborhoods\n\nInsertion: if the new edge (u,v) can shorten v's distance (dist[u]+1 < dist[v]),\nrecompute BFS from v (with the new edge) and patch the affected subtree.\nDeletion: if the deleted edge is the tree edge of v, recompute BFS from v\n(restricted to the old subtree) and patch.\nOtherwise the BFS tree is unchanged and no work is done.\n\"\"\"\n\n\ndef _bfs_from(start, adj, dist, parent, start_dist=None, start_parent=None):\n    \"\"\"BFS from `start` using `adj`, but never going to a vertex w with\n    dist[w] < dist[start] (those are already settled at smaller distance).\n    Returns (dist, parent) for the affected region: dist[w] is the new BFS\n    distance for vertices in the affected region, parent[w] the new parent.\n    Vertices not reached keep their old values (caller handles).\n\n    If start_dist is None, the caller must have already set dist[start] to\n    start's new distance. If start_dist == -1, start is unreachable and is\n    not enqueued (its out-neighbors are not reached through it).\n    \"\"\"\n    if start_dist is None:\n        start_dist = dist[start]\n        start_parent = parent[start]\n    new_dist = {}\n    new_parent = {}\n    if start_dist != -1:\n        new_dist[start] = start_dist\n        new_parent[start] = start_parent\n    queue = [start] if start_dist != -1 else []\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        du = new_dist[u]\n        for w in adj[u]:\n            if w in new_dist:\n                continue\n            if dist[w] != -1 and dist[w] < start_dist:\n                # settled at a strictly smaller distance; cannot be affected\n                continue\n            if dist[w] != -1 and dist[w] <= du + 1:\n                # already at distance <= du+1; a BFS from start cannot improve\n                # it (any path through start has length >= d0 + (du+1-d0) = du+1)\n                continue\n            new_dist[w] = du + 1\n            new_parent[w] = u\n            queue.append(w)\n    # If start is unreachable, any vertex reached through it is also\n    # unreachable; mark them all as such so the caller can patch them.\n    if start_dist == -1:\n        for w in new_dist:\n            new_dist[w] = -1\n            new_parent[w] = None\n    return new_dist, new_parent\n\n\ndef _mark_unreachable(v, adj, dist, parent):\n    \"\"\"Mark v and every vertex whose only paths from the root went through v\n    as unreachable. Returns (new_dist, new_parent) for the patch, where\n    every entry has dist -1 and parent None.\n    \"\"\"\n    new_dist = {v: -1}\n    new_parent = {v: None}\n    queue = [v]\n    head = 0\n    while head < len(queue):\n        u = queue[head]\n        head += 1\n        for w in adj[u]:\n            if w in new_dist:\n                continue\n            if dist[w] == -1:\n                continue\n            if parent[w] != u:\n                # w has a different parent; it may still be reachable via\n                # that parent (or another in-neighbor), so do not mark it.\n                continue\n            new_dist[w] = -1\n            new_parent[w] = None\n            queue.append(w)\n    # After marking, some descendants may still be reachable via in-neighbors\n    # outside the marked set (e.g., a cycle back to an ancestor). Run a BFS\n    # from each such vertex to propagate reachability to its descendants.\n    for w in list(new_dist.keys()):\n        if dist[w] == -1:\n            # check if w has an in-neighbor with a valid distance\n            for a in range(len(dist)):\n                if dist[a] != -1 and w in adj[a]:\n                    # w is reachable at dist[a]+1\n                    new_dist[w] = dist[a] + 1\n                    new_parent[w] =  ...[3469 chars]"
+    }
+  ]
+}
