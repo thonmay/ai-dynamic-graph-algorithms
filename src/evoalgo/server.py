@@ -1,9 +1,12 @@
 """Web UI server: run list, candidate files, live event stream, control.
 
-Binds to 127.0.0.1 by default and has no authentication: access is expected
-through an SSH port-forward. Requests that carry a browser Origin header from
-a non-local site are refused, so a web page open in the same browser cannot
-steer or launch runs.
+Binds to 127.0.0.1 by default. Loopback is not a trust boundary on a shared
+host (every local user can connect), so every /api request and the websocket
+need an access token: generated at start-up, printed once as a link
+(``/?token=...``) that sets an HttpOnly cookie; scripts send it as
+``Authorization: Bearer <token>``. Requests that carry a browser Origin header
+from a non-local site are refused as well, so a web page open in the same
+browser cannot steer or launch runs.
 
 Websocket protocol (``/api/runs/{run_id}/ws?from=N``):
   server -> client  first {"type": "pending", "commands": [...]} (commands not
@@ -19,6 +22,7 @@ Websocket protocol (``/api/runs/{run_id}/ws?from=N``):
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 import re
@@ -30,6 +34,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -55,11 +60,37 @@ MAX_FILE_BYTES = 200_000
 POLL_SECONDS = 0.5
 
 
-def _origin_ok(origin: str | None) -> bool:
-    """Allow non-browser clients (no Origin) and pages served from localhost."""
+def _origin_ok(origin: str | None, host: str | None = None) -> bool:
+    """Allow non-browser clients (no Origin) and pages of this server only.
+
+    The port counts: a page another local user serves on localhost:9999 is a
+    different origin, though cookies (and SameSite) ignore the port.
+    """
     if not origin:
         return True
-    return urlsplit(origin).hostname in LOCAL_HOSTS
+    parts = urlsplit(origin)
+    if parts.hostname not in LOCAL_HOSTS:
+        return False
+    return host is None or parts.netloc == host
+
+
+TOKEN_COOKIE = "evoalgo_token"  # + "_<port>": one cookie per server
+UNAUTHORIZED = "missing or wrong access token: open the link printed by `evoalgo ui`"
+
+
+def _token_ok(expected: str, given: str | None) -> bool:
+    return given is not None and hmac.compare_digest(expected.encode(), given.encode())
+
+
+def _request_token_ok(expected: str, conn: Request | WebSocket) -> bool:
+    """Cookie (browser) or ``Authorization: Bearer`` (scripts)."""
+    auth = conn.headers.get("authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else None
+    return _token_ok(expected, conn.cookies.get(_cookie_name(conn))) or _token_ok(expected, bearer)
+
+
+def _cookie_name(conn: Request | WebSocket) -> str:
+    return f"{TOKEN_COOKIE}_{conn.url.port or 80}"
 
 
 def _read_capped(path: Path) -> str | None:
@@ -118,11 +149,27 @@ def agent_options() -> dict[str, Any]:
 
 
 def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
-               packs_root: Path | str | None = None) -> FastAPI:
+               packs_root: Path | str | None = None, token: str | None = None) -> FastAPI:
+    """The app. ``token`` None disables the access check (tests only)."""
     root = Path(runs_root).resolve()
     if packs_root is None:
         from .packs import DEFAULT_PROBLEMS_ROOT as packs_root
     app = FastAPI(title="evoalgo", docs_url=None, redoc_url=None)
+
+    if token is not None:
+        @app.middleware("http")
+        async def require_token(request: Request, call_next):
+            if request.query_params.get("token") is not None and request.url.path == "/":
+                # The link printed at start-up: trade the query token for a
+                # cookie and drop it from the address bar.
+                if not _token_ok(token, request.query_params.get("token")):
+                    return JSONResponse({"detail": UNAUTHORIZED}, status_code=401)
+                response = RedirectResponse("/", status_code=303)
+                response.set_cookie(_cookie_name(request), token, httponly=True, samesite="strict")
+                return response
+            if request.url.path.startswith("/api") and not _request_token_ok(token, request):
+                return JSONResponse({"detail": UNAUTHORIZED}, status_code=401)
+            return await call_next(request)
 
     def run_dir_for(run_id: str) -> Path:
         if not RUN_ID.match(run_id):
@@ -181,7 +228,7 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
 
     @app.post("/api/runs", status_code=201)
     def launch(req: LaunchRequest, request: Request) -> dict[str, Any]:
-        if not _origin_ok(request.headers.get("origin")):
+        if not _origin_ok(request.headers.get("origin"), request.headers.get("host")):
             raise HTTPException(403, "cross-site request refused")
         if (req.pack is None) == (req.config is None):
             raise HTTPException(422, "give exactly one of 'pack' or 'config'")
@@ -242,7 +289,8 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
     @app.websocket("/api/runs/{run_id}/ws")
     async def stream(websocket: WebSocket, run_id: str,
                      since: int = Query(0, alias="from", ge=0)) -> None:
-        if not _origin_ok(websocket.headers.get("origin")):
+        if not _origin_ok(websocket.headers.get("origin"), websocket.headers.get("host")) or (
+                token is not None and not _request_token_ok(token, websocket)):
             await websocket.close(code=1008)
             return
         try:

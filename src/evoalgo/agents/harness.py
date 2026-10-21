@@ -26,6 +26,34 @@ from .prompts import system_prompt, task_message
 
 ROLE_AGENT = {"generate": "generator_agent", "repair": "repairer_agent", "reflect": "reflector_agent"}
 
+# Environment a coding-agent harness gets: an allow-list, so the API keys and
+# passwords of unrelated tools in the user's shell are not handed to the agent
+# (whose tool outputs are recorded) or to the model provider. Each harness
+# also gets the variables it needs for its own model access.
+BASE_ENV = ("HOME", "USER", "LOGNAME", "PATH", "SHELL", "TERM", "LANG", "TZ", "TMPDIR",
+            "LD_LIBRARY_PATH", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
+            "REQUESTS_CA_BUNDLE", "http_proxy", "https_proxy", "no_proxy",
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "CURL_CA_BUNDLE", "NODE_OPTIONS",
+            "ELAN_HOME", "LEAN_PROJECT", "EVOALGO_SANDBOX")
+BASE_ENV_PREFIXES = ("LC_", "XDG_")
+# Per harness: (names, prefixes) it needs for its own model access.
+HARNESS_ENV = {
+    # enlcode/opencode read the EricAI token from its file, not the environment.
+    "enlcode": (("ENLCODE_PATH", "ENLCODE_HOME", "ERICAI_TOKEN_FILE", "ERICAI_CA_CERT",
+                 "ERICAI_CA_CERT_PATH", "ERICAI_BASE_URL", "ERICAI_AUTHRECORD"), ("OPENCODE_",)),
+    "claude": (("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_MODEL", "CLAUDE_CONFIG_DIR"), ("CLAUDE_CODE_",)),
+    "codex": (("OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"), ("CODEX_",)),
+}
+
+
+def harness_env(harness: str, **overrides: str) -> dict[str, str]:
+    """The allow-listed environment for ``harness`` plus ``overrides``."""
+    names, prefixes = HARNESS_ENV.get(harness, ((), ()))
+    keep, prefixes = set(BASE_ENV) | set(names), BASE_ENV_PREFIXES + prefixes
+    env = {k: v for k, v in os.environ.items() if k in keep or k.startswith(prefixes)}
+    return env | overrides
+
 
 class HarnessBackend:
     name = "harness"
@@ -54,7 +82,7 @@ class HarnessBackend:
         result = CallResult(ok=False)
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout,
-                                  cwd=self.run_dir)
+                                  cwd=self.run_dir, env=harness_env(self.name))
             entry.update(returncode=proc.returncode, stderr=proc.stderr[-4000:])
             result.summary, result.usage = self.parse(proc.stdout)
             if proc.returncode != 0:

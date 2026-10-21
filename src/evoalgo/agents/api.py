@@ -72,6 +72,22 @@ ERICAI_REFRESH_MARGIN_SECONDS = 600
 ERICAI_CLI = Path.home() / "ericai-venv" / "bin" / "ericai"
 
 
+def _safe_error(e: Exception) -> str:
+    """An error description for logs and the (committed) call log.
+
+    Auth errors (401/403/407) carry a response body in which some providers
+    echo part of the key, so for those only the type, status and the
+    provider's error code are kept. Other errors keep their message (e.g. a
+    400 for an over-long context).
+    """
+    status = getattr(e, "status_code", None)
+    if status is None or status not in (401, 403, 407):
+        return f"{type(e).__name__}: {e}"[:1000]
+    body = getattr(e, "body", None)
+    code = body.get("code") or body.get("type") if isinstance(body, dict) else None
+    return f"{type(e).__name__} (HTTP {status}{f', {code}' if isinstance(code, str) else ''})"
+
+
 def _jwt_seconds_left(token: str) -> float | None:
     """Seconds until a JWT's ``exp``, or None if it is not a readable JWT."""
     import base64
@@ -120,7 +136,9 @@ def refresh_ericai_token(force: bool = False) -> bool:
                            "--ericsson-access-token` interactively once", proc.returncode)
             return False
         tmp = ERICAI_TOKEN_FILE.with_name(ERICAI_TOKEN_FILE.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        tmp.unlink(missing_ok=True)  # O_EXCL: never reuse a file someone else created
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.fchmod(fd, 0o600)  # independent of the umask
         with os.fdopen(fd, "w") as f:
             f.write(f"export ERICAI_ACCESS_TOKEN={token}\n")
         os.replace(tmp, ERICAI_TOKEN_FILE)
@@ -243,8 +261,8 @@ class ApiBackend:
             else:
                 result.error = f"step limit ({self.max_steps}) reached"
         except Exception as e:  # network, auth, malformed response: one failed call, not a failed run
-            logger.error("api backend call failed: %s", e)
-            result.error = f"{type(e).__name__}: {e}"[:1000]
+            result.error = _safe_error(e)
+            logger.error("api backend call failed: %s", result.error)
         result.ok = task.output_path.is_file()
         result.usage = usage
         entry.update(

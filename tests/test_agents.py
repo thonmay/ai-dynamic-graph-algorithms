@@ -337,3 +337,26 @@ def test_resume_keeps_call_count(tmp_path):
     calls = [e for e in read_events(tmp_path / "r") if e["type"] == "agent_call_end"]
     assert first["model_calls"] > 0
     assert second["model_calls"] == len(calls) > first["model_calls"]
+
+
+def test_api_error_text_drops_response_body():
+    from evoalgo.agents.api import _safe_error
+
+    class AuthenticationError(Exception):
+        status_code = 401
+        body = {"message": "Incorrect API key provided: sk-abc...wxyz", "code": "invalid_api_key"}
+
+    text = _safe_error(AuthenticationError("Error code: 401 - Incorrect API key provided: sk-abc...wxyz"))
+    assert text == "AuthenticationError (HTTP 401, invalid_api_key)" and "sk-" not in text
+    assert _safe_error(TimeoutError("read timed out")) == "TimeoutError: read timed out"
+
+
+def test_harness_env_is_allow_listed(monkeypatch):
+    from evoalgo.agents.harness import harness_env
+    monkeypatch.setenv("GERRIT_PASSWORD", "x")
+    monkeypatch.setenv("ERICAI_ACCESS_TOKEN", "x")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    env = harness_env("enlcode", TMPDIR="/scratch")
+    assert "GERRIT_PASSWORD" not in env and "ERICAI_ACCESS_TOKEN" not in env
+    assert "ANTHROPIC_API_KEY" not in env and env["TMPDIR"] == "/scratch" and "HOME" in env
+    assert "ANTHROPIC_API_KEY" in harness_env("claude")

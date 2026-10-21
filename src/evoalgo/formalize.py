@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .agents.harness import harness_env
 from .config import RunConfig
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,8 @@ def _dispatch_agent(
         cmd.extend(["-m", model])
     cmd.append(task)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              env=harness_env("enlcode"))
         return proc.returncode, proc.stdout + "\n" + proc.stderr, None
     except FileNotFoundError:
         return -1, "", f"enlcode binary not found at {enlcode}"

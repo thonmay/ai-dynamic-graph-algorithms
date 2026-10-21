@@ -37,7 +37,9 @@ nohup evoalgo start runs/my_bfs.yaml --run-id my_bfs > runs/my_bfs.log 2>&1 &
 A run of this size takes 20 to 40 minutes plus up to 12 minutes of final
 grading. The web UI also starts and shows runs; it is a server, so start it
 in the background (`nohup evoalgo ui --runs runs --port 8765 > runs/ui.log 2>&1 &`)
-or leave it to the user. It listens on 127.0.0.1 without authentication.
+or leave it to the user. It listens on 127.0.0.1 and needs an access token:
+with output redirected it writes the link to `runs/.ui-link` (mode 600). Tell
+the user where the link is; do not print or repeat the token.
 
 ## Watch and steer
 

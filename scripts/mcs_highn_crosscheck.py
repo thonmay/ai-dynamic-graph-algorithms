@@ -23,7 +23,7 @@ A single failure prints the counterexample and exits non-zero.
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import os
 import random
 import sys
 from pathlib import Path
@@ -32,9 +32,12 @@ import numpy as np
 
 
 def load_candidate(path: Path):
-    spec = importlib.util.spec_from_file_location("candidate", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    """The candidate as a module; its source comes from stdin when this
+    script runs re-executed inside the sandbox jail (see main)."""
+    import types
+    src = sys.stdin.read() if os.environ.get("_EVOALGO_IN_JAIL") else path.read_text()
+    mod = types.ModuleType("candidate")
+    exec(compile(src, str(path), "exec"), mod.__dict__)
     for fn in ("init", "insert_edge", "delete_edge"):
         if not hasattr(mod, fn):
             raise AttributeError(f"candidate missing {fn}")
@@ -98,9 +101,19 @@ def main() -> int:
     args = ap.parse_args()
 
     cand_path = Path(args.candidate)
-    if not cand_path.exists():
-        print(f"candidate not found: {cand_path}", file=sys.stderr)
-        return 2
+    if not os.environ.get("_EVOALGO_IN_JAIL"):
+        # The candidate is LLM-written: re-run this script in the sandbox jail.
+        if not cand_path.exists():
+            print(f"candidate not found: {cand_path}", file=sys.stderr)
+            return 2
+        import subprocess
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from evoalgo.sandbox import jailed_python
+        script = Path(__file__).resolve()
+        prefix, env = jailed_python(readonly=(str(script.parent),))
+        env["_EVOALGO_IN_JAIL"] = "1"
+        return subprocess.run(prefix + ["-I", "-B", str(script), *sys.argv[1:]],
+                              input=cand_path.read_text(), text=True, env=env).returncode
     cand = load_candidate(cand_path)
     rng = random.Random(args.seed)
 

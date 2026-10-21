@@ -210,8 +210,11 @@ def test_launch(client, runs, monkeypatch):
                                           "run_id": "../x"}).status_code == 422
     r = client.post("/api/runs", json={"config": "bare/config.yaml", "run_id": "new_run",
                                        "max_generations": 2},
-                    headers={"origin": "http://127.0.0.1:8765"})
+                    headers={"origin": "http://127.0.0.1:8765", "host": "127.0.0.1:8765"})
     assert r.status_code == 201 and r.json()["run_id"] == "new_run"
+    other_port = client.post("/api/runs", json={"config": "bare/config.yaml", "run_id": "x2"},
+                             headers={"origin": "http://127.0.0.1:9999", "host": "127.0.0.1:8765"})
+    assert other_port.status_code == 403  # another local server is another origin
     cmd = calls[0]
     assert cmd[-2:] == ["--run-id", "new_run"] and cmd[2] == "evoalgo.cli"
     saved = (runs / ".launch" / "new_run.yaml").read_text()
@@ -246,3 +249,23 @@ def test_launch_with_api_endpoint(client, runs, monkeypatch):
                 {"provider": "enlcode", "endpoint": "ericai"},
                 {"provider": "mock"}):
         assert client.post("/api/runs", json={"pack": "dynamic_bfs", **bad}).status_code == 422, bad
+
+
+def test_access_token(runs):
+    from starlette.websockets import WebSocketDisconnect as WSDisconnect
+    app = server.create_app(runs, static_dir=None, token="s3cret-token")
+    anon = TestClient(app)
+    assert anon.get("/api/runs").status_code == 401
+    assert anon.get("/api/runs", headers={"authorization": "Bearer wrong"}).status_code == 401
+    assert anon.get("/?token=wrong", follow_redirects=False).status_code == 401
+    with pytest.raises(WSDisconnect):
+        with anon.websocket_connect("/api/runs/bare/ws") as ws:
+            ws.receive_json()
+    assert anon.get("/api/runs", headers={"authorization": "Bearer s3cret-token"}).status_code == 200
+    browser = TestClient(app)
+    r = browser.get("/?token=s3cret-token", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert "httponly" in r.headers["set-cookie"].lower()
+    assert browser.get("/api/runs").status_code == 200  # cookie from now on
+    with browser.websocket_connect("/api/runs/bare/ws") as ws:
+        assert ws.receive_json()["type"] == "pending"

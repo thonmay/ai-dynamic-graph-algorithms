@@ -2,16 +2,21 @@
 
 Executes candidate algorithms in a subprocess with:
   - wall-clock timeout
-  - restricted environment (no PATH pollution)
-  - stdout/stderr capture
-  - structured result output
+  - a Linux namespace jail (see _jail_argv): no network, its own pid
+    namespace, a read-only file tree holding only the interpreter and its
+    import paths, so no home directory, token files or /proc/<pid>/environ
+    of the verifier
+  - a scrubbed environment and an isolated interpreter (-I)
+  - structured result output (JSON over stdout)
 
-The candidate module is imported and its init/insert_edge/delete_edge are
-called in the subprocess. The result (state or exception) is returned
-as a structured record via JSON over stdout.
+The candidate source is sent in the input; its init/insert_edge/delete_edge
+are called in the subprocess.
 
-Trust boundary: candidate code never sees the verifier, test graphs, or
-oracle. It only receives adjacency matrices and edge tuples.
+Trust boundary: candidate code is untrusted (LLM-written). It never sees the
+verifier, test graphs or oracle, only adjacency matrices and edge tuples, and
+it cannot reach the user's files, credentials or the network. Where the jail
+is unavailable (not Linux, user namespaces disabled) the sandbox refuses to
+run unless EVOALGO_SANDBOX=none is set.
 
 Batched execution: all test cases for a candidate are sent to a single
 subprocess. This avoids paying ~160ms Python startup cost per test case,
@@ -25,8 +30,8 @@ import json
 import os
 import signal
 import subprocess
+import shutil
 import sys
-import tempfile
 import textwrap
 import traceback
 from pathlib import Path
@@ -34,22 +39,159 @@ from typing import Any
 
 import numpy as np
 
-# Runner script that executes inside the subprocess
-def _runner_file() -> str:
-    """The runner script, written once per process and content (not per call).
+# -- jail ---------------------------------------------------------------------
+#
+# Candidate code is LLM-written and runs as the user, so an environment scrub
+# alone is not enough: it could read /proc/<ppid>/environ (the verifier holds
+# the user's API keys), ~/.ericai_token_env or ~/.netrc, open sockets, or
+# patch the verifier. The jail uses unprivileged user namespaces only (no
+# root, no extra packages):
+#
+#   unshare -rnmpf    new user (mapped to root inside), net (loopback only,
+#                     down), mount and pid namespaces
+#   mount script      bind the host tree at /mnt, hide /home, /proj, /tmp,
+#                     /local, /repo and the run/session dirs behind tmpfs,
+#                     bind back only the interpreter's import paths, make the
+#                     whole tree read-only (mount_setattr AT_RECURSIVE),
+#                     fresh /proc and /tmp, pivot_root into it
+#   unshare -U        a second user namespace mapped back to the real uid, so
+#                     the candidate keeps no capabilities over its mounts
+#
+# The candidate source travels in the JSON input, not as a path, so the run
+# directory is never visible inside.
 
-    A per-call temp file was left behind whenever the parent was killed
-    (timeouts, Ctrl-C), hundreds per run. One file per process and template
-    version, overwritten atomically, leaves at most one.
+JAIL_ENV = "EVOALGO_SANDBOX"  # "none" disables the jail (not recommended)
+# Host directories hidden behind an empty tmpfs: user data, shared NFS, temp,
+# and /run (host daemon sockets: nscd answers DNS, dbus, systemd; a unix
+# socket can be connected on a read-only mount, so it must not be visible).
+HIDDEN_DIRS = ("/home", "/proj", "/tmp", "/var/tmp", "/local", "/repo", "/root",
+               "/run", "/dev/shm", "/var/spool", "/var/opt", "/net", "/mnt", "/media",
+               "/srv", "/afs")
+
+_JAIL_SCRIPT = r'''
+set -e
+uid=$1; gid=$2; shift 2
+r=/mnt
+mount --rbind / "$r"
+while [ "$1" != "--keep" ]; do
+  # Not through a symlink: it would resolve against the host root.
+  if [ -d "$r$1" ] && [ ! -L "$r$1" ]; then mount -t tmpfs -o size=1m,mode=755 none "$r$1"; fi
+  shift
+done
+shift
+while [ "$1" != "--" ]; do
+  mkdir -p "$r$1"
+  mount --rbind "$1" "$r$1"
+  shift
+done
+shift
+"$1" -I -S -c "$_EVOALGO_RDONLY" "$r"
+mount -t tmpfs -o size=64m,mode=1777 none "$r/tmp"
+mount -t proc proc "$r/proc"
+cd "$r"
+mkdir tmp/.old
+pivot_root . tmp/.old
+umount -l /tmp/.old
+rmdir /tmp/.old
+cd /
+# --fork: the candidate is not pid 1 (pid 1 ignores signals it has no handler for).
+exec unshare -U --fork --kill-child --map-user="$uid" --map-group="$gid" -- "$@"
+'''
+
+# Recursive read-only remount. util-linux's ro=recursive does not apply to
+# submounts on every version; mount_setattr(2) with AT_RECURSIVE does.
+_RDONLY_SRC = r'''
+import ctypes, os, sys
+class A(ctypes.Structure):
+    _fields_ = [("set", ctypes.c_uint64), ("clr", ctypes.c_uint64),
+                ("prop", ctypes.c_uint64), ("userns", ctypes.c_uint64)]
+libc = ctypes.CDLL(None, use_errno=True)
+a = A(1, 0, 0, 0)  # MOUNT_ATTR_RDONLY
+if libc.syscall(442, -100, sys.argv[1].encode(), 0x8000, ctypes.byref(a), ctypes.sizeof(a)):
+    sys.exit("mount_setattr: " + os.strerror(ctypes.get_errno()))
+'''
+
+
+def _under(path: str, roots: list[str] | tuple[str, ...]) -> bool:
+    return any(path == r or path.startswith(r.rstrip("/") + "/") for r in roots)
+
+
+def _keep_paths(python: str) -> list[str]:
+    """Hidden directories the interpreter needs back: its prefixes (venv and
+    base install). Import-path entries outside them (an editable install's
+    source tree, user site) stay hidden; the runner only needs numpy."""
+    probe = ("import json, sys; print(json.dumps([sys.prefix, sys.base_prefix, "
+             "sys.exec_prefix, sys.base_exec_prefix]))")
+    out = subprocess.run([python, "-I", "-c", probe], capture_output=True, text=True,
+                         timeout=30, env={"PATH": "/usr/bin:/bin"}, check=True).stdout
+    paths: set[str] = set()
+    for p in json.loads(out):
+        for candidate in (os.path.normpath(p), os.path.realpath(p)):
+            if os.path.isdir(candidate) and _under(candidate, HIDDEN_DIRS):
+                paths.add(candidate)
+    kept: list[str] = []
+    for p in sorted(paths):  # parents sort first; skip what a parent covers
+        if not _under(p, kept):
+            kept.append(p)
+    return kept
+
+
+_JAIL_CACHE: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+
+
+def _jail_prefix(python: str, readonly: tuple[str, ...] = ()) -> list[str] | None:
+    """argv prefix that runs ``python`` in the jail, or None when disabled.
+
+    ``readonly``: extra host directories to expose read-only (trusted code
+    such as the repo's ``src`` for a script that imports evoalgo; never a
+    directory holding credentials).
+
+    Raises RuntimeError if the jail is wanted but does not work here: failing
+    closed, since running candidates unconfined exposes the user's secrets.
     """
-    import hashlib
-    digest = hashlib.sha256(_RUNNER_TEMPLATE.encode()).hexdigest()[:12]
-    path = Path(tempfile.gettempdir()) / f"evoalgo_runner_{os.getuid()}_{digest}.py"
-    if not path.is_file() or path.read_text() != _RUNNER_TEMPLATE:
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(_RUNNER_TEMPLATE)
-        os.replace(tmp, path)
-    return str(path)
+    if os.environ.get(JAIL_ENV) == "none":
+        return None
+    key = (python, tuple(sorted(os.path.realpath(p) for p in readonly)))
+    if key not in _JAIL_CACHE:
+        hint = f"set {JAIL_ENV}=none to run candidates unconfined at your own risk"
+        if not sys.platform.startswith("linux") or not shutil.which("unshare"):
+            raise RuntimeError(f"the sandbox needs Linux user namespaces (unshare); {hint}")
+        try:
+            keep = sorted(set(_keep_paths(python)) | set(key[1]))
+            keep = [p for i, p in enumerate(keep) if not _under(p, keep[:i])]
+            prefix = _jail_argv(python, keep)
+            probe = subprocess.run(prefix + ["-I", "-c", "import numpy; print('ok')"],
+                                   capture_output=True, text=True, timeout=60, env=_jail_env())
+        except (OSError, subprocess.SubprocessError) as e:
+            raise RuntimeError(f"the sandbox jail does not start ({type(e).__name__}); {hint}") from e
+        if probe.stdout.strip() != "ok":
+            raise RuntimeError(f"the sandbox jail does not start "
+                               f"({(probe.stderr or '').strip()[-300:]}); {hint}")
+        _JAIL_CACHE[key] = prefix
+    return _JAIL_CACHE[key]
+
+
+def jailed_python(readonly: tuple[str, ...] = (), python: str | None = None) -> tuple[list[str], dict[str, str]]:
+    """(argv prefix, env) to run untrusted code with this interpreter in the
+    jail, for scripts outside the verifier (benchmarks, cross-checks).
+    Append ``["-I", "-B", "-c", source, ...]`` or a script path inside
+    ``readonly``."""
+    python = python or sys.executable
+    prefix = _jail_prefix(python, readonly)
+    if prefix is None:
+        return [python], {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"}
+    return prefix, _jail_env()
+
+
+def _jail_argv(python: str, keep: list[str]) -> list[str]:
+    hidden = sorted({d for h in HIDDEN_DIRS for d in (h, os.path.realpath(h))})
+    return ["unshare", "-rnmpf", "--kill-child", "sh", "-c", _JAIL_SCRIPT, "jail",
+            str(os.getuid()), str(os.getgid()), *hidden, "--keep", *keep, "--", python]
+
+
+def _jail_env() -> dict[str, str]:
+    return {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": "/nonexistent", "LANG": "C.UTF-8",
+            "_EVOALGO_RDONLY": _RDONLY_SRC}
 
 
 _RUNNER_TEMPLATE = textwrap.dedent('''
@@ -64,10 +206,14 @@ def run():
     test_cases = data["test_cases"]
     repeat = max(1, data.get("repeat", 20))
 
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("candidate", module_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    import linecache, types
+    src = data["module_src"]
+    # The file is not visible in the jail: give tracebacks its lines.
+    linecache.cache[module_path] = (len(src), None, src.splitlines(True), module_path)
+    mod = types.ModuleType("candidate")
+    mod.__file__ = module_path
+    sys.modules["candidate"] = mod
+    exec(compile(src, module_path, "exec"), mod.__dict__)
 
     for fn in ("init", "insert_edge", "delete_edge"):
         if not hasattr(mod, fn):
@@ -206,10 +352,9 @@ def _serialize(obj):
         return bool(obj)
     return obj
 
-if __name__ == "__main__":
-    result = run()
-    json.dump(result, sys.stdout)
-    sys.stdout.write("\\n")
+result = run()
+json.dump(result, sys.stdout)
+sys.stdout.write("\\n")
 ''').strip()
 
 
@@ -281,10 +426,10 @@ class Sandbox:
         module_path = Path(module_path)
         call_timeout = self.timeout if timeout is None else timeout
 
-        runner_path = _runner_file()
-
+        jail = _jail_prefix(self.python)  # outside the try: a jail failure is not the candidate's
         input_data = {
-            "module_path": str(module_path),
+            "module_path": str(module_path),  # only for tracebacks; the source is sent
+            "module_src": module_path.read_text(),
             "directed": self.directed,
             "offline_src": offline_src or "",
             "root": root,
@@ -293,20 +438,21 @@ class Sandbox:
         }
 
         try:
+            argv = (jail or [self.python]) + ["-I", "-B", "-c", _RUNNER_TEMPLATE]
             proc = subprocess.run(
-                [self.python, runner_path],
+                argv,
                 input=json.dumps(input_data),
                 capture_output=True,
                 text=True,
                 timeout=call_timeout,
-                env={
-                    "HOME": os.environ.get("HOME", "/tmp"),
-                    "PATH": "/usr/bin:/bin",
-                    "PYTHONPATH": "",
-                },
+                env=_jail_env() if jail else {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"},
             )
 
-            if proc.returncode == -signal.SIGKILL or proc.returncode == 137:
+            # Through unshare a SIGKILL of the candidate (OOM killer) shows as
+            # exit 1 with this message instead of -9/137.
+            killed = proc.returncode in (-signal.SIGKILL, 137) or (
+                jail and not proc.stdout and "sigprocmask unblock failed" in proc.stderr)
+            if killed:
                 return SandboxResult(status="timeout", error="Process killed (likely OOM)")
 
             if proc.returncode != 0 and not proc.stdout:

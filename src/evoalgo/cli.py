@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import tempfile
 import time
@@ -94,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     p_ui = subparsers.add_parser("ui", help="serve the web UI (launch, monitor, steer, replay)")
     p_ui.add_argument("--runs", default="runs", help="run directory root")
     p_ui.add_argument("--host", default="127.0.0.1",
-                      help="bind address (default loopback; the UI has no authentication)")
+                      help="bind address (default loopback; access needs the printed token link)")
     p_ui.add_argument("--port", type=int, default=8765)
 
     # events (event log maintenance)
@@ -315,11 +316,28 @@ def cmd_ui(args) -> int:
     if not runs.is_dir():
         print(f"Run directory root not found: {runs}")
         return 1
+    import secrets
     if args.host not in ("127.0.0.1", "localhost", "::1"):
-        print(f"WARNING: binding to {args.host}. The UI has no authentication; anyone who "
-              "can reach this port can launch and steer runs.")
-    print(f"evoalgo UI on http://{args.host}:{args.port}  (runs: {runs.resolve()})")
-    uvicorn.run(create_app(runs), host=args.host, port=args.port, log_level="warning")
+        print(f"WARNING: binding to {args.host}. The token is the only protection and "
+              "travels in clear HTTP; prefer loopback plus an SSH port-forward.")
+    token = secrets.token_urlsafe(32)
+    link = f"http://{args.host}:{args.port}/?token={token}"
+    print(f"evoalgo UI on http://{args.host}:{args.port} (runs: {runs.resolve()})", flush=True)
+    if sys.stdout.isatty():
+        print(f"open this link, it holds the access token:\n  {link}", flush=True)
+    else:
+        # stdout is a log file: keep the token out of it, in a file only the user can read.
+        link_file = runs / ".ui-link"
+        fd = os.open(link_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(link + "\n")
+        print(f"the access link is in {link_file.resolve()} (mode 600)", flush=True)
+    try:
+        uvicorn.run(create_app(runs, token=token), host=args.host, port=args.port, log_level="warning")
+    finally:
+        if not sys.stdout.isatty():
+            (runs / ".ui-link").unlink(missing_ok=True)  # the token dies with the server
     return 0
 
 

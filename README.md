@@ -67,6 +67,21 @@ Then ask the agent, for example: "Use the evoalgo skill to find a dynamic BFS
 algorithm for pack dynamic_bfs". Each session is a run in `runs/` and shows in
 `evoalgo ui`.
 
+## Security
+
+- API keys are read from environment variables (`OPENAI_API_KEY`,
+  `OPENROUTER_API_KEY`, or the variable named by `api_key_env`); only the
+  variable name is stored in run configs and logs.
+- Candidate code is LLM-written and runs in a Linux namespace jail (no
+  network, no home directory or token files, read-only file tree, own pid
+  namespace). It needs unprivileged user namespaces; without them the sandbox
+  refuses to run unless `EVOALGO_SANDBOX=none` is set.
+- Coding-agent harnesses get an allow-listed environment, not your full shell
+  environment.
+- `evoalgo ui` binds to 127.0.0.1 and needs the access token from the link it
+  prints at start-up (or writes to `runs/.ui-link`, mode 600, when output is
+  redirected); reach it from another machine through an SSH port-forward.
+
 ## Status
 
 Design phase. Code implementation is the next phase.

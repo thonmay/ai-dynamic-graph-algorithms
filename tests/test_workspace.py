@@ -208,5 +208,4 @@ def test_sandbox_leaves_no_temp_files(tmp_path, monkeypatch):
     from evoalgo.agents.examples import run_examples
     for _ in range(3):
         assert run_examples("dynamic_bfs", GOOD)["verdict"] == "PASS"
-    left = [p.name for p in tmp_path.iterdir()]
-    assert len(left) == 1 and left[0].startswith("evoalgo_runner_"), left
+    assert list(tmp_path.iterdir()) == []  # the runner is passed with -c, no file
