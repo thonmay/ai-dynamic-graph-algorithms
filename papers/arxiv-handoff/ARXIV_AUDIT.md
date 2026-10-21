@@ -1,7 +1,7 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-19 (`arxiv-r3/r7.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-21 (`arxiv-r3/r10.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
@@ -38,7 +38,7 @@ Warnings, classified:
 One raw `\iffalse` / `\fi` region (`ARXIV-METADATA-BEGIN` … `ARXIV-METADATA-END`) sits immediately before `\begin{document}`. Compile-tested; 14 fields. `ARXIV_METADATA.txt` is derived from it byte-for-byte by stripping the markers.
 
 - Abstract is **not** copy-paste-safe (contains `\emph`, `$P_4$`), so the region uses the expanded single-line `Abstract:` form. Scientific identity with the visible abstract confirmed (only macro/format expansion differs): `emph{}` → plain; `$P_4$` → `P_4`; `Lean~4` → `Lean 4`.
-- Comments page count reconciled from the extracted final ZIP (14 pages, 1 table).
+- Comments page count reconciled from the extracted final ZIP (15 pages, 1 table).
 
 ## 6. Category / classification decision
 
@@ -67,16 +67,16 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 
 20 `\cite` occurrences across the 15 works; each attribution checked against the source's hypotheses and scope. No retractions/corrections outstanding. The Corneil–Krueger incomparability claim and the brute-force witness (204/204, symmetric difference 40) are reproduced in the artifact README.
 
-## 10. External-artifact manifest (live verification, 2026-10-19)
+## 10. External-artifact manifest (live verification, 2026-10-21)
 
 | Field | Value |
 |---|---|
 | Repository | https://github.com/thonmay/mcs-lean (renamed from `thesis-lean`; the old URL answers 301 to the new one) |
 | Public (unauth) | HTTP 200 |
-| Pin | annotated tag `mcs-arxiv-v9` (Lean proof + docs + `scripts/stab.c`, `scripts/probe_check.py`, `scripts/prefix_hypothesis_count.py`); GitHub Release `mcs-arxiv-v9`; Software Heritage snapshot `swh:1:snp:8d0b366e1d03f3951b98118d86052e94cc57498c` (contains the tag) |
-| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v9^{}` → `ab521f20cf66548fd4202c78d7c468e8555b20e3` |
-| Palomar | v3 submission `um08gqgsunmk` from `ab521f2`: review `704cc036`, no blocking problems, no warnings; registration consented 2026-10-19T13:10Z and started (one transient retry). Earlier v3 attempts withdrawn: `7hz177t19zlj` (blocking: unproved 2P3 minimality wording), `4xtu7q8i9py2` (warning: README universal P3 claim); both fixed. |
-| Commit files reachable at pin | `README.md`, `comparator.json`, `formalization.yaml`, `lean-toolchain`, `AxiomAudit.lean`, `scripts/probe_check.py`, `scripts/prefix_hypothesis_count.py`: all 200 |
+| Pin | signed annotated tag `mcs-arxiv-v10` (Lean proof + docs + `scripts/stab.c`, `scripts/probe_check.py`, `scripts/prefix_hypothesis_count.py`); GitHub Release `mcs-arxiv-v10` (Latest; v9 and v7 retitled superseded; the template's `v4.35.0-rc2` release retitled "Toolchain bump ... (not a paper artifact)" and marked pre-release); Software Heritage revision `swh:1:rev:0d0ddffbcef5817c50a073a350428edd2da5bfb5` (API HTTP 200 after a save request) |
+| Tag dereference (unauth `git ls-remote`) | `mcs-arxiv-v10^{}` → `0d0ddffbcef5817c50a073a350428edd2da5bfb5`; differs from `ab521f2` only in `AxiomAudit.lean`, `scripts/check_axioms.sh`, `README.md` (CI green; aiserver lake build, defs-sync, axiom audit 41+6, leanchecker 20 modules) |
+| Palomar | v3 submission `um08gqgsunmk` from `ab521f2`: review `704cc036`, no blocking problems, no warnings; registration consented 2026-10-19T13:10Z; status `registration-paused` (operator attention) as of 2026-10-21, public v3 JSON 404. The paper cites v2 and states that v2 holds the every-vertex form of the two prefix theorems. Earlier v3 attempts withdrawn: `7hz177t19zlj` (blocking: unproved 2P3 minimality wording), `4xtu7q8i9py2` (warning: README universal P3 claim); both fixed. |
+| Commit files reachable at pin | `README.md`, `comparator.json`, `AxiomAudit.lean`, `scripts/check_axioms.sh`, `scripts/probe_check.py`, `scripts/prefix_hypothesis_count.py`: all 200 |
 | Role | Logically required (all theorems) |
 | Visible in paper | Yes (reproducibility paragraph, `sec:formalization`) |
 | In Comments | Yes |
@@ -85,26 +85,26 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (54201 B), `references.bib` (7954 B), `main.bbl` (5225 B). No build debris, no PDF, no code, no Lean sources, no audits.
-- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 14 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 44936 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (57962 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 15 pages, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 15 pages, 48021 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `1c454e59250c05bd7af1475867984393c8fac1127183beb801dcfec6c0d5ac7b`.
-- `archive-built.pdf` SHA-256: `70a0fcbd4de37856b4cec8d3a8ead717c17ff16ec4846c33e515c61d5e00b7cc`.
+- ZIP SHA-256: `8d29e71161f729331838adffa5bb628779ec773b9601ed8f3ac74d014d0dec65`.
+- `archive-built.pdf` SHA-256: `a64fdd1ac05757e110a82067b9c58198d9f78701537b6c7375b9c122456cb406`.
 
 ## 12. Rendered-PDF audit
 
-14 pages, letter, selectable text, fonts embedded (`pdffonts` 32/32 `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 551–557, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
+15 pages, letter, selectable text, fonts embedded (`pdffonts` 32/32 `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 575–579, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
 - Authors: Md Thoriqul Islam Thonmay (first), Gregory Morse. Both ELTE, Department of Programming Languages and Compilers. Author order unchanged. Submitter is the first author.
-- AI disclosure: visible unnumbered section; provider + exact model ID + thinking mode + role for all four models, plus the AI-agent origin of the internal review rounds and their check scripts; "No AI system is an author"; authors accept full responsibility. Divergence check (metadata line vs visible text) passes: the metadata field copies the visible paragraph verbatim.
+- AI disclosure: visible unnumbered section; provider + exact model ID + thinking mode + role for all four models, plus who produced the internal review rounds, `stab.c` and the $2P_3$ witness (second author, Claude Opus 5.5) and the probe and prefix-hypothesis scripts (first author, same model); "No AI system is an author"; authors accept full responsibility. Divergence check (metadata line vs visible text) passes: the metadata field copies the visible paragraph verbatim.
 - Rights: arXiv license CC BY 4.0 (author-confirmed); repository Apache-2.0; third-party deps (Lean 4, Mathlib) under their own licenses.
 
 ## 14. Checksums
 
-`main-upload.zip` SHA-256 above; `clean-build.bbl` and the in-ZIP `main.bbl` byte-identical (5225 B). Recompute after any further change.
+`main-upload.zip` SHA-256 above; `clean-build.bbl` and the in-ZIP `main.bbl` byte-identical (5557 B). Recompute after any further change.
 
 ## 15. Exact edits made this session
 
@@ -128,6 +128,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 13. (2026-10-19, Palomar v3 reviews) Obstruction minimality is now presented as a computer-search result, not a theorem (Theorem 3 note, introduction, artifact docstrings); the non-monotone break example is n=4 (the n=5 one was called minimal and was not); the README separates Lean theorems from paper-level and tested statements. Artifact re-pinned to `mcs-arxiv-v9` = `ab521f2` (Lean statements identical to v7; docstrings only). Software Heritage SWHID added.
 
 14. (2026-10-19, rendered-PDF review) All 14 pages rendered at 110 dpi and reviewed visually page by page, then re-reviewed after the fix. Found and fixed: a stranded first line at the bottom of the Related-work page and a single "2." line at the bottom of the obstructions page (now `\clubpenalty=\widowpenalty=10000` and two `$F$-degree~$2$` ties). Measured with `pdftotext -bbox`: no text line ends more than 2.1 pt past the 540 pt text edge (normal TeX tolerance; 0 lines beyond 543 pt); the Lean listing stays inside (max 537.4 pt). All 6 external links resolve (GitHub repo, two Palomar v2 URLs, arXiv 2604.12370) or are mailto; 89 internal links; 32/32 fonts embedded; `⟨ ⟩` and other Unicode glyphs in the listing render. Accepted as cosmetic: mid-name wraps of long monospace Lean identifiers in theorem headers, and the Theorem 14 header's loose line (the one underfull box).
+
+15. (2026-10-21, supervisor round 3) B1: Theorem 14 now states `exec_insert_update_eq`/`exec_delete_update_eq` exactly (both matrices symmetric and loop-free, `FlipOf`, canonical ordering of the *old* graph, deletion edge hypotheses; display equation). B2: bibliography corrected against Crossref/doi.org (Donald J. Rose, R. Endre Tarjan, George S. Lueker; Baswana et al. key `baswana2019dynamic`, DOI 10.1137/17M114306X; `{G}abow's ... Component`; Shiloach-Even author order; dynamic topological order now cites Pearce-Kelly JEA 2007 and Bender-Fineman-Gilbert-Tarjan TALG 2016 instead of Ramalingam-Reps; Morse-Kozsik described as BFS only, LexBFS left open, checked against the arXiv v1 text; stale "re-verified against Crossref" header replaced). B3: abstract and Sec. 8 say the external kernel re-check is at the pinned commit and that Palomar v2 holds the every-vertex form; v3 pending. 4.2/4.3: paragraph after Theorem 2 (lower bound at singleton prefixes forces E(G) in E(G'); hypothesis is not a practical test). 4.4: "combinatorial core/heart" replaced; AxiomAudit gains an AUX block for the six cited lemmas (artifact re-pinned to `mcs-arxiv-v10` = `0d0ddff`, statements byte-identical to v9). 4.5: Lemma 11 "justifies shrinking", executable still checks pos(v). 4.6: deletion proof covers S after pos(v), cites `legal_after_laterPos`. 4.7: abstract cost sentence dropped. Minor 1-6: review-response phrasing removed, "iff" -> "roughly when", cost item 4 "within one unit", probe preprocessing O(n log n)/O(n), appendix helper names pointed to `Challenge.lean`, SWHID is now a revision ID. ORCIDs not added. Subagent review of the diff: all items addressed and correct; three prose fixes applied. Visual review of all 15 pages: clean. Page count 14 -> 15.
 
 ## 16. Official policy sources
 
