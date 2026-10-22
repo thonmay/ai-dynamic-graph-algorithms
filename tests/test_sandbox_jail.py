@@ -45,6 +45,9 @@ def _probe():
     out["run_sockets"] = [n for n in ("/run/dbus/system_bus_socket", "/run/nscd/socket",
                                       "/run/systemd/journal/socket") if os.path.exists(n)]
     out["pid1"] = os.getpid() == 1
+    # Host data the candidate could copy into its result (which the LLM sees).
+    out["host_data"] = [d for d in ("/var/log", "/var/lib", "/opt", "/boot", "/etc/ssh")
+                        if os.path.isdir(d) and os.listdir(d)]
     return out
 def init(graph): return {"probe": _probe()}
 def insert_edge(graph, edge, state): return state
@@ -69,7 +72,8 @@ def test_candidate_cannot_reach_secrets_or_network(tmp_path, monkeypatch):
         probe = r.all_results[0][0]["results"][0]["state"]["probe"]
         assert probe == {"ppid_environ": "blocked", "leaky_procs": 0, "env": False,
                          "secret_file": False, "repo": False, "venv_write": "blocked",
-                         "net": "blocked", "dns": "blocked", "run_sockets": [], "pid1": False}
+                         "net": "blocked", "dns": "blocked", "run_sockets": [], "pid1": False,
+                         "host_data": []}
     finally:
         home_secret.unlink()
         (Path(sys.prefix) / "jail_test_write").unlink(missing_ok=True)
@@ -97,3 +101,36 @@ def test_killed_candidate_is_reported_as_kill_and_traceback_has_line(tmp_path):
     assert killed.status == "timeout" and "killed" in killed.error
     err = sb.execute_batch(cand, [{"graph": [[0, 0], [0, 0]], "sequences": [[]]}], repeat=1)
     assert err.all_results[0][0]["error"] == "KeyError: 0 at line 5: return {}[0]"
+
+
+FAKE_TIMING = """
+import builtins, json, time
+FAKE = '{"status": "ok", "all_results": []}'
+time.perf_counter_ns = lambda: 0
+builtins.range = lambda *a: iter([0])
+json.dump = lambda obj, f, **k: f.write(FAKE)
+json.dumps = lambda obj, **k: FAKE
+print("noise on stdout")
+_seen = {}
+def init(graph):
+    if id(graph) in _seen:
+        return _seen[id(graph)]
+    t = time.monotonic()
+    while time.monotonic() - t < 0.002:
+        pass
+    _seen[id(graph)] = s = {}
+    return s
+def insert_edge(graph, edge, state): return state
+def delete_edge(graph, edge, state): return state
+"""
+
+
+def test_candidate_cannot_fake_or_cache_its_timing(tmp_path):
+    """Patching the clock, range or json, printing to stdout, or caching by
+    graph object must not make a slow candidate look free or forge output."""
+    cand = tmp_path / "cand.py"
+    cand.write_text(FAKE_TIMING)
+    r = Sandbox(timeout_seconds=60).execute_batch(cand, [{"graph": [[0]], "sequences": [[]]}],
+                                                   repeat=5)
+    assert r.is_ok, (r.error, r.traceback_str)
+    assert r.all_results[0][0]["timings"][0] >= 1500  # microseconds per init

@@ -275,6 +275,36 @@ def insert_edge(graph, edge, state):
     return state
 ''',
     },
+    # D16: parent set to the earliest-discovered in-neighbour on the tree
+    # path instead of the vertex that discovered it (times still a real DFS)
+    "D16": {
+        "recompute": '''
+def _recompute(graph):
+    import sys
+    n = len(graph)
+    parent = {i: None for i in range(n)}
+    discover = {}
+    finish = {}
+    visited = set()
+    timer = [0]
+    path = []
+    sys.setrecursionlimit(10000)
+    def dfs(u):
+        visited.add(u)
+        discover[u] = timer[0]
+        timer[0] += 1
+        path.append(u)
+        for v in range(n):
+            if graph[u][v] == 1 and v not in visited:
+                parent[v] = next(a for a in path if graph[a][v] == 1)
+                dfs(v)
+        path.pop()
+        finish[u] = timer[0]
+        timer[0] += 1
+    dfs(0)
+    return {"parent": parent, "discover": discover, "finish": finish}
+''',
+    },
     # D9: descending neighbour order (EQUIVALENT control)
     "D9": {
         "recompute": '''
@@ -616,6 +646,11 @@ _FAULTS: list[dict] = [
      "fault_class": "missed update on insert",
      "counterexample": (2, [], ("insert", (0, 1))),
      "overrides": _DFS_FAULT_OVERRIDES["D15"], "is_equivalent": False},
+    {"id": "D16", "problem": "dynamic_dfs",
+     "description": "parent is a shallower tree ancestor, not the discovering vertex",
+     "fault_class": "wrong tree (valid times)",
+     "counterexample": (3, [(0, 1), (0, 2), (1, 2)], "init"),
+     "overrides": _DFS_FAULT_OVERRIDES["D16"], "is_equivalent": False},
     # ---- BFS ----
     {"id": "B1", "problem": "dynamic_bfs",
      "description": "missed update on delete (tree-edge deletion treated as no-op)",

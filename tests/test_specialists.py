@@ -121,3 +121,12 @@ def test_signature_without_failure_records_is_still_correctness():
     events = [committed(g, 0.8, 0.9) for g in (1, 2, 3)]
     kind, _ = specialists.signature(events, 1, specialists.best_history(events))
     assert kind == "correctness"
+
+
+def test_redone_generation_counts_specialist_candidates_once():
+    from evoalgo.specialists import specialists
+    ev = [{"type": "agent_spawned", "agent": "s1", "focus": "f", "gen": 2},
+          {"type": "candidate_generated", "role": "specialist", "agent": "s1", "id": "gen003_c01"},
+          # crash before gen 3's checkpoint; resume regenerates the same id
+          {"type": "candidate_generated", "role": "specialist", "agent": "s1", "id": "gen003_c01"}]
+    assert specialists(ev)[0].produced == ["gen003_c01"]

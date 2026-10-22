@@ -1,0 +1,238 @@
+{
+  "call_id": "call_0020",
+  "timestamp": "2026-10-22T09:54:27Z",
+  "backend": "api",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "type": "generate",
+  "candidate_id": "gen006_c01",
+  "messages_start": [
+    {
+      "role": "system",
+      "content": "You are the GENERATION role in an evolutionary search for dynamic graph algorithms. Produce one candidate algorithm and write it with `write_candidate`. You do not reflect, repair other candidates, or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the problem definition, research brief, run goal and any researcher hint in the task.\n2. If a parent candidate is given, derive your candidate from it: keep what works and change the part the goal or hint points at. If no parent is given, start from the offline algorithm and make it dynamic.\n3. Write the full module with `write_candidate`.\n4. Check it with `run_examples` (small public set). If it fails, fix the first failure with `edit_candidate` or a new `write_candidate`, then check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`. Each returns the new state.\n- `graph` is the current 0/1 adjacency matrix (list of lists, vertex ids 0..n-1) after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no `get_result()`, no imports beyond the Python standard library.\n- The maintained result (tree, ordering, partition, set) is part of the returned state, in the shape the problem definition describes.\n\n## Rules\n\n- Correct first, then cheaper: the hidden grade is correctness on every tested graph and update, then work relative to recomputing from scratch.\n- Prefer the smallest change that achieves the goal. Simpler code that is equally correct is better.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case, not just the examples.\n- If you are unsure about a graph-theory fact, say so in your report instead of guessing.\n\n## Report (final message, no tool call)\n\nCANDIDATE: <file written>\nAPPROACH: <one or two lines: idea and key data structures>\nEXAMPLES: <last run_examples verdict>\nNOTES: <assumptions or concerns, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: derive a NEW candidate from the parent below.\nOutput file: candidates/gen006_c01.py\n\nPARENT CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering (candidate gen002_c03).\n\nStrategy:\n- init: static partition-refinement LexBFS (HMPV), deterministic tie-break.\n- insert_edge / delete_edge: verify the existing ordering against the\n  (LB) 4-point property of Corneil & Krueger using bitmasks; if still\n  valid, keep it (no recompute).  Otherwise recompute from scratch.\n\nImprovement over parent: the adjacency bitmasks are cached in the state\nand updated incrementally (only the two rows of the flipped edge are\nrebuilt), so verification after an update costs O(n^3 / word) bit\noperations plus O(n) prefix-mask work, without re-scanning the whole\nadjacency matrix.\n\nCorrectness: the 4-point property is a necessary and sufficient condition\nfor an ordering to be a LexBFS ordering, so verification is exact.\n\"\"\"\n\n\ndef _row_mask(row):\n    mask = 0\n    for j, bit in enumerate(row):\n        if bit:\n            mask |= (1 << j)\n    return mask\n\n\ndef _adj_masks(graph):\n    return [_row_mask(graph[i]) for i in range(len(graph))]\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via partition refinement.  Returns ordering list.\"\"\"\n    n = len(graph)\n    if n == 0:\n        return []\n\n    # buckets: list of sets, forming a partition of remaining vertices\n    buckets = [set(range(n))]\n    order = []\n\n    for _ in range(n):\n        # Pick smallest vertex from first non-empty bucket\n        v = None\n        for B in buckets:\n            if B:\n                v = min(B)\n                break\n        if v is None:\n            break\n        order.append(v)\n\n        # Remove v from its bucket\n        for B in buckets:\n            if v in B:\n                B.discard(v)\n                break\n\n        # Refine: split each bucket by adjacency to v\n        new_buckets = []\n        for B in buckets:\n            if not B:\n                continue\n            B1 = set()\n            B2 = set()\n            for u in B:\n                if graph[u][v]:\n                    B1.add(u)\n                else:\n                    B2.add(u)\n            if B1:\n                new_buckets.append(B1)\n            if B2:\n                new_buckets.append(B2)\n        buckets = new_buckets\n\n    return order\n\n\ndef _is_valid_lexbfs(adj_mask, ordering):\n    \"\"\"Check (LB) 4-point property: for all positions a < b < c with\n    ac in E and ab not in E, exists d < a with db in E and dc not in E.\n\n    Uses bitmasks for O(n^3 / word_size) verification.\n    \"\"\"\n    n = len(ordering)\n    # prefix_mask[k] = bitmask of vertices at positions 0..k-1\n    prefix_mask = [0] * (n + 1)\n    for i in range(n):\n        prefix_mask[i + 1] = prefix_mask[i] | (1 << ordering[i])\n\n    for c in range(n):\n        vc = ordering[c]\n        adj_vc = adj_mask[vc]\n        for a in range(c):\n            va = ordering[a]\n            if not (adj_vc >> va) & 1:\n                continue  # ac not in E\n            # S = {d < a : dc not in E}\n            S = prefix_mask[a] & ~adj_vc\n            if S == 0:\n                # No witness possible; any b with ab not in E fails\n                adj_va = adj_mask[va]\n                for b in range(a + 1, c):\n                    vb = ordering[b]\n                    if not (adj_va >> vb) & 1:\n                        return False\n                continue\n            adj_va = adj_mask[va]\n            for b in range(a + 1, c):\n                vb = ordering[b]\n                if (adj_va >> vb) & 1:\n                    continue  # ab in E, no constraint\n                # Need some d in S with db in E\n                if (adj_mask[vb] & S) == 0:\n                    return False\n    return True\n\n\ndef init(graph):\n    n = len(graph)\n    ordering = _lexbfs(graph)\n    return {'ordering': ordering, 'adj_mask': _adj_masks(graph)}\n\n\ndef _update_adj_mask(graph, edge, state):\n    \"\"\"Return a fresh adj_mask list with the two rows of `edge` rebuilt.\"\"\"\n    u, v = edge\n    adj_mask = state.get('adj_mask')\n    if adj_mask is None or len(adj_mask) != len(graph):\n        adj_mask = _adj_masks(graph)\n    else:\n        adj_mask = list(adj_mask)\n    adj_mask[u] = _row_mask(graph[u])\n    adj_mask[v] = _row_mask(graph[v])\n    return adj_mask\n\n\ndef insert_edge(graph, edge, state):\n    adj_mask = _update_adj_mask(graph, edge, state)\n    ordering = state['ordering']\n    if _is_valid_lexbfs(adj_mask, ordering):\n        return {'ordering': ordering, 'adj_mask': adj_mask}\n    ordering = _lexbfs(graph)\n    return {'ordering': ordering, 'adj_mask': adj_mask}\n\n\ndef delete_edge(graph, edge, state):\n    adj_mask = _update_adj_mask(graph, edge, state)\n    ordering = state['ordering']\n    if _is_valid_lexbfs(adj_mask, ordering):\n        return {'ordering': ordering, 'adj_mask': adj_mask}\n    ordering = _lexbfs(graph)\n    return {'ordering': ordering, 'adj_mask': adj_mask}\n```\n\nMore context: read_file('pack/brief.md') has the full research brief.\n"
+    }
+  ],
+  "duration_s": 34.9,
+  "steps": 10,
+  "tool_calls": [
+    "read_file",
+    "run_examples",
+    "write_candidate",
+    "write_candidate",
+    "run_examples",
+    "edit_candidate",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples"
+  ],
+  "examples_runs": 3,
+  "usage": {
+    "prompt_tokens": 61899,
+    "completion_tokens": 4941
+  },
+  "ok": true,
+  "error": null,
+  "summary": "CANDIDATE: candidates/gen006_c01.py\nAPPROACH: Keep the parent's verify-then-recompute strategy (static HMPV LexBFS in init; after each update, check the old ordering against the (LB) 4-point property using cached adjacency bitmasks, recompute only on failure). The verification is restructured: for each (c, a) with ac in E, compute F = ∩_{d∈S} ~adj[d] incrementally over the bits of S = {d < a : dc ∉ E} (early-exit when F = 0), then a violation exists iff F intersects the mask B of b's in (a, c) with ab ∉ E — replacing the parent's per-b big-int AND loop with O(|S|) big-int ops plus one AND.\nEXAMPLES: PASS (26/26 public examples)\nNOTES: Correctness rests on the Corneil–Krueger 4-point property being necessary and sufficient for LexBFS validity (as stated in the brief); the check is exact, so no approximation. The B-mask scan is still O(c−a) Python iterations per (c, a) pair, so worst-case verification is O(n³) — same asymptotic as the parent, but with a smaller constant since the expensive big-int AND now happens |S| times instead of O(c−a) times. No full recompute occurs when the ordering survives the update.",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are the GENERATION role in an evolutionary search for dynamic graph algorithms. Produce one candidate algorithm and write it with `write_candidate`. You do not reflect, repair other candidates, or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the problem definition, research brief, run goal and any researcher hint in the task.\n2. If a parent candidate is given, derive your candidate from it: keep what works and change the part the goal or hint points at. If no parent is given, start from the offline algorithm and make it dynamic.\n3. Write the full module with `write_candidate`.\n4. Check it with `run_examples` (small public set). If it fails, fix the first failure with `edit_candidate` or a new `write_candidate`, then check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`. Each returns the new state.\n- `graph` is the current 0/1 adjacency matrix (list of lists, vertex ids 0..n-1) after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no `get_result()`, no imports beyond the Python standard library.\n- The maintained result (tree, ordering, partition, set) is part of the returned state, in the shape the problem definition describes.\n\n## Rules\n\n- Correct first, then cheaper: the hidden grade is correctness on every tested graph and update, then work relative to recomputing from scratch.\n- Prefer the smallest change that achieves the goal. Simpler code that is equally correct is better.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case, not just the examples.\n- If you are unsure about a graph-theory fact, say so in your report instead of guessing.\n\n## Report (final message, no tool call)\n\nCANDIDATE: <file written>\nAPPROACH: <one or two lines: idea and key data structures>\nEXAMPLES: <last run_examples verdict>\nNOTES: <assumptions or concerns, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: derive a NEW candidate from the parent below.\nOutput file: candidates/gen006_c01.py\n\nPARENT CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering (candidate gen002_c03).\n\nStrategy:\n- init: static partition-refinement LexBFS (HMPV), deterministic tie-break.\n- insert_edge / delete_edge: verify the existing ordering against the\n  (LB) 4-point property of Corneil & Krueger using bitmasks; if still\n  valid, keep it (no recompute).  Otherwise recompute from scratch.\n\nImprovement over parent: the adjacency bitmasks are cached in the state\nand updated incrementally (only the two rows of the flipped edge are\nrebuilt), so verification after an update costs O(n^3 / word) bit\noperations plus O(n) prefix-mask work, without re-scanning the whole\nadjacency matrix.\n\nCorrectness: the 4-point property is a necessary and sufficient condition\nfor an ordering to be a LexBFS ordering, so verification is exact.\n\"\"\"\n\n\ndef _row_mask(row):\n    mask = 0\n    for j, bit in enumerate(row):\n        if bit:\n            mask |= (1 << j)\n    return mask\n\n\ndef _adj_masks(graph):\n    return [_row_mask(graph[i]) for i in range(len(graph))]\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via partition refinement.  Returns ordering list.\"\"\"\n    n = len(graph)\n    if n == 0:\n        return []\n\n    # buckets: list of sets, forming a partition of remaining vertices\n    buckets = [set(range(n))]\n    order = []\n\n    for _ in range(n):\n        # Pick smallest vertex from first non-empty bucket\n        v = None\n        for B in buckets:\n            if B:\n                v = min(B)\n                break\n        if v is None:\n            break\n        order.append(v)\n\n        # Remove v from its bucket\n        for B in buckets:\n            if v in B:\n                B.discard(v)\n                break\n\n        # Refine: split each bucket by adjacency to v\n        new_buckets = []\n        for B in buckets:\n            if not B:\n                continue\n            B1 = set()\n            B2 = set()\n            for u in B:\n                if graph[u][v]:\n                    B1.add(u)\n                else:\n                    B2.add(u)\n            if B1:\n                new_buckets.append(B1)\n            if B2:\n       ...[2731 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-9cd428d326cb82d3",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"pack/brief.md\"}"
+          }
+        },
+        {
+          "id": "chatcmpl-tool-9f8874d8ff8ce1a9",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9cd428d326cb82d3",
+      "content": "# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9f8874d8ff8ce1a9",
+      "content": "error: no candidate written yet; call write_candidate first"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-914f0b362dd3aeb2",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering (candidate gen006_c01).\\n\\nStrategy:\\n- init: static partition-refinement LexBFS (HMPV), deterministic tie-break.\\n- insert_edge / delete_edge: verify the existing ordering against the\\n  (LB) 4-point property of Corneil & Krueger using bitmasks; if still\\n  valid, keep it (no recompute).  Otherwise recompute from scratch.\\n\\nImprovement over parent (gen002_c03): the verification is restructured so\\nthat the innermost loop is a single bitmask AND instead of a Python-level\\nloop over b.  For each (c, a) pair we precompute the set of b-positions\\nbetween a and c that are NOT adjacent to a (as a bitmask over vertex ids),\\nthen the 4-point condition for that (c, a) pair reduces to:\\n\\n    for every b in that set: (adj[b] & S) != 0\\n\\nwhich is checked by intersecting the \\\"bad-b\\\" mask with the union of\\nnon-neighbourhoods of the candidate witnesses.  Concretely, b fails iff\\nadj[b] & S == 0, i.e. b is in the intersection of ~adj[d] over d in S.\\nWe compute that intersection incrementally over d in S (S is usually small\\nin practice), and the whole check for a (c, a) pair is O(|S|) bit ops\\nplus one AND, instead of O(c - a) Python iterations.\\n\\nCorrectness: the 4-point property is a necessary and sufficient condition\\nfor an ordering to be a LexBFS ordering, so verification is exact.\\n\\\"\\\"\\\"\\n\\n\\ndef _row_mask(row):\\n    mask = 0\\n    for j, bit in enumerate(row):\\n        if bit:\\n            mask |= (1 << j)\\n    return mask\\n\\n\\ndef _adj_masks(graph):\\n    return [_row_mask(graph[i]) for i in range(len(graph))]\\n\\n\\ndef _lexbfs(graph):\\n    \\\"\\\"\\\"Static LexBFS via partition refinement.  Returns ordering list.\\\"\\\"\\\"\\n    n = len(graph)\\n    if n == 0:\\n        return []\\n\\n    # buckets: list of sets, forming a partition of remaining vertices\\n    buckets = [set(range(n))]\\n    order = []\\n\\n    for _ in range(n):\\n        # Pick smallest vertex from first non-empty bucket\\n        v = None\\n        for B in buckets:\\n            if B:\\n                v = min(B)\\n                break\\n        if v is None:\\n            break\\n        order.append(v)\\n\\n        # Remove v from its bucket\\n        for B in buckets:\\n            if v in B:\\n                B.discard(v)\\n                break\\n\\n        # Refine: split each bucket by adjacency to v\\n        new_buckets = []\\n        for B in buckets:\\n            if not B:\\n                continue\\n            B1 = set()\\n            B2 = set()\\n            for u in B:\\n                if graph[u][v]:\\n                    B1.add(u)\\n                else:\\n                    B2.add(u)\\n            if B1:\\n                new_buckets.append(B1)\\n            if B2:\\n                new_buckets.append(B2)\\n        buckets = new_buckets\\n\\n    return order\\n\\n\\ndef _is_valid_lexbfs(adj_mask, ordering):\\n    \\\"\\\"\\\"Check (LB) 4-point property: for all positions a < b < c with\\n    ac in E and ab not in E, exists d < a with db in E and dc not in E.\\n\\n    Bitmask verification.  For each (c, a) with ac in E:\\n      S = {d < a : dc not in E}\\n      If S is empty, every b in (a, c) with ab not in E is a violation.\\n      Otherwise, b is a violation iff adj[b] & S == 0.\\n    We collect the violating b's as a bitmask and test membership.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    if n == 0:\\n        return True\\n\\n    # prefix_mask[k] = bitmask of vertices at positions 0..k-1\\n    prefix_mask = [0] * (n + 1)\\n    for i in range(n):\\n        prefix_mask[i + 1] = prefix_mask[i] | (1 << ordering[i])\\n\\n    # between_mask[a][c] not precomputed; instead for each (c, a) we build\\n    # the mask of b in (a, c) with ab not in E incrementally.\\n\\n    for c in range(n):\\n        vc = ordering[c]\\n        adj_vc = adj_mask[vc]\\n        # mask of vertices at positions a+1..c-1 (built as a grows)\\n        for a in range(c):\\n            va = ordering[a]\\n            if not (adj_vc >> va) & 1:\\n                continue  # ac not in E\\n            # S = {d < a : dc not  ...[2091 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-914f0b362dd3aeb2",
+      "content": "error: bad arguments for write_candidate: Toolbox._t_write_candidate() got an unexpected keyword argument 'path'"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8e1163023e75833b",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering (candidate gen006_c01).\\n\\nStrategy:\\n- init: static partition-refinement LexBFS (HMPV), deterministic tie-break.\\n- insert_edge / delete_edge: verify the existing ordering against the\\n  (LB) 4-point property of Corneil & Krueger using bitmasks; if still\\n  valid, keep it (no recompute).  Otherwise recompute from scratch.\\n\\nImprovement over parent (gen002_c03): the verification is restructured so\\nthat the innermost loop is a single bitmask AND instead of a Python-level\\nloop over b.  For each (c, a) pair we precompute the set of b-positions\\nbetween a and c that are NOT adjacent to a (as a bitmask over vertex ids),\\nthen the 4-point condition for that (c, a) pair reduces to:\\n\\n    for every b in that set: (adj[b] & S) != 0\\n\\nwhich is checked by intersecting the \\\"bad-b\\\" mask with the union of\\nnon-neighbourhoods of the candidate witnesses.  Concretely, b fails iff\\nadj[b] & S == 0, i.e. b is in the intersection of ~adj[d] over d in S.\\nWe compute that intersection incrementally over d in S (S is usually small\\nin practice), and the whole check for a (c, a) pair is O(|S|) bit ops\\nplus one AND, instead of O(c - a) Python iterations.\\n\\nCorrectness: the 4-point property is a necessary and sufficient condition\\nfor an ordering to be a LexBFS ordering, so verification is exact.\\n\\\"\\\"\\\"\\n\\n\\ndef _row_mask(row):\\n    mask = 0\\n    for j, bit in enumerate(row):\\n        if bit:\\n            mask |= (1 << j)\\n    return mask\\n\\n\\ndef _adj_masks(graph):\\n    return [_row_mask(graph[i]) for i in range(len(graph))]\\n\\n\\ndef _lexbfs(graph):\\n    \\\"\\\"\\\"Static LexBFS via partition refinement.  Returns ordering list.\\\"\\\"\\\"\\n    n = len(graph)\\n    if n == 0:\\n        return []\\n\\n    # buckets: list of sets, forming a partition of remaining vertices\\n    buckets = [set(range(n))]\\n    order = []\\n\\n    for _ in range(n):\\n        # Pick smallest vertex from first non-empty bucket\\n        v = None\\n        for B in buckets:\\n            if B:\\n                v = min(B)\\n                break\\n        if v is None:\\n            break\\n        order.append(v)\\n\\n        # Remove v from its bucket\\n        for B in buckets:\\n            if v in B:\\n                B.discard(v)\\n                break\\n\\n        # Refine: split each bucket by adjacency to v\\n        new_buckets = []\\n        for B in buckets:\\n            if not B:\\n                continue\\n            B1 = set()\\n            B2 = set()\\n            for u in B:\\n                if graph[u][v]:\\n                    B1.add(u)\\n                else:\\n                    B2.add(u)\\n            if B1:\\n                new_buckets.append(B1)\\n            if B2:\\n                new_buckets.append(B2)\\n        buckets = new_buckets\\n\\n    return order\\n\\n\\ndef _is_valid_lexbfs(adj_mask, ordering):\\n    \\\"\\\"\\\"Check (LB) 4-point property: for all positions a < b < c with\\n    ac in E and ab not in E, exists d < a with db in E and dc not in E.\\n\\n    Bitmask verification.  For each (c, a) with ac in E:\\n      S = {d < a : dc not in E}\\n      If S is empty, every b in (a, c) with ab not in E is a violation.\\n      Otherwise, b is a violation iff adj[b] & S == 0.\\n    We collect the violating b's as a bitmask and test membership.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    if n == 0:\\n        return True\\n\\n    # prefix_mask[k] = bitmask of vertices at positions 0..k-1\\n    prefix_mask = [0] * (n + 1)\\n    for i in range(n):\\n        prefix_mask[i + 1] = prefix_mask[i] | (1 << ordering[i])\\n\\n    for c in range(n):\\n        vc = ordering[c]\\n        adj_vc = adj_mask[vc]\\n        for a in range(c):\\n            va = ordering[a]\\n            if not (adj_vc >> va) & 1:\\n                continue  # ac not in E\\n            # S = {d < a : dc not in E}\\n            S = prefix_mask[a] & ~adj_vc\\n            # B = {b : a < pos(b) < c, ab not in E}\\n            adj_va = adj_mask[va]\\n            B = 0\\n            for b in range(a + 1, c):\\n                ...[1738 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8e1163023e75833b",
+      "content": "wrote candidates/gen006_c01.py (173 lines)"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-9bb309fbc66bb29e",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9bb309fbc66bb29e",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-835a0c298ee95f4a",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"            # S = {d < a : dc not in E}\\n            S = prefix_mask[a] & ~adj_vc\\n            # B = {b : a < pos(b) < c, ab not in E}\\n            adj_va = adj_mask[va]\\n            B = 0\\n            for b in range(a + 1, c):\\n                vb = ordering[b]\\n                if not (adj_va >> vb) & 1:\\n                    B |= (1 << vb)\\n            if B == 0:\\n                continue\\n            if S == 0:\\n                return False\\n            # b fails iff adj[b] & S == 0.  Iterate over set bits of B.\\n            rem = B\\n            while rem:\\n                low = rem & (-rem)\\n                vb = low.bit_length() - 1\\n                if (adj_mask[vb] & S) == 0:\\n                    return False\\n                rem ^= low\\n    return True\", \"new\": \"            # S = {d < a : dc not in E}\\n            S = prefix_mask[a] & ~adj_vc\\n            if S == 0:\\n                # Any b in (a, c) with ab not in E is a violation.\\n                adj_va = adj_mask[va]\\n                for b in range(a + 1, c):\\n                    if not (adj_va >> ordering[b]) & 1:\\n                        return False\\n                continue\\n            # b fails iff adj[b] & S == 0, i.e. b is in\\n            #   F = intersection over d in S of (~adj[d]).\\n            # Compute F incrementally over the (usually few) bits of S.\\n            F = ALL\\n            rem = S\\n            while rem:\\n                low = rem & (-rem)\\n                vd = low.bit_length() - 1\\n                F &= ~adj_mask[vd]\\n                if F == 0:\\n                    break\\n                rem ^= low\\n            if F == 0:\\n                continue\\n            # B = {b : a < pos(b) < c, ab not in E}; violation iff B & F.\\n            adj_va = adj_mask[va]\\n            B = 0\\n            for b in range(a + 1, c):\\n                vb = ordering[b]\\n                if not (adj_va >> vb) & 1:\\n                    B |= (1 << vb)\\n            if B & F:\\n                return False\\n    return True\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-835a0c298ee95f4a",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a025398c21dd591a",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # prefix_mask[k] = bitmask of vertices at positions 0..k-1\\n    prefix_mask = [0] * (n + 1)\\n    for i in range(n):\\n        prefix_mask[i + 1] = prefix_mask[i] | (1 << ordering[i])\", \"new\": \"    # prefix_mask[k] = bitmask of vertices at positions 0..k-1\\n    prefix_mask = [0] * (n + 1)\\n    for i in range(n):\\n        prefix_mask[i + 1] = prefix_mask[i] | (1 << ordering[i])\\n    ALL = (1 << n) - 1\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a025398c21dd591a",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a1875a65321479bd",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a1875a65321479bd",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b30123a3f26a5a3c",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"Improvement over parent (gen002_c03): the verification is restructured so\\nthat the innermost loop is a single bitmask AND instead of a Python-level\\nloop over b.  For each (c, a) pair we precompute the set of b-positions\\nbetween a and c that are NOT adjacent to a (as a bitmask over vertex ids),\\nthen the 4-point condition for that (c, a) pair reduces to:\\n\\n    for every b in that set: (adj[b] & S) != 0\\n\\nwhich is checked by intersecting the \\\"bad-b\\\" mask with the union of\\nnon-neighbourhoods of the candidate witnesses.  Concretely, b fails iff\\nadj[b] & S == 0, i.e. b is in the intersection of ~adj[d] over d in S.\\nWe compute that intersection incrementally over d in S (S is usually small\\nin practice), and the whole check for a (c, a) pair is O(|S|) bit ops\\nplus one AND, instead of O(c - a) Python iterations.\", \"new\": \"Improvement over parent (gen002_c03): the verification is restructured so\\nthe per-(c, a) work is O(|S|) big-int ops plus one O(c - a) scan, instead\\nof O(c - a) Python iterations each doing a big-int AND.  For each (c, a)\\nwith ac in E, S = {d < a : dc not in E}.  A b in (a, c) with ab not in E\\nis a violation iff adj[b] & S == 0, i.e. b lies in\\n    F = intersection over d in S of (~adj[d]).\\nF is computed incrementally over the (usually few) bits of S, and the\\npair is a violation iff F intersects the mask B of b's in (a, c) with\\nab not in E.  When S is empty the pair is a violation iff B is nonempty.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b30123a3f26a5a3c",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-bfc3b417fa9b1263",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-bfc3b417fa9b1263",
+      "content": "{\n \"verdict\": \"PASS\",\n \"passed\": 26,\n \"total\": 26,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\"\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "CANDIDATE: candidates/gen006_c01.py\nAPPROACH: Keep the parent's verify-then-recompute strategy (static HMPV LexBFS in init; after each update, check the old ordering against the (LB) 4-point property using cached adjacency bitmasks, recompute only on failure). The verification is restructured: for each (c, a) with ac in E, compute F = ∩_{d∈S} ~adj[d] incrementally over the bits of S = {d < a : dc ∉ E} (early-exit when F = 0), then a violation exists iff F intersects the mask B of b's in (a, c) with ab ∉ E — replacing the parent's per-b big-int AND loop with O(|S|) big-int ops plus one AND.\nEXAMPLES: PASS (26/26 public examples)\nNOTES: Correctness rests on the Corneil–Krueger 4-point property being necessary and sufficient for LexBFS validity (as stated in the brief); the check is exact, so no approximation. The B-mask scan is still O(c−a) Python iterations per (c, a) pair, so worst-case verification is O(n³) — same asymptotic as the parent, but with a smaller constant since the expensive big-int AND now happens |S| times instead of O(c−a) times. No full recompute occurs when the ordering survives the update."
+    }
+  ]
+}

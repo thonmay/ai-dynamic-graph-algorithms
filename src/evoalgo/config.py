@@ -39,9 +39,13 @@ Config schema (config.yaml):
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+_WARNED: set[tuple[str, ...]] = set()  # once per key set, not per load
 
 try:
     import yaml
@@ -125,6 +129,9 @@ class RunConfig:
     search_seq_count: int = 3
     final_grade: bool = True
     final_timeout_seconds: int = 300   # per verifier chunk in the final grade
+    # Harness workspaces: graded checks allowed before the final grade
+    # (None = no limit). Enforced by `evoalgo check`, not left to the prompt.
+    max_checks: int | None = None
     workdir: str = "runs"
 
     @classmethod
@@ -135,6 +142,10 @@ class RunConfig:
         bound = Bound(**{k: v for k, v in bound_data.items() if k in known_bound})
         known = {f.name for f in fields(cls)}
         filtered = {k: v for k, v in data.items() if k in known}
+        unknown = sorted(set(data) - known) + [f"bound.{k}" for k in sorted(set(bound_data) - known_bound)]
+        if unknown and tuple(unknown) not in _WARNED:  # a typo would otherwise silently use the default
+            _WARNED.add(tuple(unknown))
+            logger.warning("ignoring unknown config keys: %s", ", ".join(unknown))
         return cls(bound=bound, **filtered)
 
     def to_dict(self) -> dict[str, Any]:
@@ -169,6 +180,8 @@ class RunConfig:
                 errors.append("provider 'api' needs a model id")
         if not (2 <= self.search_n_max <= 8):
             errors.append(f"search_n_max must be 2-8, got {self.search_n_max}")
+        if self.max_checks is not None and self.max_checks < 1:
+            errors.append(f"max_checks must be >= 1, got {self.max_checks}")
         if self.search_seq_count < 0:
             errors.append(f"search_seq_count must be >= 0, got {self.search_seq_count}")
         if not (10 <= self.final_timeout_seconds <= 3600):

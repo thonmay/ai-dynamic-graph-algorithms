@@ -3,8 +3,8 @@ search loop itself, autoresearch-style, and evoalgo only grades and records.
 
 ``evoalgo init <pack> [dir]`` creates a run folder under ``runs/`` with
 ``program.md`` (the agent's instructions), ``candidate.py`` (the one file the
-agent edits) and ``results.tsv``. ``evoalgo check [file]`` grades a file,
-stores a snapshot under ``candidates/``, appends to ``results.tsv`` and writes
+agent edits) and ``results.tsv``. ``evoalgo check`` grades candidate.py,
+stores a hashed snapshot under ``candidates/``, appends to ``results.tsv`` and writes
 the usual events, so the web UI shows the session like any other run (one
 check = one generation).
 
@@ -15,7 +15,9 @@ The grades are visible to the agent; what counts for evaluation is
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
+import os
 import re
 import shutil
 import time
@@ -82,7 +84,8 @@ class Workspace:
 
 def init_workspace(pack_name: str, target: Path | str | None = None,
                    runs_root: Path | str = "runs", run_id: str | None = None,
-                   goal: str | None = None, harness: str | None = None) -> Workspace:
+                   goal: str | None = None, harness: str | None = None,
+                   max_checks: int | None = None) -> Workspace:
     """Create the run folder and the files the agent works with.
 
     ``target`` defaults to the run folder itself; another directory (e.g. a
@@ -106,8 +109,11 @@ def init_workspace(pack_name: str, target: Path | str | None = None,
     config = RunConfig(pack=pack.name, problem=pack.checker, provider="mock",
                        model=harness, research_goal=(goal or "").strip() or None,
                        population_size=1, max_generations=1000, elitism_k=0,
-                       workdir=str(run_dir.parent))
-    program = program_text(pack, config.research_goal)
+                       max_checks=max_checks, workdir=str(run_dir.parent))
+    errors = [e for e in config.validate() if "max_checks" in e]
+    if errors:
+        raise ValueError(errors[0])
+    program = program_text(pack, config.research_goal, max_checks)
     agent_files = {
         WORKSPACE_FILE: json.dumps({"run_dir": str(run_dir), "pack": pack.name,
                                     "problem": pack.checker}, indent=2) + "\n",
@@ -137,7 +143,7 @@ def init_workspace(pack_name: str, target: Path | str | None = None,
     return Workspace(dir=ws_dir, run_dir=run_dir, pack=pack.name, problem=pack.checker)
 
 
-def program_text(pack: Any, goal: str | None) -> str:
+def program_text(pack: Any, goal: str | None, max_checks: int | None = None) -> str:
     problem = get_problem(pack.checker)
     root = "yes, vertex 0" if problem.needs_root else "no"
     parts = [
@@ -178,6 +184,8 @@ def program_text(pack: Any, goal: str | None) -> str:
         "6. When the search grade passes and you cannot lower `work_ratio` further,",
         "   run `evoalgo check --final` once (n <= 5, up to ~12 minutes; give the",
         "   shell command a timeout of at least 15 minutes) and report.",
+        *([f"7. This run allows {max_checks} checks before the final grade (every level",
+           "   counts) and one final grade; `evoalgo check` refuses more."] if max_checks else []),
         "",
         "Correct first, then cheaper. Prefer the simpler of two equally good versions.",
         "A recompute-from-scratch solution is correct but no cheaper than recomputing.",
@@ -217,12 +225,19 @@ def _verifier(problem_name: str, config: RunConfig, level: str, update_mode: str
 
 def check(ws: Workspace, file: Path | str | None = None, level: str = "search",
           note: str = "", final: bool = False) -> dict[str, Any]:
-    """Grade a candidate file, record it in the run, return the report."""
+    """Grade a candidate file, record it in the run, return the report.
+
+    Only the workspace's own candidate.py is graded (a regular file, not a
+    symlink), so every recorded grade belongs to the file the session edits.
+    """
     if level not in LEVELS:
         raise ValueError(f"level must be one of {LEVELS}")
-    src = Path(file).resolve() if file else ws.dir / CANDIDATE_FILE
-    if not src.is_file():
-        raise FileNotFoundError(f"no candidate file {src}")
+    src = ws.dir / CANDIDATE_FILE
+    if file and not (Path(file).exists() and src.exists() and os.path.samefile(file, src)):
+        raise ValueError(f"only the workspace's {CANDIDATE_FILE} is graded; edit it and run "
+                         f"`evoalgo check` without a file argument")
+    if src.is_symlink() or not src.is_file():
+        raise FileNotFoundError(f"{src} must be a regular file (not a symlink)")
     with _locked(ws.run_dir):
         events_now = read_events(ws.run_dir)
         if any(e.get("type") == "run_end" for e in events_now):
@@ -257,16 +272,30 @@ def _check_locked(ws: Workspace, src: Path, level: str, note: str, final: bool,
     n = 1 + max((e.get("gen", 0) for e in events_now if e.get("type") == "gen_start"), default=0)
     if n > 999:
         raise RuntimeError("this workspace has 999 checks; start a new one with `evoalgo init`")
+    if config.max_checks is not None:
+        done = _with_roles(events_now)
+        if final and any(e.get("role") == "final" for e in done):
+            # Each final grade reports its first failure: more than one would
+            # be extra search outside the budget.
+            raise RuntimeError("the final grade has run; run `evoalgo finish`")
+        if not final and sum(e.get("role") != "final" for e in done) >= config.max_checks:
+            raise RuntimeError(f"check budget used up ({config.max_checks} checks); "
+                               "run `evoalgo check --final`, then `evoalgo finish`")
     cid = f"gen{n:03d}_c01"
     snapshot = ws.run_dir / "candidates" / f"{cid}.py"
-    shutil.copyfile(src, snapshot)
+    code = src.read_bytes()
+    snapshot.write_bytes(code)
+    # Recorded with the grade so a report can tell whether the graded file
+    # was changed afterwards.
+    sha256 = hashlib.sha256(code).hexdigest()
 
     events = EventLog(ws.run_dir)
     prev = _last_kept(events_now)
     parents = [prev] if prev else []
     events.emit("gen_start", gen=n)
     events.emit("candidate_generated", id=cid, gen=n, parent_ids=parents,
-                role="final" if final else "harness", level=level, note=note[:500] or None)
+                role="final" if final else "harness", level=level, note=note[:500] or None,
+                sha256=sha256)
     started = time.monotonic()
     verifier = _verifier(ws.problem, config, level, pack.update_mode)
     try:
@@ -291,7 +320,8 @@ def _check_locked(ws: Workspace, src: Path, level: str, note: str, final: bool,
         events.emit("final_graded", id=cid, state=verdict, fitness=result.fitness,
                     work_ratio=result.work_ratio, tests_passed=result.tests_passed,
                     tests_total=result.tests_total, timeout=result.timeout,
-                    failing_case=result.failing_case, n_max=verifier.n_max, duration_s=seconds)
+                    failing_case=result.failing_case, n_max=verifier.n_max, duration_s=seconds,
+                    sha256=sha256)
 
     wr = "" if result.work_ratio is None else f"{result.work_ratio:.4f}"
     clean_note = " ".join(note.split())[:200]
@@ -329,6 +359,22 @@ def _commit(events: EventLog, n: int, cid: str, parents: list[str], state: str,
                 best_fitness=best["fitness"] if best else fitness,
                 best_work_ratio=best.get("work_ratio") if best else None,
                 model_calls=None, level=level)
+
+
+def _with_roles(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """candidate_verified events tagged with their candidate's role."""
+    roles = {e.get("id"): e.get("role") for e in events if e.get("type") == "candidate_generated"}
+    return [{**e, "role": roles.get(e.get("id"))} for e in events
+            if e.get("type") == "candidate_verified"]
+
+
+def snapshot_intact(run_dir: Path, graded: dict[str, Any]) -> bool | None:
+    """Whether a graded snapshot still has the bytes it was graded with;
+    None for grades recorded before hashes existed."""
+    if not graded.get("sha256"):
+        return None
+    path = Path(run_dir) / "candidates" / f"{graded['id']}.py"
+    return path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == graded["sha256"]
 
 
 def _scope(level: str, n_max: int) -> str:

@@ -141,11 +141,7 @@ class Orchestrator:
     def _run(self) -> dict[str, Any]:
         # Try to resume from checkpoint
         loaded = self._try_resume()
-        if self.config.selection_seed is not None:
-            # Parent selection is the engine's only randomness; the LLM's is
-            # not ours to fix. Seeded per (seed, generation) so a resume
-            # continues the same stream it would have used.
-            self.population.rng.seed(f"{self.config.selection_seed}:{self.generation}")
+        self._seed_selection(self.generation)
         # A hint set before a resume stays in effect.
         for e in read_events(self.run_dir):
             if e.get("type") == "control_ack" and e.get("cmd") == "hint":
@@ -274,6 +270,14 @@ class Orchestrator:
         if announced and not self.stop_reason:
             self.events.emit("resumed", gen=gen)
 
+    def _seed_selection(self, gen: int) -> None:
+        """Parent selection is the engine's only randomness; the LLM's is not
+        ours to fix. Reseeded at every generation from (seed, gen), so a
+        resumed run draws the same stream for a generation as an
+        uninterrupted one."""
+        if self.config.selection_seed is not None:
+            self.population.rng.seed(f"{self.config.selection_seed}:{gen}")
+
     @contextmanager
     def _agent_call(self, gen: int, role: str, cid: str, agent: str,
                     produced: Callable[[], bool]):
@@ -365,9 +369,13 @@ class Orchestrator:
             return False
 
         self.generation = latest["generation"]
-        self.model_calls = latest.get("model_calls", 0)
-        # Later updates read provider.call_count; continue from the checkpoint
-        # so the call budget covers the whole run, not just this process.
+        # Calls made in a generation that crashed before its checkpoint are
+        # not in the checkpoint but were spent: count them from the log
+        # (every provider call is wrapped in agent_call_start/end).
+        logged = sum(e.get("type") == "agent_call_start" for e in read_events(self.run_dir))
+        self.model_calls = max(latest.get("model_calls", 0), logged)
+        # Later updates read provider.call_count; continue from there so the
+        # call budget covers the whole run, not just this process.
         self.provider.call_count = self.model_calls
         self.consecutive_all_failed = latest.get("consecutive_all_failed", 0)
         self.fitness_history = latest.get("fitness_history", [])
@@ -485,6 +493,7 @@ class Orchestrator:
         self.generation += 1
         gen = self.generation
         logger.info("=== Generation %d ===", gen)
+        self._seed_selection(gen)
         self.events.emit("gen_start", gen=gen)
 
         new_candidates: list[Candidate] = []

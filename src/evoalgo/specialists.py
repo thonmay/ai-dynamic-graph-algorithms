@@ -73,7 +73,10 @@ def specialists(events: list[dict[str, Any]]) -> list[Specialist]:
         elif kind == "agent_retired" and e.get("agent") in pool:
             pool[e["agent"]].retired = True
         elif kind == "candidate_generated" and e.get("role") == "specialist" and e.get("agent") in pool:
-            pool[e["agent"]].produced.append(e["id"])
+            # A generation that crashed before its checkpoint is redone with
+            # the same candidate ids on resume: count each id once.
+            if e["id"] not in pool[e["agent"]].produced:
+                pool[e["agent"]].produced.append(e["id"])
             owner[e["id"]] = pool[e["agent"]]
         elif kind == "gen_committed":
             best = e.get("best_id")

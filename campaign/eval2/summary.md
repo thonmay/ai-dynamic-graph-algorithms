@@ -6,5 +6,5 @@ Medians over ended runs. Work ratios over final-grade PASS runs only;
 
 | mode | problem | ended | final PASS | work ratio | vs recompute | min to first PASS | LLM turns | tokens (k) |
 |---|---|---|---|---|---|---|---|---|
-| dynamic_agents | dynamic_lbfs | 3/3 | 3/3 | 0.455 | 0.557 | 3.4 | 266 | 2486.002 |
-| orchestrator | dynamic_lbfs | 3/3 | 3/3 | 0.291 | 0.356 | 2.9 | 373 | 3143.515 |
+| dynamic_agents | dynamic_lbfs | 8/8 | 8/8 | 0.356 | 0.435 | 4.7 | 298.0 | 3246.391 |
+| orchestrator | dynamic_lbfs | 8/8 | 7/8 | 0.366 | 0.448 | 4.8 | 291.0 | 2596.749 |

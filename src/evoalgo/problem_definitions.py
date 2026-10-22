@@ -336,15 +336,15 @@ def offline_compute(graph, root):
         parent = state.get("parent")
         discover = state.get("discover", state.get("disc"))
         finish = state.get("finish")
-        # finish is required: without it only the weaker _replay_dfs check
-        # could run, and that accepts trees with a forward-cross edge.
+        # All three are required: parent pointers alone cannot show that a
+        # tree is a DFS tree.
         if parent is None or discover is None or finish is None:
             return False
 
         # Normalize to dicts
         parent = self._normalize_dict(parent, graph.shape[0])
         discover = self._normalize_dict(discover, graph.shape[0])
-        finish = self._normalize_dict(finish, graph.shape[0]) if finish else None
+        finish = self._normalize_dict(finish, graph.shape[0])
 
         # Verify DFS forest certificate: parent pointers + discovery/finish times
         # are consistent with a DFS of the current graph per Yang et al.
@@ -408,43 +408,65 @@ def offline_compute(graph, root):
             if v not in discover:
                 return False
 
+        if any(v not in finish for v in reachable):
+            return False
+        # Integer times only: NaN compares False both ways, which would let a
+        # parent cycle through the order check below.
+        for v in reachable:
+            for t in (discover[v], finish[v]):
+                if isinstance(t, bool) or not isinstance(t, (int, np.integer)):
+                    return False
+
         # Parent pointers: for each non-root v in forest, parent[v] must be
-        # a neighbor (u -> v edge exists) and u must be discovered before v
+        # a reachable in-neighbor discovered before v (so no parent cycles)
         for v in reachable:
             if v == root:
                 continue
             p = parent.get(v)
-            if p is None:
+            if p is None or p not in reachable:
                 return False
             if graph[p, v] != 1:
                 return False
-            if discover.get(p, -1) >= discover.get(v, -1):
+            if discover[p] >= discover[v]:
                 return False
 
-        # If finish times provided, verify interval nesting:
-        # for edge u->v where both are in forest, either:
-        #   v is a descendant of u (discover[u] < discover[v] < finish[v] < finish[u])
-        #   or u is a descendant of v
-        #   or they are in separate branches (intervals don't nest)
-        # The key check: no forward-cross edge.
-        # For non-tree edge u->v where discover[u] < discover[v]:
-        #   v must be a descendant of u (i.e., finish[v] < finish[u] if finish exists)
-        if finish:
-            for u in reachable:
-                for v in reachable:
-                    if u != v and graph[u, v] == 1:
-                        du, dv = discover.get(u, -1), discover.get(v, -1)
-                        fu, fv = finish.get(u, -1), finish.get(v, -1)
-                        if du < dv:
-                            # u discovered before v. If v is not a descendant of u,
-                            # this is a forward-cross edge -> invalid DFS forest.
-                            # v is a descendant of u iff discover[u] < discover[v] < finish[v] < finish[u]
-                            if not (du < dv < fv < fu):
-                                return False
-        else:
-            # Without finish times, do a weaker check: verify the forest could
-            # be produced by some DFS by replaying with the same neighbor order
-            return self._replay_dfs(graph, root, parent, discover)
+        # The times must be a traversal of the parent tree itself: a vertex's
+        # interval lies inside exactly its tree ancestors' intervals and is
+        # disjoint from all others. Without this, intervals that nest
+        # differently from the parent pointers certify a tree no DFS produces
+        # (e.g. parent[v] a shallower ancestor than the vertex that found v).
+        ancestors: dict[int, set[int]] = {}
+        for v in reachable:
+            chain, x = set(), v
+            for _ in range(len(reachable)):  # bounded even if the order check is fooled
+                if x == root:
+                    break
+                x = parent[x]
+                chain.add(x)
+            if x != root:
+                return False
+            ancestors[v] = chain
+        for u in reachable:
+            du, fu = discover[u], finish[u]
+            if not du < fu:
+                return False
+            for v in reachable:
+                if u == v:
+                    continue
+                dv, fv = discover[v], finish[v]
+                if u in ancestors[v]:
+                    if not du < dv < fv < fu:
+                        return False
+                elif v not in ancestors[u] and not (fu < dv or fv < du):
+                    return False
+
+        # Yang et al. Lemma 1: no forward-cross edge. For an edge u->v with
+        # discover[u] < discover[v], v must be a tree descendant of u.
+        for u in reachable:
+            for v in reachable:
+                if u != v and graph[u, v] == 1 and discover[u] < discover[v]:
+                    if u not in ancestors[v]:
+                        return False
 
         return True
 
@@ -461,44 +483,6 @@ def offline_compute(graph, root):
                 if graph[u, v] == 1 and v not in visited:
                     stack.append(v)
         return visited
-
-    def _replay_dfs(
-        self,
-        graph: np.ndarray,
-        root: int,
-        parent: dict[int, int | None],
-        discover: dict[int, int],
-    ) -> bool:
-        """Weak DFS certificate check without finish times:
-        verify that a DFS following the tree structure produces the same
-        discovery order."""
-        n = graph.shape[0]
-        # Build children from parent
-        children: dict[int, list[int]] = {}
-        for v, p in parent.items():
-            if p is not None and p != v:
-                children.setdefault(p, []).append(v)
-        # Sort children by discovery time
-        for u in children:
-            children[u].sort(key=lambda x: discover.get(x, 0))
-
-        visited = set()
-        order = []
-        timer = [0]
-
-        def dfs(u: int):
-            visited.add(u)
-            if discover.get(u) != timer[0]:
-                return False
-            timer[0] += 1
-            order.append(u)
-            for v in children.get(u, []):
-                if v not in visited:
-                    if not dfs(v):
-                        return False
-            return True
-
-        return dfs(root)
 
 
 class DynamicMCS(ProblemDefinition):
@@ -744,25 +728,11 @@ def offline_compute(graph, root):
                     if u != v and not self._reachable_within(graph, u, v, comp_set):
                         return False
 
-        # (4) Maximality: no proper superset of Ci is internally mutually reachable
-        # Check that merging any two components is impossible
-        for i, ci in enumerate(components):
-            for j, cj in enumerate(components):
-                if i >= j:
-                    continue
-                merged = set(ci) | set(cj)
-                all_reach = True
-                for u in merged:
-                    for v in merged:
-                        if u != v and not self._reachable_within(graph, u, v, merged):
-                            all_reach = False
-                            break
-                    if not all_reach:
-                        break
-                if all_reach:
-                    return False  # should have been one component
-
-        return True
+        # (4) Maximality. The SCC partition is unique, so compare with it:
+        # merging pairs alone misses a cycle through three or more
+        # components (e.g. a 3-cycle split into singletons).
+        truth = {frozenset(c) for c in self._tarjan_scc(graph)}
+        return {frozenset(c) for c in components} == truth
 
     def offline_compute(self, graph: np.ndarray, root: int | None) -> list[list[int]]:
         return self._tarjan_scc(graph)

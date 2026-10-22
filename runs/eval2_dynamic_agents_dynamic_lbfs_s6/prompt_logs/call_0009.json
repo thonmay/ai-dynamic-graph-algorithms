@@ -1,0 +1,374 @@
+{
+  "call_id": "call_0009",
+  "timestamp": "2026-10-22T10:04:03Z",
+  "backend": "api",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "type": "repair",
+  "candidate_id": "gen002_c02",
+  "messages_start": [
+    {
+      "role": "system",
+      "content": "You are the REPAIR role in an evolutionary search for dynamic graph algorithms. Take one failed candidate and its reflection and produce a repaired candidate with `write_candidate` (or `write_candidate` followed by `edit_candidate`). You do not write reflections or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the failed candidate and the reflection in the task.\n2. Trace the failing case through the code yourself before changing anything. If your trace contradicts the reflection's root cause, fix the cause you traced and say so in your report.\n3. Write the failed candidate to your output file with `write_candidate`, then apply the smallest change that removes the root cause with `edit_candidate`. Do not rewrite working parts.\n4. Check it with `run_examples`. If it still fails, fix the first failure and check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`, each returning the new state.\n- `graph` is the current 0/1 adjacency matrix after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no imports beyond the Python standard library.\n\n## Rules\n\n- Target the root cause; leave unrelated code and style alone.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case.\n\n## Report (final message, no tool call)\n\nREPAIRED: <file written>\nCHANGE: <one or two lines: what changed and why>\nEXAMPLES: <last run_examples verdict>\nCONCERNS: <remaining doubts, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: repair the failed candidate below using the reflection.\nOutput file: candidates/gen002_c02.py\n\nFAILED CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering (candidate gen001_c03).\n\nStrategy: maintain a valid LexBFS ordering under single-edge updates.\n\nCorrectness core:\n  * init: static partition-refinement LexBFS (Habib-McConnell-Paul-Viennot),\n    O(n+m) via bucket lists.\n  * update: try a cheap local repair (reorder the affected vertex within its\n    \"block\" of the ordering); if the (LB) 4-point property is violated, fall\n    back to a full recompute.  The repair is only ever applied when the\n    resulting ordering is verified to be a valid LexBFS, so correctness is\n    guaranteed regardless of the repair's quality.\n\n(LB) property (Corneil-Krueger): for all a < b < c (positions in the\nordering) with ac in E and ab not in E, there exists d < a with db in E and\ndc not in E.  We check this property in O(n^2) using bitsets (Python ints)\nfor speed.\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via partition refinement.  Returns ordering list.\"\"\"\n    n = len(graph)\n    # adjacency bitsets for speed\n    adj = [0] * n\n    for u in range(n):\n        row = graph[u]\n        b = 0\n        for v in range(n):\n            if row[v]:\n                b |= 1 << v\n        adj[u] = b\n\n    # buckets: list of lists, ordered; each bucket holds vertices\n    buckets = [[v] for v in range(n)]\n    # for each vertex, the index of its bucket\n    bidx = list(range(n))\n\n    # label[v] = bitset of buckets that contain a neighbor of v\n    label = [0] * n\n    for v in range(n):\n        b = 0\n        for u in range(n):\n            if adj[v] >> u & 1:\n                b |= 1 << bidx[u]\n        label[v] = b\n\n    # process buckets in order; when a bucket is \"processed\", its vertices\n    # are finalized (appended to ordering) and the bucket is removed.\n    ordering = []\n    i = 0\n    while i < len(buckets):\n        B = buckets[i]\n        if len(B) == 1:\n            ordering.append(B[0])\n            del buckets[i]\n            continue\n        # mask of unprocessed buckets (positions >= i)\n        mask = 0\n        for j in range(i, len(buckets)):\n            mask |= 1 << j\n        # group vertices of B by (label & mask)\n        groups = {}\n        for v in B:\n            key = label[v] & mask\n            groups.setdefault(key, []).append(v)\n        # order groups by key (numeric order of the bitset = lexicographic\n        # order of the bucket-neighborhood pattern)\n        keys = sorted(groups.keys())\n        new_buckets = [groups[k] for k in keys]\n        # replace bucket i with the sub-buckets\n        buckets[i:i + 1] = new_buckets\n        # do not advance i: reprocess the first sub-bucket\n    return ordering\n\n\ndef _valid_lexbfs(ordering, graph):\n    \"\"\"Check the (LB) 4-point property.  O(n^2) with bitsets.\"\"\"\n    n = len(ordering)\n    pos = [0] * n\n    for i, v in enumerate(ordering):\n        pos[v] = i\n    adj = [0] * n\n    for u in range(n):\n        row = graph[u]\n        b = 0\n        for v in range(n):\n            if row[v]:\n                b |= 1 << v\n        adj[u] = b\n    # posset[x] = bitset of positions of neighbors of x\n    posset = [0] * n\n    for u in range(n):\n        b = 0\n        for v in range(n):\n            if adj[u] >> v & 1:\n                b |= 1 << pos[v]\n        posset[u] = b\n    # For positions j < k: b = ordering[j], c = ordering[k].\n    #   if bc not in E:\n    #     bad = posset[c] & mask_lt(j)   # positions i < j with ordering[i] in N_c\n    #     T = posset[b] & ~posset[c]     # positions d with ordering[d] in N_b \\ N_c\n    #     if bad != 0:\n    #         need min(T) < min(bad)\n    for j in range(n):\n        b = ordering[j]\n        mask_lt_j = (1 << j) - 1\n        for k in range(j + 1, n):\n            c = ordering[k]\n            if adj[b] >> c & 1:\n                continue  # bc in E, no constraint\n            bad = posset[c] & mask_lt_j\n            if bad == 0:\n                continue\n            T = posset[b] & ~posset[c]\n            if T == 0:\n                return False\n            min_bad = (bad & -bad).bit_length() - 1\n            min_T = (T & -T).bit_length() - 1\n            if min_T >= min_bad:\n                return False\n    return True\n\n\ndef _recompute(graph):\n    ordering = _lexbfs(graph)\n    return {'ordering': ordering}\n\n\ndef _try_repair(graph, ordering, edge):\n    \"\"\"Try to fix the ordering after a single edge update.\n\n    Returns a new ordering if valid, else None.\n    \"\"\"\n    n = len(ordering)\n    u, v = edge\n    pos = [0] * n\n    for i, x in enumerate(ordering):\n        pos[x] = i\n\n    candidates = []\n    # original\n    candidates.append(list(ordering))\n    # swap u and v\n    if pos[u] != pos[v]:\n        o = list(ordering)\n        o[pos[u]], o[pos[v]] = o[pos[v]], o[pos[u]]\n        candidates.append(o)\n    # move u to just after v\n    o = list(ordering)\n    o.pop(pos[u])\n    pv = pos[v]\n    if pos[u] < pos[v]:\n        pv -= 1\n    o.insert(pv + 1, u)\n    candidates.append(o)\n    # move v to just after u\n    o = list(ordering)\n    o.pop(pos[v])\n    pu = pos[u]\n    if pos[v] < pos[u]:\n        pu -= 1\n    o.insert(pu + 1, v)\n    candidates.append(o)\n\n    for cand in candidates:\n        if _valid_lexbfs(cand, graph):\n            return cand\n    return None\n\n\ndef init(graph):\n    return _recompute(graph)\n\n\ndef insert_edge(graph, edge, state):\n    ordering = state['ordering']\n    repaired = _try_repair(graph, ordering, edge)\n    if repaired is not None:\n        return {'ordering': repaired}\n    return _recompute(graph)\n\n\ndef delete_edge(graph, edge, state):\n    ordering = state['ordering']\n    repaired = _try_repair(graph, ordering, edge)\n    if repaired is not None:\n        return {'ordering': repaired}\n    return _recompute(graph)\n```\n\nREFLECTION:\n## FAILURE_DESCRIPTION\n\n3-vertex undirected graph, sequence index 0, operation `insert (0, 2)`.\nThe graph after the update is the path 1-0-2 (edges {0-1, 0-2}; 1 and 2 are\nnon-adjacent). The candidate returned ordering `[0, 1, 2]`; the expected\n(valid) ordering is `[0, 2, 1]` (any valid LexBFS would do, e.g. `[1, 0, 2]`\nor `[2, 0, 1]` are also valid).\n\nThe verifier reports the (LB) 4-point violation at positions\na=0, b=1, c=2 (pos_a=0, minD=1e9 = \"no witness found\"):\n- a=0, b=1, c=2: ac = 0-2 is in E, ab = 0-1 is NOT in E, and there is no\n  d < a (a is at position 0, so no d exists at all) with db in E and dc not\n  in E. Hence `[0, 1, 2]` is not a LexBFS ordering of the path 1-0-2.\n\n## ROOT_CAUSE\n\nThe divergence happens in `insert_edge` -> `_try_repair`, specifically in the\nfirst candidate it checks: the **original, pre-update ordering**.\n\n```python\ndef _try_repair(graph, ordering, edge):\n    ...\n    candidates = []\n    # original\n    candidates.append(list(ordering))\n    ...\n    for cand in candidates:\n        if _valid_lexbfs(cand, graph):\n            return cand\n```\n\nThe pre-update ordering (a valid LexBFS of the old graph) is tested against\nthe **new** graph and, if it happens to satisfy the (LB) property there, it\nis returned. This is unsound: an ordering that was LexBFS-valid before an\nedge update need not remain valid after the update, and the (LB) property is\nnot the right certificate for \"this ordering is a LexBFS ordering of this\ngraph\" — it only certifies chordality of the induced subgraph on the\nordering's prefix structure, not that the ordering was produced by LexBFS.\nConcretely, for the path 1-0-2 the ordering `[0, 1, 2]` passes the (LB)\ncheck (the only non-edge pair with a position-0 endpoint is 0-1, and 0 has\nno earlier neighbor, so `bad == 0` and the check is vacuously satisfied),\nyet it is not a LexBFS ordering: LexBFS from 0 must put 1 and 2 in the same\nfirst bucket and refine them by their neighbor sets, which are identical\n{0}, so either 1 or 2 may come second — but the ordering must start at a\nvertex whose bucket-refinement is consistent; starting at 0 and then\narbitrarily ordering 1 before 2 is actually fine for LexBFS... the real\nissue is that the verifier's expected answer `[0, 2, 1]` shows the\nverifier requires the ordering to be one that LexBFS can produce, and the\n(LB) check as implemented in `_valid_lexbfs` is too weak to distinguish\n`[0, 1, 2]` from `[0, 2, 1]` on this graph.\n\nThe deeper root cause: **the (LB) 4-point property is a certificate of\nchordality, not of LexBFS-validity.** The candidate's docstring claims\n\"Validity is certified by the (LB) 4-point property\", but that property\ncharacterizes chordal graphs, not LexBFS orderings. A correct certificate\nfor \"ordering is a LexBFS ordering\" must verify the actual LexBFS\nrefinement invariants (e.g., re-run LexBFS and check the ordering is among\nthe valid ones, or check the stronger per-position neighbor-set\nmonotonicity condition). Because `_valid_lexbfs` accepts orderings that are\nnot LexBFS orderings, `_try_repair` returns the stale pre-update ordering\ninstead of falling back to `_recompute`, and the stale ordering is wrong.\n\n## REPAIR_HINTS\n\n1. **Do not accept the pre-update ordering as a repair candidate.** Remove\n   `candidates.append(list(ordering))` from `_try_repair`, or at minimum\n   never return the original ordering after an update. The original ordering\n   was valid for the old graph; after a single edge flip it may or may not\n   be valid for the new graph, and the current validator cannot tell.\n\n2. **Fix the validator.** Replace `_valid_lexbfs` with a check that actually\n   certifies LexBFS-validity. The simplest correct approach: re-run the\n   static `_lexbfs` on the current graph and verify that the candidate\n   ordering is a valid LexBFS ordering by checking the full LexBFS\n   refinement invariant (for each position i, the set of neighbors of\n   ordering[i] that appear at positions >= i must be a subset of the set of\n   neighbors of ordering[i-1] that appear at positions >= i-1, i.e., the\n   \"label monotonicity\" condition). Alternatively, since n is small in the\n   failing case, simply recompute and compare. The (LB) 4-point property\n   alone is insufficient — it certifies chordality, not LexBFS orderings.\n\n3. **Smallest concrete change:** in `_try_repair`, delete the line\n   `candidates.append(list(ordering))` (the \"original\" candidate). This\n   alone fixes the failing case because the remaining candidates (swap,\n   move-u-after-v, move-v-after-u) will either be rejected by the validator\n   or, if accepted, will be checked. However, this is a band-aid: the\n   validator `_valid_lexbfs` is still unsound in general (it can accept\n   non-LexBFS orderings), so other failing cases may exist. The proper fix\n   is to make `_valid_lexbfs` a true LexBFS-validity check.\n\n4. **Approaches that will not work:** relying on the (LB) 4-point property\n   as a LexBFS certificate (it is a chordality certificate); adding more\n   local-repair candidates without fixing the validator (the validator will\n   still accept invalid orderings); keeping the original ordering as a\n   candidate with the current validator (it will be accepted whenever the\n   (LB) property happens to hold, which is often the case for small graphs).\n\nMore context: read_file('pack/brief.md') has the full research brief.\n"
+    }
+  ],
+  "duration_s": 55.8,
+  "steps": 16,
+  "tool_calls": [
+    "read_file",
+    "read_file",
+    "write_candidate",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "run_examples",
+    "read_file",
+    "edit_candidate",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate",
+    "edit_candidate",
+    "run_examples",
+    "edit_candidate"
+  ],
+  "examples_runs": 5,
+  "usage": {
+    "prompt_tokens": 181989,
+    "completion_tokens": 8384
+  },
+  "ok": true,
+  "error": "step limit (16) reached",
+  "summary": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are the REPAIR role in an evolutionary search for dynamic graph algorithms. Take one failed candidate and its reflection and produce a repaired candidate with `write_candidate` (or `write_candidate` followed by `edit_candidate`). You do not write reflections or grade; the orchestrator grades every candidate on a large hidden test set after you finish.\n\n## Protocol\n\n1. Read the failed candidate and the reflection in the task.\n2. Trace the failing case through the code yourself before changing anything. If your trace contradicts the reflection's root cause, fix the cause you traced and say so in your report.\n3. Write the failed candidate to your output file with `write_candidate`, then apply the smallest change that removes the root cause with `edit_candidate`. Do not rewrite working parts.\n4. Check it with `run_examples`. If it still fails, fix the first failure and check again.\n5. Stop with a short report (no tool call) once the examples pass, or after about six attempts. Each turn costs time; do not keep polishing a passing candidate.\n\n## Candidate interface\n\n- Exactly three module-level functions: `init(graph)`, `insert_edge(graph, edge, state)`, `delete_edge(graph, edge, state)`, each returning the new state.\n- `graph` is the current 0/1 adjacency matrix after the update; `edge` is `(u, v)`.\n- No globals, no module-level mutable state, no imports beyond the Python standard library.\n\n## Rules\n\n- Target the root cause; leave unrelated code and style alone.\n- Passing the public examples does not guarantee passing the hidden set; reason about the general case.\n\n## Report (final message, no tool call)\n\nREPAIRED: <file written>\nCHANGE: <one or two lines: what changed and why>\nEXAMPLES: <last run_examples verdict>\nCONCERNS: <remaining doubts, or none>\n"
+    },
+    {
+      "role": "user",
+      "content": "PROBLEM: dynamic_lbfs\nGraph mode: undirected\nNeeds root/source: no\nInterface: init(graph), insert_edge(graph, edge, state), delete_edge(graph, edge, state)\nState is passed in and returned. No globals. No get_result().\nGraphs are 0/1 adjacency matrices (list of lists). Vertex ids are 0-based integers.\nA legal update flips exactly one matrix entry.\n\nSTATE CONTRACT (what the verifier reads):\nReturn a dict with 'ordering': a list of all n vertices forming a valid LexBFS\nordering (any start vertex, any tie-break). Other keys are allowed and ignored.\n\nRESEARCH BRIEF:\n# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n\nRESEARCH GOAL FOR THIS RUN: Reach full correctness first, then avoid a full recompute after updates.\n\nTASK: repair the failed candidate below using the reflection.\nOutput file: candidates/gen002_c02.py\n\nFAILED CANDIDATE:\n```python\n\"\"\"Dynamic LexBFS ordering (candidate gen001_c03).\n\nStrategy: maintain a valid LexBFS ordering under single-edge updates.\n\nCorrectness core:\n  * init: static partition-refinement LexBFS (Habib-McConnell-Paul-Viennot),\n    O(n+m) via bucket lists.\n  * update: try a cheap local repair (reorder the affected vertex within its\n    \"block\" of the ordering); if the (LB) 4-point property is violated, fall\n    back to a full recompute.  The repair is only ever applied when the\n    resulting ordering is verified to be a valid LexBFS, so correctness is\n    guaranteed regardless of the repair's quality.\n\n(LB) property (Corneil-Krueger): for all a < b < c (positions in the\nordering) with ac in E and ab not in E, there exists d < a with db in E and\ndc not in E.  We check this property in O(n^2) using bitsets (Python ints)\nfor speed.\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via partition refinement.  Returns ordering list.\"\"\"\n    n = len(graph)\n    # adjacency bitsets for speed\n    adj = [0] * n\n    for u in range(n):\n        row = graph[u]\n        b = 0\n        for v in range(n):\n            if row[v]:\n                b |= 1 << v\n        adj[u] = b\n\n    # buckets: list of lists, ordered; each bucket holds vertices\n    buckets = [[v] for v in range(n)]\n    # for each vertex, the index of its bucket\n    bidx = list(range(n))\n\n    # label[v] = bitset of buckets that contain a neighbor of v\n    label = [0] * n\n    for v in range(n):\n        b = 0\n        for u in range(n):\n            if adj[v] >> u & 1:\n                b |= 1 << bidx[u]\n        label[v] = b\n\n    # process buckets in order; when a bucket is \"processed\", its vertices\n    # are finalized (appended to ordering) and the bucket is removed.\n    ordering = []\n    i = 0\n    while i < len(buckets):\n        B = buckets[i]\n        if len(B) == 1:\n            ordering.append(B[0])\n            del buckets[i]\n            continue\n        # mask of unprocessed buckets (positions >= i)\n        mask = 0\n        for j in range(i, len(buckets)):\n            mask |= 1 << j\n        # group vertices o ...[8931 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-ad6be798b25dcbdf",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen001_c03.py\"}"
+          }
+        },
+        {
+          "id": "chatcmpl-tool-a7763e5b65041aab",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"pack/brief.md\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-ad6be798b25dcbdf",
+      "content": "\"\"\"Dynamic LexBFS ordering (candidate gen001_c03).\n\nStrategy: maintain a valid LexBFS ordering under single-edge updates.\n\nCorrectness core:\n  * init: static partition-refinement LexBFS (Habib-McConnell-Paul-Viennot),\n    O(n+m) via bucket lists.\n  * update: try a cheap local repair (reorder the affected vertex within its\n    \"block\" of the ordering); if the (LB) 4-point property is violated, fall\n    back to a full recompute.  The repair is only ever applied when the\n    resulting ordering is verified to be a valid LexBFS, so correctness is\n    guaranteed regardless of the repair's quality.\n\n(LB) property (Corneil-Krueger): for all a < b < c (positions in the\nordering) with ac in E and ab not in E, there exists d < a with db in E and\ndc not in E.  We check this property in O(n^2) using bitsets (Python ints)\nfor speed.\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via partition refinement.  Returns ordering list.\"\"\"\n    n = len(graph)\n    # adjacency bitsets for speed\n    adj = [0] * n\n    for u in range(n):\n        row = graph[u]\n        b = 0\n        for v in range(n):\n            if row[v]:\n                b |= 1 << v\n        adj[u] = b\n\n    # buckets: list of lists, ordered; each bucket holds vertices\n    buckets = [[v] for v in range(n)]\n    # for each vertex, the index of its bucket\n    bidx = list(range(n))\n\n    # label[v] = bitset of buckets that contain a neighbor of v\n    label = [0] * n\n    for v in range(n):\n        b = 0\n        for u in range(n):\n            if adj[v] >> u & 1:\n                b |= 1 << bidx[u]\n        label[v] = b\n\n    # process buckets in order; when a bucket is \"processed\", its vertices\n    # are finalized (appended to ordering) and the bucket is removed.\n    ordering = []\n    i = 0\n    while i < len(buckets):\n        B = buckets[i]\n        if len(B) == 1:\n            ordering.append(B[0])\n            del buckets[i]\n            continue\n        # mask of unprocessed buckets (positions >= i)\n        mask = 0\n        for j in range(i, len(buckets)):\n            mask |= 1 << j\n        # group vertices of B by (label & mask)\n        groups = {}\n        for v in B:\n            key = label[v] & mask\n            groups.setdefault(key, []).append(v)\n        # order groups by key (numeric order of the bitset = lexicographic\n        # order of the bucket-neighborhood pattern)\n        keys = sorted(groups.keys())\n        new_buckets = [groups[k] for k in keys]\n        # replace bucket i with the sub-buckets\n        buckets[i:i + 1] = new_buckets\n        # do not advance i: reprocess the first sub-bucket\n    return ordering\n\n\ndef _valid_lexbfs(ordering, graph):\n    \"\"\"Check the (LB) 4-point property.  O(n^2) with bitsets.\"\"\"\n    n = len(ordering)\n    pos = [0] * n\n    for i, v in enumerate(ordering):\n        pos[v] = i\n    adj = [0] * n\n    for u in range(n):\n        row = graph[u]\n        b = 0\n        for v in range(n):\n            if row[v]:\n                b |= 1 << v\n        adj[u] = b\n    # posset[x] = bitset of positions of neighbors of x\n    posset = [0] * n\n    for u in range(n):\n        b = 0\n        for v in range(n):\n            if adj[u] >> v & 1:\n                b |= 1 << pos[v]\n        posset[u] = b\n    # For positions j < k: b = ordering[j], c = ordering[k].\n    #   if bc not in E:\n    #     bad = posset[c] & mask_lt(j)   # positions i < j with ordering[i] in N_c\n    #     T = posset[b] & ~posset[c]     # positions d with ordering[d] in N_b \\ N_c\n    #     if bad != 0:\n    #         need min(T) < min(bad)\n    for j in range(n):\n        b = ordering[j]\n        mask_lt_j = (1 << j) - 1\n        for k in range(j + 1, n):\n            c = ordering[k]\n            if adj[b] >> c & 1:\n                continue  # bc in E, no constraint\n            bad = posset[c] & mask_lt_j\n            if bad == 0:\n                continue\n            T = posset[b] & ~posset[c]\n            if T == 0:\n                return False\n            min_bad = (bad & -bad).bit_length() - 1\n            min_T = (T & -T).bit_l ...[1617 chars]"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a7763e5b65041aab",
+      "content": "# Research brief: Dynamic lexicographic BFS ordering\n\nResearch question: can a lexicographic BFS (LexBFS) ordering be maintained\nunder edge insertions and deletions? No efficient fully dynamic algorithm is\nknown - this is an open problem.\n\nThe graph is undirected. The maintained result is any valid LexBFS ordering\n(no fixed tie-break, any start vertex). Validity is certified by the (LB)\n4-point property of Corneil and Krueger: for all positions a < b < c with\nac in E and ab not in E, there exists d < a with db in E and dc not in E.\n\nKnown territory: the static partition-refinement LexBFS of Habib, McConnell,\nPaul and Viennot runs in O(n+m). Maintaining the refinement under updates is\nthe open part; partition-refinement structures are the natural toolbox.\n\nInterface reminder: implement init(graph), insert_edge(graph, edge, state),\ndelete_edge(graph, edge, state). The state is passed in and returned; keep no\nglobals. Graphs are 0/1 adjacency matrices, vertex ids 0-based.\n\nThis is the open tier: a correct solution would be a research contribution in\nits own right, so favour novel data structures over recomputation.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-89684c785f2d7a68",
+          "type": "function",
+          "function": {
+            "name": "write_candidate",
+            "arguments": "{\"code\": \"\\\"\\\"\\\"Dynamic LexBFS ordering (candidate gen002_c02).\\n\\nStrategy: maintain a valid LexBFS ordering under single-edge updates.\\n\\nCorrectness core:\\n  * init: static partition-refinement LexBFS (Habib-McConnell-Paul-Viennot),\\n    O(n+m) via bucket lists.\\n  * update: try a cheap local repair (reorder the affected vertex within its\\n    \\\"block\\\" of the ordering); if the (LB) 4-point property is violated, fall\\n    back to a full recompute.  The repair is only ever applied when the\\n    resulting ordering is verified to be a valid LexBFS, so correctness is\\n    guaranteed regardless of the repair's quality.\\n\\n(LB) property (Corneil-Krueger): for all a < b < c (positions in the\\nordering) with ac in E and ab not in E, there exists d < a with db in E and\\ndc not in E.  We check this property in O(n^2) using bitsets (Python ints)\\nfor speed.\\n\\\"\\\"\\\"\\n\\n\\ndef _lexbfs(graph):\\n    \\\"\\\"\\\"Static LexBFS via partition refinement.  Returns ordering list.\\\"\\\"\\\"\\n    n = len(graph)\\n    # adjacency bitsets for speed\\n    adj = [0] * n\\n    for u in range(n):\\n        row = graph[u]\\n        b = 0\\n        for v in range(n):\\n            if row[v]:\\n                b |= 1 << v\\n        adj[u] = b\\n\\n    # buckets: list of lists, ordered; each bucket holds vertices\\n    buckets = [[v] for v in range(n)]\\n    # for each vertex, the index of its bucket\\n    bidx = list(range(n))\\n\\n    # label[v] = bitset of buckets that contain a neighbor of v\\n    label = [0] * n\\n    for v in range(n):\\n        b = 0\\n        for u in range(n):\\n            if adj[v] >> u & 1:\\n                b |= 1 << bidx[u]\\n        label[v] = b\\n\\n    # process buckets in order; when a bucket is \\\"processed\\\", its vertices\\n    # are finalized (appended to ordering) and the bucket is removed.\\n    ordering = []\\n    i = 0\\n    while i < len(buckets):\\n        B = buckets[i]\\n        if len(B) == 1:\\n            ordering.append(B[0])\\n            del buckets[i]\\n            continue\\n        # mask of unprocessed buckets (positions >= i)\\n        mask = 0\\n        for j in range(i, len(buckets)):\\n            mask |= 1 << j\\n        # group vertices of B by (label & mask)\\n        groups = {}\\n        for v in B:\\n            key = label[v] & mask\\n            groups.setdefault(key, []).append(v)\\n        # order groups by key (numeric order of the bitset = lexicographic\\n        # order of the bucket-neighborhood pattern)\\n        keys = sorted(groups.keys())\\n        new_buckets = [groups[k] for k in keys]\\n        # replace bucket i with the sub-buckets\\n        buckets[i:i + 1] = new_buckets\\n        # do not advance i: reprocess the first sub-bucket\\n    return ordering\\n\\n\\ndef _valid_lexbfs(ordering, graph):\\n    \\\"\\\"\\\"Check the (LB) 4-point property.  O(n^2) with bitsets.\\\"\\\"\\\"\\n    n = len(ordering)\\n    pos = [0] * n\\n    for i, v in enumerate(ordering):\\n        pos[v] = i\\n    adj = [0] * n\\n    for u in range(n):\\n        row = graph[u]\\n        b = 0\\n        for v in range(n):\\n            if row[v]:\\n                b |= 1 << v\\n        adj[u] = b\\n    # posset[x] = bitset of positions of neighbors of x\\n    posset = [0] * n\\n    for u in range(n):\\n        b = 0\\n        for v in range(n):\\n            if adj[u] >> v & 1:\\n                b |= 1 << pos[v]\\n        posset[u] = b\\n    # For positions j < k: b = ordering[j], c = ordering[k].\\n    #   if bc not in E:\\n    #     bad = posset[c] & mask_lt(j)   # positions i < j with ordering[i] in N_c\\n    #     T = posset[b] & ~posset[c]     # positions d with ordering[d] in N_b \\\\ N_c\\n    #     if bad != 0:\\n    #         need min(T) < min(bad)\\n    for j in range(n):\\n        b = ordering[j]\\n        mask_lt_j = (1 << j) - 1\\n        for k in range(j + 1, n):\\n            c = ordering[k]\\n            if adj[b] >> c & 1:\\n                continue  # bc in E, no constraint\\n            bad = posset[c] & mask_lt_j\\n            if bad == 0:\\n                continue\\n            T = posset[b] & ~p ...[1847 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-89684c785f2d7a68",
+      "content": "wrote candidates/gen002_c02.py (189 lines)"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8df3016ea2fc8006",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    candidates = []\\n    # original\\n    candidates.append(list(ordering))\\n    # swap u and v\", \"new\": \"    candidates = []\\n    # swap u and v\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8df3016ea2fc8006",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a74497da435c939c",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a74497da435c939c",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 6,\n \"total\": 7,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_lbfs\",\n  \"result\": \"[2, 1, 0]\",\n  \"expected\": \"[0, 1, 2]\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"violation\": {\n   \"a\": 2,\n   \"b\": 1,\n   \"c\": 0,\n   \"pos_a\": 0,\n   \"minD\": 1000000000\n  },\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-baf8262c6816961d",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # label[v] = bitset of buckets that contain a neighbor of v\\n    label = [0] * n\\n    for v in range(n):\\n        b = 0\\n        for u in range(n):\\n            if adj[v] >> u & 1:\\n                b |= 1 << bidx[u]\\n        label[v] = b\\n\\n    # process buckets in order; when a bucket is \\\"processed\\\", its vertices\\n    # are finalized (appended to ordering) and the bucket is removed.\\n    ordering = []\\n    i = 0\\n    while i < len(buckets):\\n        B = buckets[i]\\n        if len(B) == 1:\\n            ordering.append(B[0])\\n            del buckets[i]\\n            continue\\n        # mask of unprocessed buckets (positions >= i)\\n        mask = 0\\n        for j in range(i, len(buckets)):\\n            mask |= 1 << j\\n        # group vertices of B by (label & mask)\\n        groups = {}\\n        for v in B:\\n            key = label[v] & mask\\n            groups.setdefault(key, []).append(v)\\n        # order groups by key (numeric order of the bitset = lexicographic\\n        # order of the bucket-neighborhood pattern)\\n        keys = sorted(groups.keys())\\n        new_buckets = [groups[k] for k in keys]\\n        # replace bucket i with the sub-buckets\\n        buckets[i:i + 1] = new_buckets\\n        # do not advance i: reprocess the first sub-bucket\\n    return ordering\", \"new\": \"    # label[v] = bitset of buckets that contain a neighbor of v\\n    label = [0] * n\\n    for v in range(n):\\n        b = 0\\n        for u in range(n):\\n            if adj[v] >> u & 1:\\n                b |= 1 << bidx[u]\\n        label[v] = b\\n\\n    # process buckets in order; when a bucket is \\\"processed\\\", its vertices\\n    # are finalized (appended to ordering) and the bucket is removed.\\n    ordering = []\\n    i = 0\\n    while i < len(buckets):\\n        B = buckets[i]\\n        if len(B) == 1:\\n            x = B[0]\\n            ordering.append(x)\\n            del buckets[i]\\n            # refine the remaining buckets by whether they contain x\\n            for j in range(i, len(buckets)):\\n                C = buckets[j]\\n                if len(C) == 1:\\n                    continue\\n                C0 = [w for w in C if adj[w] >> x & 1]\\n                C1 = [w for w in C if not (adj[w] >> x & 1)]\\n                if len(C0) == 1 and len(C1) == 1:\\n                    continue\\n                # C0 (neighbor of x) sorts before C1\\n                new = []\\n                if C0:\\n                    new.append(C0)\\n                if C1:\\n                    new.append(C1)\\n                buckets[j:j + 1] = new\\n            continue\\n        # mask of unprocessed buckets (positions >= i)\\n        mask = 0\\n        for j in range(i, len(buckets)):\\n            mask |= 1 << j\\n        # group vertices of B by (label & mask)\\n        groups = {}\\n        for v in B:\\n            key = label[v] & mask\\n            groups.setdefault(key, []).append(v)\\n        # order groups by key (numeric order of the bitset = lexicographic\\n        # order of the bucket-neighborhood pattern)\\n        keys = sorted(groups.keys())\\n        new_buckets = [groups[k] for k in keys]\\n        # replace bucket i with the sub-buckets\\n        buckets[i:i + 1] = new_buckets\\n        # do not advance i: reprocess the first sub-bucket\\n    return ordering\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-baf8262c6816961d",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-af753ab563744041",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-af753ab563744041",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 6,\n \"total\": 7,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_lbfs\",\n  \"result\": \"[2, 1, 0]\",\n  \"expected\": \"[0, 1, 2]\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"violation\": {\n   \"a\": 2,\n   \"b\": 1,\n   \"c\": 0,\n   \"pos_a\": 0,\n   \"minD\": 1000000000\n  },\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-b9e7154ff1279c31",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # label[v] = bitset of buckets that contain a neighbor of v\\n    label = [0] * n\\n    for v in range(n):\\n        b = 0\\n        for u in range(n):\\n            if adj[v] >> u & 1:\\n                b |= 1 << bidx[u]\\n        label[v] = b\\n\\n    # process buckets in order; when a bucket is \\\"processed\\\", its vertices\\n    # are finalized (appended to ordering) and the bucket is removed.\\n    ordering = []\\n    i = 0\\n    while i < len(buckets):\\n        B = buckets[i]\\n        if len(B) == 1:\\n            x = B[0]\\n            ordering.append(x)\\n            del buckets[i]\\n            # refine the remaining buckets by whether they contain x\\n            for j in range(i, len(buckets)):\\n                C = buckets[j]\\n                if len(C) == 1:\\n                    continue\\n                C0 = [w for w in C if adj[w] >> x & 1]\\n                C1 = [w for w in C if not (adj[w] >> x & 1)]\\n                if len(C0) == 1 and len(C1) == 1:\\n                    continue\\n                # C0 (neighbor of x) sorts before C1\\n                new = []\\n                if C0:\\n                    new.append(C0)\\n                if C1:\\n                    new.append(C1)\\n                buckets[j:j + 1] = new\\n            continue\\n        # mask of unprocessed buckets (positions >= i)\\n        mask = 0\\n        for j in range(i, len(buckets)):\\n            mask |= 1 << j\\n        # group vertices of B by (label & mask)\\n        groups = {}\\n        for v in B:\\n            key = label[v] & mask\\n            groups.setdefault(key, []).append(v)\\n        # order groups by key (numeric order of the bitset = lexicographic\\n        # order of the bucket-neighborhood pattern)\\n        keys = sorted(groups.keys())\\n        new_buckets = [groups[k] for k in keys]\\n        # replace bucket i with the sub-buckets\\n        buckets[i:i + 1] = new_buckets\\n        # do not advance i: reprocess the first sub-bucket\\n    return ordering\", \"new\": \"    # label[v] = bitset of buckets that contain a neighbor of v\\n    label = [0] * n\\n    for v in range(n):\\n        b = 0\\n        for u in range(n):\\n            if adj[v] >> u & 1:\\n                b |= 1 << bidx[u]\\n        label[v] = b\\n\\n    # process buckets in order; when a bucket is \\\"processed\\\", its vertices\\n    # are finalized (appended to ordering) and the bucket is removed.\\n    ordering = []\\n    i = 0\\n    while i < len(buckets):\\n        B = buckets[i]\\n        if len(B) == 1:\\n            x = B[0]\\n            ordering.append(x)\\n            del buckets[i]\\n            # refine the remaining buckets by whether they contain x\\n            for j in range(i, len(buckets)):\\n                C = buckets[j]\\n                if len(C) == 1:\\n                    continue\\n                C0 = [w for w in C if adj[w] >> x & 1]\\n                C1 = [w for w in C if not (adj[w] >> x & 1)]\\n                if len(C0) == 1 and len(C1) == 1:\\n                    continue\\n                # C0 (neighbor of x) sorts before C1\\n                new = []\\n                if C0:\\n                    new.append(C0)\\n                if C1:\\n                    new.append(C1)\\n                buckets[j:j + 1] = new\\n            continue\\n        # mask of unprocessed buckets (positions >= i)\\n        mask = 0\\n        for j in range(i, len(buckets)):\\n            mask |= 1 << j\\n        # group vertices of B by (label & mask)\\n        groups = {}\\n        for v in B:\\n            key = label[v] & mask\\n            groups.setdefault(key, []).append(v)\\n        # order groups by key (numeric order of the bitset = lexicographic\\n        # order of the bucket-neighborhood pattern)\\n        keys = sorted(groups.keys())\\n        new_buckets = [groups[k] for k in keys]\\n        # replace bucket i with the sub-buckets\\n        buckets[i:i + 1] = new_buckets\\n        # do not advance i: reprocess the first sub-bucket\\n    return ordering\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-b9e7154ff1279c31",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-aef18ec48f8200f6",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-aef18ec48f8200f6",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 6,\n \"total\": 7,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_lbfs\",\n  \"result\": \"[2, 1, 0]\",\n  \"expected\": \"[0, 1, 2]\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"violation\": {\n   \"a\": 2,\n   \"b\": 1,\n   \"c\": 0,\n   \"pos_a\": 0,\n   \"minD\": 1000000000\n  },\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-be32f263d4c437fd",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"candidates/gen002_c02.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-be32f263d4c437fd",
+      "content": "\"\"\"Dynamic LexBFS ordering (candidate gen002_c02).\n\nStrategy: maintain a valid LexBFS ordering under single-edge updates.\n\nCorrectness core:\n  * init: static partition-refinement LexBFS (Habib-McConnell-Paul-Viennot),\n    O(n+m) via bucket lists.\n  * update: try a cheap local repair (reorder the affected vertex within its\n    \"block\" of the ordering); if the (LB) 4-point property is violated, fall\n    back to a full recompute.  The repair is only ever applied when the\n    resulting ordering is verified to be a valid LexBFS, so correctness is\n    guaranteed regardless of the repair's quality.\n\n(LB) property (Corneil-Krueger): for all a < b < c (positions in the\nordering) with ac in E and ab not in E, there exists d < a with db in E and\ndc not in E.  We check this property in O(n^2) using bitsets (Python ints)\nfor speed.\n\"\"\"\n\n\ndef _lexbfs(graph):\n    \"\"\"Static LexBFS via partition refinement.  Returns ordering list.\"\"\"\n    n = len(graph)\n    # adjacency bitsets for speed\n    adj = [0] * n\n    for u in range(n):\n        row = graph[u]\n        b = 0\n        for v in range(n):\n            if row[v]:\n                b |= 1 << v\n        adj[u] = b\n\n    # buckets: list of lists, ordered; each bucket holds vertices\n    buckets = [[v] for v in range(n)]\n    # for each vertex, the index of its bucket\n    bidx = list(range(n))\n\n    # label[v] = bitset of buckets that contain a neighbor of v\n    label = [0] * n\n    for v in range(n):\n        b = 0\n        for u in range(n):\n            if adj[v] >> u & 1:\n                b |= 1 << bidx[u]\n        label[v] = b\n\n    # process buckets in order; when a bucket is \"processed\", its vertices\n    # are finalized (appended to ordering) and the bucket is removed.\n    ordering = []\n    i = 0\n    while i < len(buckets):\n        B = buckets[i]\n        if len(B) == 1:\n            x = B[0]\n            ordering.append(x)\n            del buckets[i]\n            # refine the remaining buckets by whether they contain x\n            for j in range(i, len(buckets)):\n                C = buckets[j]\n                if len(C) == 1:\n                    continue\n                C0 = [w for w in C if adj[w] >> x & 1]\n                C1 = [w for w in C if not (adj[w] >> x & 1)]\n                if len(C0) == 1 and len(C1) == 1:\n                    continue\n                # C0 (neighbor of x) sorts before C1\n                new = []\n                if C0:\n                    new.append(C0)\n                if C1:\n                    new.append(C1)\n                buckets[j:j + 1] = new\n            continue\n        # mask of unprocessed buckets (positions >= i)\n        mask = 0\n        for j in range(i, len(buckets)):\n            mask |= 1 << j\n        # group vertices of B by (label & mask)\n        groups = {}\n        for v in B:\n            key = label[v] & mask\n            groups.setdefault(key, []).append(v)\n        # order groups by key (numeric order of the bitset = lexicographic\n        # order of the bucket-neighborhood pattern)\n        keys = sorted(groups.keys())\n        new_buckets = [groups[k] for k in keys]\n        # replace bucket i with the sub-buckets\n        buckets[i:i + 1] = new_buckets\n        # do not advance i: reprocess the first sub-bucket\n    return ordering\n\n\ndef _valid_lexbfs(ordering, graph):\n    \"\"\"Check the (LB) 4-point property.  O(n^2) with bitsets.\"\"\"\n    n = len(ordering)\n    pos = [0] * n\n    for i, v in enumerate(ordering):\n        pos[v] = i\n    adj = [0] * n\n    for u in range(n):\n        row = graph[u]\n        b = 0\n        for v in range(n):\n            if row[v]:\n                b |= 1 << v\n        adj[u] = b\n    # posset[x] = bitset of positions of neighbors of x\n    posset = [0] * n\n    for u in range(n):\n        b = 0\n        for v in range(n):\n            if adj[u] >> v & 1:\n                b |= 1 << pos[v]\n        posset[u] = b\n    # For positions j < k: b = ordering[j], c = ordering[k].\n    #   if bc not in E:\n    #     bad = posset[c] & mask_lt(j)   # positions i < j with orde ...[2216 chars]"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-aa7f35261d057f11",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _valid_lexbfs(ordering, graph):\\n    \\\"\\\"\\\"Check the (LB) 4-point property.  O(n^2) with bitsets.\\\"\\\"\\\"\\n    n = len(ordering)\\n    pos = [0] * n\\n    for i, v in enumerate(ordering):\\n        pos[v] = i\\n    adj = [0] * n\\n    for u in range(n):\\n        row = graph[u]\\n        b = 0\\n        for v in range(n):\\n            if row[v]:\\n                b |= 1 << v\\n        adj[u] = b\\n    # posset[x] = bitset of positions of neighbors of x\\n    posset = [0] * n\\n    for u in range(n):\\n        b = 0\\n        for v in range(n):\\n            if adj[u] >> v & 1:\\n                b |= 1 << pos[v]\\n        posset[u] = b\\n    # For positions j < k: b = ordering[j], c = ordering[k].\\n    #   if bc not in E:\\n    #     bad = posset[c] & mask_lt(j)   # positions i < j with ordering[i] in N_c\\n    #     T = posset[b] & ~posset[c]     # positions d with ordering[d] in N_b \\\\ N_c\\n    #     if bad != 0:\\n    #         need min(T) < min(bad)\\n    for j in range(n):\\n        b = ordering[j]\\n        mask_lt_j = (1 << j) - 1\\n        for k in range(j + 1, n):\\n            c = ordering[k]\\n            if adj[b] >> c & 1:\\n                continue  # bc in E, no constraint\\n            bad = posset[c] & mask_lt_j\\n            if bad == 0:\\n                continue\\n            T = posset[b] & ~posset[c]\\n            if T == 0:\\n                return False\\n            min_bad = (bad & -bad).bit_length() - 1\\n            min_T = (T & -T).bit_length() - 1\\n            if min_T >= min_bad:\\n                return False\\n    return True\", \"new\": \"def _valid_lexbfs(ordering, graph):\\n    \\\"\\\"\\\"Check that ordering is a valid LexBFS ordering of graph.\\n\\n    A permutation is a LexBFS ordering iff for every pair of positions\\n    i < j, the lexicographic label of ordering[i] (the bitstring over\\n    positions 0..n-1, bit p = 1 iff ordering[p] is adjacent to\\n    ordering[i]) is lexicographically <= the label of ordering[j].\\n    We check this in O(n^2) with bitsets: for each pair i < j, the\\n    first position where the two labels differ must be a position\\n    where ordering[i]'s label has a 1 and ordering[j]'s has a 0.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    adj = [0] * n\\n    for u in range(n):\\n        row = graph[u]\\n        b = 0\\n        for v in range(n):\\n            if row[v]:\\n                b |= 1 << v\\n        adj[u] = b\\n    # posset[x] = bitset of positions of neighbors of x\\n    posset = [0] * n\\n    for i, x in enumerate(ordering):\\n        b = 0\\n        for v in range(n):\\n            if adj[x] >> v & 1:\\n                b |= 1 << ordering.index(v) if False else 0\\n        # simpler: build via ordering\\n        b = 0\\n        for p, w in enumerate(ordering):\\n            if adj[x] >> w & 1:\\n                b |= 1 << p\\n        posset[x] = b\\n    for i in range(n):\\n        li = posset[ordering[i]]\\n        for j in range(i + 1, n):\\n            lj = posset[ordering[j]]\\n            diff = li ^ lj\\n            if diff == 0:\\n                continue\\n            # first (lowest) differing position\\n            first = (diff & -diff).bit_length() - 1\\n            if not (li >> first & 1):\\n                return False\\n    return True\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-aa7f35261d057f11",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a26625f842346458",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    # posset[x] = bitset of positions of neighbors of x\\n    posset = [0] * n\\n    for i, x in enumerate(ordering):\\n        b = 0\\n        for v in range(n):\\n            if adj[x] >> v & 1:\\n                b |= 1 << ordering.index(v) if False else 0\\n        # simpler: build via ordering\\n        b = 0\\n        for p, w in enumerate(ordering):\\n            if adj[x] >> w & 1:\\n                b |= 1 << p\\n        posset[x] = b\", \"new\": \"    # posset[x] = bitset of positions of neighbors of x\\n    posset = [0] * n\\n    for x in range(n):\\n        b = 0\\n        for p, w in enumerate(ordering):\\n            if adj[x] >> w & 1:\\n                b |= 1 << p\\n        posset[x] = b\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a26625f842346458",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-bcc4e7cbfddc847c",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-bcc4e7cbfddc847c",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 3,\n \"total\": 4,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_lbfs\",\n  \"result\": \"[0, 1, 2]\",\n  \"expected\": \"[0, 2, 1]\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"violation\": {\n   \"a\": 0,\n   \"b\": 1,\n   \"c\": 2,\n   \"pos_a\": 0,\n   \"minD\": 1000000000\n  },\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-91776158ea7c3016",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _valid_lexbfs(ordering, graph):\\n    \\\"\\\"\\\"Check that ordering is a valid LexBFS ordering of graph.\\n\\n    A permutation is a LexBFS ordering iff for every pair of positions\\n    i < j, the lexicographic label of ordering[i] (the bitstring over\\n    positions 0..n-1, bit p = 1 iff ordering[p] is adjacent to\\n    ordering[i]) is lexicographically <= the label of ordering[j].\\n    We check this in O(n^2) with bitsets: for each pair i < j, the\\n    first position where the two labels differ must be a position\\n    where ordering[i]'s label has a 1 and ordering[j]'s has a 0.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    adj = [0] * n\\n    for u in range(n):\\n        row = graph[u]\\n        b = 0\\n        for v in range(n):\\n            if row[v]:\\n                b |= 1 << v\\n        adj[u] = b\\n    # posset[x] = bitset of positions of neighbors of x\\n    posset = [0] * n\\n    for x in range(n):\\n        b = 0\\n        for p, w in enumerate(ordering):\\n            if adj[x] >> w & 1:\\n                b |= 1 << p\\n        posset[x] = b\\n    for i in range(n):\\n        li = posset[ordering[i]]\\n        for j in range(i + 1, n):\\n            lj = posset[ordering[j]]\\n            diff = li ^ lj\\n            if diff == 0:\\n                continue\\n            # first (lowest) differing position\\n            first = (diff & -diff).bit_length() - 1\\n            if not (li >> first & 1):\\n                return False\\n    return True\", \"new\": \"def _valid_lexbfs(ordering, graph):\\n    \\\"\\\"\\\"Check that ordering is a valid LexBFS ordering of graph.\\n\\n    A permutation is a LexBFS ordering iff for every pair of positions\\n    i < j, the lexicographic label of ordering[i] (the bitstring over\\n    positions 0..n-1, bit p = 1 iff ordering[p] is adjacent to\\n    ordering[i]) is lexicographically <= the label of ordering[j].\\n    We check this in O(n^2) with bitsets: for each pair i < j, the\\n    first position where the two labels differ must be a position\\n    where ordering[i]'s label has a 1 and ordering[j]'s has a 0.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    adj = [0] * n\\n    for u in range(n):\\n        row = graph[u]\\n        b = 0\\n        for v in range(n):\\n            if row[v]:\\n                b |= 1 << v\\n        adj[u] = b\\n    # posset[x] = bitset of positions of neighbors of x\\n    posset = [0] * n\\n    for x in range(n):\\n        b = 0\\n        for p, w in enumerate(ordering):\\n            if adj[x] >> w & 1:\\n                b |= 1 << p\\n        posset[x] = b\\n    for i in range(n):\\n        li = posset[ordering[i]]\\n        for j in range(i + 1, n):\\n            lj = posset[ordering[j]]\\n            diff = li ^ lj\\n            if diff == 0:\\n                continue\\n            # first (lowest) differing position\\n            first = (diff & -diff).bit_length() - 1\\n            if not (li >> first & 1):\\n                return False\\n    return True\\n\\n\\ndef _is_lexbfs(ordering, graph):\\n    \\\"\\\"\\\"True iff ordering is a valid LexBFS ordering of graph.\\n\\n    An ordering is a LexBFS ordering iff it satisfies the (LB) 4-point\\n    property (Corneil-Krueger): for all positions a < b < c with\\n    ac in E and ab not in E, there exists d < a with db in E and\\n    dc not in E.  We check this in O(n^2) with bitsets.\\n    \\\"\\\"\\\"\\n    n = len(ordering)\\n    pos = [0] * n\\n    for i, v in enumerate(ordering):\\n        pos[v] = i\\n    adj = [0] * n\\n    for u in range(n):\\n        row = graph[u]\\n        b = 0\\n        for v in range(n):\\n            if row[v]:\\n                b |= 1 << v\\n        adj[u] = b\\n    # posset[x] = bitset of positions of neighbors of x\\n    posset = [0] * n\\n    for u in range(n):\\n        b = 0\\n        for v in range(n):\\n            if adj[u] >> v & 1:\\n                b |= 1 << pos[v]\\n        posset[u] = b\\n    # For positions j < k: b = ordering[j], c = ordering[k].\\n    #   if bc not in E:\\n    #     bad = posset[c] & mask_lt(j)   # positions i < j with ordering[i] in N_c\\n    #     T = posset[ ...[728 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-91776158ea7c3016",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-a1574407edea490e",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"    for cand in candidates:\\n        if _valid_lexbfs(cand, graph):\\n            return cand\\n    return None\", \"new\": \"    for cand in candidates:\\n        if _is_lexbfs(cand, graph):\\n            return cand\\n    return None\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-a1574407edea490e",
+      "content": "edited candidate"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-8a1c465bce23d43a",
+          "type": "function",
+          "function": {
+            "name": "run_examples",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-8a1c465bce23d43a",
+      "content": "{\n \"verdict\": \"FAIL\",\n \"passed\": 6,\n \"total\": 7,\n \"scope\": \"public examples: all non-isomorphic graphs with n <= 3, every single-edge flip (the real grade uses a larger hidden set)\",\n \"first_failure\": {\n  \"problem\": \"dynamic_lbfs\",\n  \"result\": \"[2, 1, 0]\",\n  \"expected\": \"[0, 1, 2]\",\n  \"graph_shape\": [\n   3,\n   3\n  ],\n  \"violation\": {\n   \"a\": 2,\n   \"b\": 1,\n   \"c\": 0,\n   \"pos_a\": 0,\n   \"minD\": 1000000000\n  },\n  \"graph_n\": 3,\n  \"sequence_idx\": 1,\n  \"operation\": \"insert (0, 2)\"\n }\n}"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "chatcmpl-tool-9e44119c407f79f3",
+          "type": "function",
+          "function": {
+            "name": "edit_candidate",
+            "arguments": "{\"old\": \"def _lexbfs(graph):\\n    \\\"\\\"\\\"Static LexBFS via partition refinement.  Returns ordering list.\\\"\\\"\\\"\\n    n = len(graph)\\n    # adjacency bitsets for speed\\n    adj = [0] * n\\n    for u in range(n):\\n        row = graph[u]\\n        b = 0\\n        for v in range(n):\\n            if row[v]:\\n                b |= 1 << v\\n        adj[u] = b\\n\\n    # buckets: list of lists, ordered; each bucket holds vertices\\n    buckets = [[v] for v in range(n)]\\n    # for each vertex, the index of its bucket\\n    bidx = list(range(n))\\n\\n    # label[v] = bitset of buckets that contain a neighbor of v\\n    label = [0] * n\\n    for v in range(n):\\n        b = 0\\n        for u in range(n):\\n            if adj[v] >> u & 1:\\n                b |= 1 << bidx[u]\\n        label[v] = b\\n\\n    # process buckets in order; when a bucket is \\\"processed\\\", its vertices\\n    # are finalized (appended to ordering) and the bucket is removed.\\n    ordering = []\\n    i = 0\\n    while i < len(buckets):\\n        B = buckets[i]\\n        if len(B) == 1:\\n            x = B[0]\\n            ordering.append(x)\\n            del buckets[i]\\n            # refine the remaining buckets by whether they contain x\\n            for j in range(i, len(buckets)):\\n                C = buckets[j]\\n                if len(C) == 1:\\n                    continue\\n                C0 = [w for w in C if adj[w] >> x & 1]\\n                C1 = [w for w in C if not (adj[w] >> x & 1)]\\n                if len(C0) == 1 and len(C1) == 1:\\n                    continue\\n                # C0 (neighbor of x) sorts before C1\\n                new = []\\n                if C0:\\n                    new.append(C0)\\n                if C1:\\n                    new.append(C1)\\n                buckets[j:j + 1] = new\\n            continue\\n        # mask of unprocessed buckets (positions >= i)\\n        mask = 0\\n        for j in range(i, len(buckets)):\\n            mask |= 1 << j\\n        # group vertices of B by (label & mask)\\n        groups = {}\\n        for v in B:\\n            key = label[v] & mask\\n            groups.setdefault(key, []).append(v)\\n        # order groups by key (numeric order of the bitset = lexicographic\\n        # order of the bucket-neighborhood pattern)\\n        keys = sorted(groups.keys())\\n        new_buckets = [groups[k] for k in keys]\\n        # replace bucket i with the sub-buckets\\n        buckets[i:i + 1] = new_buckets\\n        # do not advance i: reprocess the first sub-bucket\\n    return ordering\", \"new\": \"def _lexbfs(graph):\\n    \\\"\\\"\\\"Static LexBFS via partition refinement.  Returns ordering list.\\\"\\\"\\\"\\n    n = len(graph)\\n    # adjacency bitsets for speed\\n    adj = [0] * n\\n    for u in range(n):\\n        row = graph[u]\\n        b = 0\\n        for v in range(n):\\n            if row[v]:\\n                b |= 1 << v\\n        adj[u] = b\\n\\n    # buckets: list of lists, ordered; each bucket holds vertices\\n    buckets = [[v] for v in range(n)]\\n    # for each vertex, the index of its bucket\\n    bidx = list(range(n))\\n\\n    # label[v] = bitset of buckets that contain a neighbor of v\\n    label = [0] * n\\n    for v in range(n):\\n        b = 0\\n        for u in range(n):\\n            if adj[v] >> u & 1:\\n                b |= 1 << bidx[u]\\n        label[v] = b\\n\\n    # process buckets in order; when a bucket is \\\"processed\\\", its vertices\\n    # are finalized (appended to ordering) and the bucket is removed.\\n    ordering = []\\n    i = 0\\n    while i < len(buckets):\\n        B = buckets[i]\\n        if len(B) == 1:\\n            x = B[0]\\n            ordering.append(x)\\n            del buckets[i]\\n            # refine the remaining buckets by whether they contain x\\n            for j in range(i, len(buckets)):\\n                C = buckets[j]\\n                if len(C) == 1:\\n                    continue\\n                C0 = [w for w in C if adj[w] >> x & 1]\\n                C1 = [w for w in C if not (adj[w] >> x & 1)]\\n                if len(C0) == 1 and len(C1) == 1:\\n       ...[2101 chars]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-9e44119c407f79f3",
+      "content": "edited candidate"
+    }
+  ]
+}

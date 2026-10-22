@@ -45,10 +45,12 @@ sys.path.insert(0, str(REPO / "src"))
 
 from evoalgo.agents.harness import harness_env  # noqa: E402
 from evoalgo.events import read_events  # noqa: E402
+from evoalgo.workspace import snapshot_intact  # noqa: E402
 
 HARNESS_PROMPT = (
     "Use the evoalgo skill: find a correct dynamic algorithm for pack {pack}. "
-    "Create the workspace with run id {run_id}, --harness enlcode and --goal \"{goal}\". "
+    "Create the workspace with run id {run_id}, --harness enlcode, --max-checks {max_checks} "
+    "and --goal \"{goal}\". "
     "Do at most {max_checks} checks, then run the final check and finish."
 )
 ORCHESTRATOR_MODES = ("orchestrator", "no_reflection", "dynamic_agents")
@@ -315,6 +317,9 @@ def summarize_run(plan: dict, cell: dict) -> dict:
         ended=bool(end), stop_reason=(end or {}).get("stop_reason"),
         final_state=(final or {}).get("state"), final_pass=(final or {}).get("state") == "PASS",
         final_id=(final or {}).get("id"), final_work_ratio=(final or {}).get("work_ratio"),
+        # The graded file still has the bytes it was graded with (None: no
+        # hash recorded, runs from before hashing).
+        final_intact=snapshot_intact(path, final) if final else None,
         final_tests=(final or {}).get("tests_total"), final_runs=len(finals),
         graded_candidates=len(verified), search_pass=bool(first_pass),
         first_pass_gen=(first_pass or {}).get("gen"),
@@ -328,8 +333,8 @@ def summarize_run(plan: dict, cell: dict) -> dict:
         # specialist's candidate ever became the population best.
         plateaus=sum(e.get("type") == "plateau_detected" for e in ev),
         specialists_spawned=sum(e.get("type") == "agent_spawned" for e in ev),
-        specialist_candidates=sum(e.get("type") == "candidate_generated"
-                                  and e.get("role") == "specialist" for e in ev),
+        specialist_candidates=len({e.get("id") for e in ev if e.get("type") == "candidate_generated"
+                                   and e.get("role") == "specialist"}),
         # Generations in which a specialist's candidate became the new
         # population best (counted from the log, so a specialist still active
         # at the end of the run counts too).

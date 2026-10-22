@@ -50,7 +50,7 @@ import numpy as np
 #   unshare -rnmpf    new user (mapped to root inside), net (loopback only,
 #                     down), mount and pid namespaces
 #   mount script      bind the host tree at /mnt, hide /home, /proj, /tmp,
-#                     /local, /repo and the run/session dirs behind tmpfs,
+#                     /var, /local, /repo and the run/session dirs behind tmpfs,
 #                     bind back only the interpreter's import paths, make the
 #                     whole tree read-only (mount_setattr AT_RECURSIVE),
 #                     fresh /proc and /tmp, pivot_root into it
@@ -64,9 +64,13 @@ JAIL_ENV = "EVOALGO_SANDBOX"  # "none" disables the jail (not recommended)
 # Host directories hidden behind an empty tmpfs: user data, shared NFS, temp,
 # and /run (host daemon sockets: nscd answers DNS, dbus, systemd; a unix
 # socket can be connected on a read-only mount, so it must not be visible).
-HIDDEN_DIRS = ("/home", "/proj", "/tmp", "/var/tmp", "/local", "/repo", "/root",
-               "/run", "/dev/shm", "/var/spool", "/var/opt", "/net", "/mnt", "/media",
-               "/srv", "/afs")
+# /var (system logs, caches, package state), /opt, /boot and /etc/ssh hold
+# host data a candidate could copy into its result, which reaches the LLM.
+# /etc itself stays: the interpreter needs ld.so.cache, locale and passwd
+# lookups; what remains there is world-readable host configuration.
+HIDDEN_DIRS = ("/home", "/proj", "/tmp", "/var", "/local", "/repo", "/root",
+               "/run", "/dev/shm", "/net", "/mnt", "/media", "/srv", "/afs",
+               "/opt", "/boot", "/workspace", "/etc/ssh")
 
 _JAIL_SCRIPT = r'''
 set -e
@@ -195,7 +199,14 @@ def _jail_env() -> dict[str, str]:
 
 
 _RUNNER_TEMPLATE = textwrap.dedent('''
-import json, sys, time, traceback, copy
+import json, os, sys, time, traceback, copy
+
+# Bound before any candidate code runs, which shares this interpreter: it
+# could patch time, json, os or builtins to fake its timing or its output.
+# This closes the direct routes only; timing is best-effort against a
+# candidate that walks frames or patches json internals (correctness is not
+# affected: the verifier re-checks every state it receives).
+_dumps, _write, _out = json.dumps, os.write, os.dup(1)
 
 def run():
     data = json.load(sys.stdin)
@@ -206,6 +217,11 @@ def run():
     test_cases = data["test_cases"]
     repeat = max(1, data.get("repeat", 20))
 
+    clock = time.perf_counter_ns
+    reps = tuple(range(repeat))  # no range() call in the timed loops
+    np = __import__("numpy")  # before the candidate can patch what it imports
+    # The candidate's prints go to stderr, not into the result channel.
+    sys.stdout = sys.stderr
     import linecache, types
     src = data["module_src"]
     # The file is not visible in the jail: give tracebacks its lines.
@@ -225,7 +241,6 @@ def run():
         exec(compile(offline_src, "<offline>", "exec"), ns)
         offline_fn = ns.get("offline_compute")
 
-    np = __import__("numpy")
     all_results = []
 
     try:
@@ -242,21 +257,24 @@ def run():
                 offline_timings = []
 
                 try:
-                    # Init
-                    t0 = time.perf_counter_ns()
-                    for _ in range(repeat):
-                        _ = mod.init(current_graph)
-                    t1 = time.perf_counter_ns()
+                    # Init. Each repeat gets its own graph copy (made outside
+                    # the timed region) so a cache keyed on the graph object
+                    # cannot turn the repeats into lookups.
+                    graph_copies = [[row[:] for row in current_graph] for _ in reps]
+                    t0 = clock()
+                    for i in reps:
+                        _ = mod.init(graph_copies[i])
+                    t1 = clock()
                     timings.append((t1 - t0) // repeat // 1000)
                     state = mod.init(current_graph)
                     results.append({"after": "init", "state": _serialize(state)})
 
                     if offline_fn:
                         g_np = np.array(current_graph)
-                        t0 = time.perf_counter_ns()
-                        for _ in range(repeat):
+                        t0 = clock()
+                        for _ in reps:
                             offline_fn(g_np, root)
-                        t1 = time.perf_counter_ns()
+                        t1 = clock()
                         offline_timings.append((t1 - t0) // repeat // 1000)
 
                     for op in ops:
@@ -279,20 +297,21 @@ def run():
                         pre_state = copy.deepcopy(state)
                         # Pre-allocate copies so deepcopy overhead is
                         # outside the timed region
-                        state_copies = [copy.deepcopy(pre_state) for _ in range(repeat)]
-                        t0 = time.perf_counter_ns()
-                        for i in range(repeat):
-                            _ = fn(current_graph, edge, state_copies[i])
-                        t1 = time.perf_counter_ns()
+                        state_copies = [copy.deepcopy(pre_state) for _ in reps]
+                        graph_copies = [[row[:] for row in current_graph] for _ in reps]
+                        t0 = clock()
+                        for i in reps:
+                            _ = fn(graph_copies[i], edge, state_copies[i])
+                        t1 = clock()
                         timings.append((t1 - t0) // repeat // 1000)
                         state = fn(current_graph, edge, state)
 
                         if offline_fn:
                             g_np = np.array(current_graph)
-                            t0 = time.perf_counter_ns()
-                            for _ in range(repeat):
+                            t0 = clock()
+                            for _ in reps:
                                 offline_fn(g_np, root)
-                            t1 = time.perf_counter_ns()
+                            t1 = clock()
                             offline_timings.append((t1 - t0) // repeat // 1000)
 
                         results.append({"after": op_type + " " + str(edge),
@@ -353,8 +372,9 @@ def _serialize(obj):
     return obj
 
 result = run()
-json.dump(result, sys.stdout)
-sys.stdout.write("\\n")
+data = (_dumps(result) + "\\n").encode()
+while data:
+    data = data[_write(_out, data):]
 ''').strip()
 
 

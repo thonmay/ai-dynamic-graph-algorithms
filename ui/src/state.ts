@@ -235,7 +235,7 @@ export function applyEvents(prev: RunState, events: RunEvent[]): RunState {
         break
       case 'agent_call_end':
         if (s.call?.id === e.id && s.call.role === e.role) s.call = null
-        log('agent', e.ok ? 'muted' : 'fail', `${e.role} ${e.id} · ${e.duration_s.toFixed(1)} s`, e.id)
+        log('agent', e.ok ? 'muted' : 'fail', `${e.role} ${e.id}${isNum(e.duration_s) ? ` · ${e.duration_s.toFixed(1)} s` : ''}`, e.id)
         break
       case 'paused':
         s.status = 'paused'

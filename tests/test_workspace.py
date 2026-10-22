@@ -209,3 +209,59 @@ def test_sandbox_leaves_no_temp_files(tmp_path, monkeypatch):
     for _ in range(3):
         assert run_examples("dynamic_bfs", GOOD)["verdict"] == "PASS"
     assert list(tmp_path.iterdir()) == []  # the runner is passed with -c, no file
+
+
+def test_check_grades_only_the_workspace_candidate(ws, tmp_path):
+    outside = tmp_path / "outside.py"
+    outside.write_text(GOOD)
+    with pytest.raises(ValueError, match="only the workspace"):
+        wsm.check(ws, outside, level="examples")
+    (ws.dir / "candidate.py").unlink()
+    (ws.dir / "candidate.py").symlink_to(outside)
+    with pytest.raises(FileNotFoundError, match="symlink"):
+        wsm.check(ws, level="examples")
+    (ws.dir / "candidate.py").unlink()
+    (ws.dir / "candidate.py").write_text(GOOD)
+    assert wsm.check(ws, ws.dir / "candidate.py", level="examples")["verdict"] == "PASS"
+
+
+def test_max_checks_is_enforced_but_final_still_runs(tmp_path, monkeypatch):
+    w = wsm.init_workspace("dynamic_bfs", tmp_path / "w", runs_root=tmp_path / "runs",
+                           run_id="mc", max_checks=1)
+    (w.dir / "candidate.py").write_text(GOOD)
+    wsm.check(w, level="examples")
+    with pytest.raises(RuntimeError, match="check budget"):
+        wsm.check(w, level="examples")
+    # The final grade is outside the budget (fast stand-in for the n<=5 grade).
+    real = wsm._verifier
+    monkeypatch.setattr(wsm, "_verifier", lambda p, c, lvl, u: real(p, c, "examples", u))
+    assert wsm.check(w, level="full", final=True)["verdict"] == "PASS"
+    with pytest.raises(ValueError, match="max_checks"):
+        wsm.init_workspace("dynamic_bfs", tmp_path / "w2", runs_root=tmp_path / "runs",
+                           run_id="mc2", max_checks=0)
+
+
+
+def test_graded_snapshot_hash_detects_later_edits(ws):
+    (ws.dir / "candidate.py").write_text(GOOD)
+    wsm.check(ws, level="examples")
+    ev = read_events(ws.run_dir)
+    gen = next(e for e in ev if e["type"] == "candidate_generated")
+    assert wsm.snapshot_intact(ws.run_dir, gen) is True
+    (ws.run_dir / "candidates" / f"{gen['id']}.py").write_text(BAD)
+    assert wsm.snapshot_intact(ws.run_dir, gen) is False
+    assert wsm.snapshot_intact(ws.run_dir, {"id": gen["id"]}) is None
+
+
+def test_check_accepts_candidate_by_other_path_and_one_final(tmp_path, monkeypatch):
+    w = wsm.init_workspace("dynamic_bfs", tmp_path / "w", runs_root=tmp_path / "runs",
+                           run_id="p", max_checks=2)
+    assert "allows 2 checks" in (w.dir / "program.md").read_text()
+    (w.dir / "candidate.py").write_text(GOOD)
+    monkeypatch.chdir(w.dir)
+    assert wsm.check(w, "../w/candidate.py", level="examples")["verdict"] == "PASS"
+    real = wsm._verifier
+    monkeypatch.setattr(wsm, "_verifier", lambda p, c, lvl, u: real(p, c, "examples", u))
+    wsm.check(w, level="full", final=True)
+    with pytest.raises(RuntimeError, match="final grade has run"):
+        wsm.check(w, level="full", final=True)

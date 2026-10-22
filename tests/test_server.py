@@ -122,6 +122,26 @@ def test_pending_commands_sent_first(client, runs):
     assert [c["id"] for c in client.get("/api/runs/bare").json()["pending"]] == [open_cmd["id"]]
 
 
+
+def test_control_refused_on_ended_run(client, runs):
+    EventLog(runs / "bare").emit("run_end", stop_reason="max_generations")
+    with client.websocket_connect("/api/runs/bare/ws") as ws:
+        ws.send_json({"cmd": "pause"})
+        reply = next_of(ws, "queued", "error")
+        assert reply == {"type": "error", "reason": "the run has ended"}
+    assert not (runs / "bare" / CONTROL_FILE).exists()
+    EventLog(runs / "bare").emit("run_start", resumed=True)  # `evoalgo resume`
+    with client.websocket_connect("/api/runs/bare/ws") as ws:
+        ws.send_json({"cmd": "pause"})
+        assert next_of(ws, "queued", "error")["type"] == "queued"
+
+
+def test_dashboard_escapes_script_end_in_llm_text(tmp_path):
+    from evoalgo.dashboard import Dashboard
+    html = Dashboard(tmp_path)._build_html(
+        1, {"research_goal": "</script><script>alert(1)</script>"}, [], "r")
+    assert "</script><script>alert(1)" not in html and "\\u003c/script>" in html
+
 def _write_engine(run, pid):
     (run / ENGINE_FILE).write_text(json.dumps({"pid": pid, "host": socket.gethostname()}))
 
@@ -184,6 +204,11 @@ def test_launch_from_pack(client, runs, monkeypatch):
     assert (cfg.pack, cfg.problem, cfg.research_goal) == ("dynamic_bfs", "dynamic_bfs", "avoid full recompute")
     assert (cfg.max_generations, cfg.population_size, cfg.model_call_budget, cfg.bound.n_max) == (3, 2, 20, 4)
     assert cfg.elitism_k <= cfg.population_size and cfg.early_stop_on_success is False
+    # The run folder exists before the engine starts, so the UI's first
+    # stream connect right after the launch is accepted.
+    assert (runs / "bfs_goal" / "config.yaml").is_file()
+    with client.websocket_connect("/api/runs/bfs_goal/ws") as ws:
+        assert ws.receive_json()["type"] == "pending"
     assert client.post("/api/runs", json={"pack": "nope"}).status_code == 404
     assert client.post("/api/runs", json={"pack": "../dynamic_bfs"}).status_code == 404
     assert client.post("/api/runs", json={}).status_code == 422

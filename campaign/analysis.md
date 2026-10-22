@@ -74,33 +74,49 @@ update, each cell in the sandbox jail with a 600 s budget.
   n <= 5 (vs recompute 0.45) but about 5x slower at n = 128. The single
   agent's LBFS candidates stay faster at every size.
 
-## eval2: dynamic agent generation (Qwen, LBFS, 3 seeds)
+## eval2: dynamic agent generation (Qwen, LBFS, 8 seeds)
 
 Source: `eval2/results.csv`, `runs/eval2_*`. Config `eval2.yaml`: plateau
 window 2 generations, epsilon 0.01, at most 1 active specialist, 3 candidates
-per specialist.
+per specialist, the same 64-call budget as the orchestrator arm. Seeds 1-3
+ran first; seeds 4-8 were added because 3 seeds showed no clear effect.
 
-| seed | dynamic agents: vs recompute | orchestrator: vs recompute | plateaus / specialists / specialist candidates |
+| seed | dynamic agents: vs recompute | orchestrator: vs recompute | specialists / their candidates / gains |
 |---|---|---|---|
-| 1 | 0.43 | 0.71 | 2 / 2 / 4 |
-| 2 | 1.30 | 0.31 | 1 / 1 / 3 |
-| 3 | 0.56 | 0.36 | 1 / 1 / 2 |
+| 1 | 0.43 | 0.71 | 2 / 4 / 0 |
+| 2 | 1.30 | 0.31 | 1 / 3 / 1 |
+| 3 | 0.56 | 0.36 | 1 / 2 / 0 |
+| 4 | 0.44 | 0.45 | 2 / 5 / 2 |
+| 5 | 0.28 | 0.57 | 2 / 3 / 0 |
+| 6 | 0.33 | 0.45 (final FAIL) | 2 / 4 / 0 |
+| 7 | 0.65 | 1.03 | 0 / 0 / 0 |
+| 8 | 0.36 | 0.38 | 2 / 4 / 0 |
+| **median** | **0.44** | **0.45** | |
 
-- **The mechanism works as designed.** All three runs detect an efficiency
+- **The mechanism works as designed.** 7 of 8 runs detect an efficiency
   plateau (correct candidates, best work ratio flat for 2 generations),
-  spawn a specialist with a focus written from it, and retire it after its
-  budget or a window without gain.
-- **Specialists rarely help.** Of 9 specialist candidates, 1 became the
-  population best (seed 2, gen006_c02, search work ratio 0.683 -> 0.657);
-  the others were slower or failed correctness. None was the final graded
-  candidate.
-- The final results differ between the arms (one better, two worse), but
-  the arms also differ in how many model calls the rest of the search made
-  (26-28 vs 26-49), and with 3 seeds the spread between seeds is larger than
-  the difference between arms. **No effect can be claimed in either
-  direction** from this sample.
-- Seed 2 shows the LBFS small-graph problem again: its best search candidate
-  (0.654) grades at 1.061 on n <= 5.
+  spawn a specialist whose focus is written from it, and retire it after its
+  budget or a window without gain. In seed 7 the search kept improving, so
+  no specialist was needed.
+- **Specialists rarely help.** Of 25 specialist candidates, 3 became the
+  population best. One of them, seed 4's gen007_c02, became the final answer
+  (search work ratio 0.593 -> 0.470).
+- **Outcome:** dynamic agents gave the lower final value in 6 of 8 paired
+  seeds, but the medians are nearly equal (0.44 vs 0.45). Seed 2 has a large
+  loss (+0.99). Exact two-sided Wilcoxon signed-rank test p = 0.46; sign test
+  p = 0.29. **No significant effect at 8 seeds.**
+- Final-grade correctness: 8/8 with dynamic agents, 7/8 without. In
+  orchestrator seed 6, all three final candidates fail one case each at
+  n = 5. One run is no evidence of a correctness effect.
+- Cost: median 30 vs 28 model calls (same budget), with more tokens for
+  dynamic agents (the specialists' prompts carry the plateau context).
+- **The small-graph problem on LBFS:** seed 2's best search candidate (0.654
+  on n <= 4) grades at 1.061 on n <= 5. The engine's final-candidate choice
+  is correct: the two grades cover different graphs and update sequences.
+- Selection seeding changed between the batches. Seeds 1-3 ran with one RNG
+  stream per run; seeds 4-8 also ran on that code. The per-generation
+  reseeding fixed afterwards (see the bug hunt) affects only future runs and
+  resumed ones.
 
 ## eval3: second model (Gemma-4-31B-it, one seed)
 
@@ -137,8 +153,9 @@ Source: `selftest_dfs_n5.log`, `tests/test_verifier_iso.py`.
   - The validate-or-rebuild reference and Yang et al.'s fully dynamic DFS
     (Algorithms 2-5, implemented in `selftest/references.py`) are accepted.
   - The equivalent control (different tie-break) is accepted.
-  - All 21 real faults are rejected: 14 seeded faults and 7 one-line
+  - All 22 real faults are rejected: 15 seeded faults and 7 one-line
     mutations of the Yang implementation. **Zero false negatives at n <= 5.**
+    D16 (wrong parent with valid times) was added after the bug hunt below.
 - **Neighbour order:** the Yang reference visits neighbours in old discovery
   order. The paper leaves the order open; vertex order (mutation Y7) breaks
   the tree over update sequences, and the self-test catches it only through
@@ -161,7 +178,7 @@ Source: `ui_check/*.png`, `runs/ui_browser_e2e_bfs`.
 
 ## Threats to validity
 
-- Three seeds per cell (one in eval3); medians only, no significance claims.
+- Three seeds per cell in eval1, one in eval3, eight in eval2; medians, and an exact paired test only for eval2.
 - Two models from one provider; no closed frontier model and no Claude Code
   or Codex sessions (no keys).
 - Calibration problems are solved quickly; differences between modes show
@@ -170,3 +187,18 @@ Source: `ui_check/*.png`, `runs/ui_browser_e2e_bfs`.
   it, but only on the n <= 5 graphs. Large-graph speedups come from the
   separate benchmark.
 - LLM sampling is not seeded; only parent selection is.
+
+## Bug hunt and hardening (after the campaigns)
+
+Five read-only review agents and one security agent tried to break the tool.
+These are the confirmed findings, each fixed with a regression test:
+
+| area | finding | effect on reported results |
+|---|---|---|
+| DFS checker | accepted a parent tree no DFS produces (parent = shallower ancestor via a forward edge); NaN times could hang it | none: all 12 DFS finals re-graded PASS with the fixed checker (`dfs_checker_regrade.json`); an exhaustive n <= 4 check confirms 0 wrong accepts/rejects |
+| SCC checker | pairwise maximality missed a cycle through 3+ components | none: no SCC campaign |
+| Timing | a candidate could patch the clock, `range`, `json` or stdout, or cache by graph object across repeats | none found: no campaign candidate touches timing or these modules (grep); integrity stays best-effort against frame-walking code |
+| Sandbox | world-readable host data (/var/log, /opt, /boot, /etc/ssh) was readable and could reach the LLM via the result | secrets, network and writes were blocked already; now hidden too; /etc stays (interpreter needs it) |
+| Harness | agent could grade a file other than candidate.py, edit graded snapshots, exceed max_checks, run --final repeatedly | transcripts show none of this; now enforced, snapshots hashed (`final_intact` column) |
+| Engine | resume reseeded selection differently and refunded calls of a crashed generation; duplicate specialist ids | no campaign run was resumed (one run_start per run) |
+| UI server | first websocket after launch refused (403); control accepted on ended runs; dashboard HTML injection from LLM text | UI only |

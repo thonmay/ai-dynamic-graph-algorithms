@@ -370,13 +370,13 @@ def test_bfs_distance_field_is_certified():
 
 
 def test_fault_corpus_metadata_complete():
-    """Each problem has 14 real faults + 1 equivalent control, all with
-    documented metadata; real faults carry an n<=5 counterexample."""
+    """Each problem has 14 real faults (15 for DFS) + 1 equivalent control,
+    all with documented metadata; real faults carry an n<=5 counterexample."""
     for pname in ROOTED_PROBLEMS:
         faults = faults_for(pname)
         real = [f for f in faults if not f["is_equivalent"]]
         ctrl = [f for f in faults if f["is_equivalent"]]
-        assert len(real) == 14, (pname, len(real))
+        assert len(real) == (15 if pname == "dynamic_dfs" else 14), (pname, len(real))
         assert len(ctrl) == 1, (pname, len(ctrl))
         for f in faults:
             assert f["id"] and f["description"] and f["fault_class"]

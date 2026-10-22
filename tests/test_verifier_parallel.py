@@ -181,3 +181,38 @@ def test_failing_context_survives_malformed_state():
     assert not _invariant_holds(p, bad, g, None)
     ctx = _failing_context(p, bad, g, None)
     assert "checker_error" in ctx
+
+
+def test_dfs_rejects_parent_that_did_not_discover():
+    """Real DFS times, but parent[2] = 0 although 1 discovered 2 (0->1->2 with
+    the forward edge 0->2): no DFS produces this tree."""
+    import numpy as np
+    p = get_problem("dynamic_dfs")
+    g = np.array([[0, 1, 1], [0, 0, 1], [0, 1, 0]])
+    bad = {"parent": [None, 0, 0], "discover": [0, 1, 2], "finish": [5, 4, 3]}
+    assert not p.check_invariant(bad, g, 0)
+    assert not p.check_invariant({**bad, "finish": {}}, g, 0)
+    assert p.check_invariant({**bad, "parent": [None, 0, 1]}, g, 0)
+
+
+def test_scc_rejects_split_cycle_through_three_components():
+    """Pairwise merging finds no mutually reachable pair in a 3-cycle split
+    into singletons; the triple is one SCC."""
+    import numpy as np
+    p = get_problem("dynamic_scc")
+    g = np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+    assert not p.check_invariant({"components": [[0], [1], [2]]}, g, None)
+    assert p.check_invariant({"components": [[2, 0, 1]]}, g, None)
+
+
+def test_dfs_checker_rejects_nan_parent_cycle_without_hanging():
+    import numpy as np
+    p = get_problem("dynamic_dfs")
+    g = np.array([[0, 1, 0], [0, 0, 1], [0, 1, 0]])
+    nan = float("nan")
+    assert not p.check_invariant({"parent": [None, 2, 1], "discover": [0, nan, nan],
+                                  "finish": [5, nan, nan]}, g, 0)
+    assert not p.check_invariant({"parent": [None, 0, 1], "discover": [0, 1.0, 2],
+                                  "finish": [5, 4, 3]}, g, 0)
+    assert p.check_invariant({"parent": [None, 0, 1], "discover": [0, 1, 2],
+                              "finish": [5, 4, 3]}, g, 0)

@@ -81,7 +81,7 @@ class Dashboard:
             "total_candidates": total,
             "fitness_history": fitness_history,
             "candidates": all_candidates,
-        }, indent=2)
+        }, indent=2).replace("<", "\\u003c")  # no "</script>" from LLM text inside <script>
 
         return f"""<!DOCTYPE html>
 <html lang="en">
@@ -178,6 +178,9 @@ class Dashboard:
 
 <script>
 const DATA = {data_json};
+// Candidate ids, errors and failing cases come from LLM-written code: escape
+// everything that goes into innerHTML.
+const esc = v => String(v ?? '').replace(/[&<>"']/g, ch => ({{'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}})[ch]);
 
 // Overview
 document.getElementById('m-best').textContent = DATA.best_fitness.toFixed(2);
@@ -208,13 +211,13 @@ if (history.length > 0) {{
 const candTable = document.querySelector('#cand-table tbody');
 DATA.candidates.forEach(c => {{
   candTable.innerHTML += `<tr>
-    <td>${{c.id}}</td><td>${{c.gen}}</td>
-    <td class="state-${{c.state}}">${{c.state}}</td>
+    <td>${{esc(c.id)}}</td><td>${{esc(c.gen)}}</td>
+    <td class="state-${{esc(c.state)}}">${{esc(c.state)}}</td>
     <td>${{c.fitness?.toFixed(2) ?? '--'}}</td>
     <td>${{c.work_ratio?.toFixed(2) ?? '--'}}</td>
-    <td>${{c.tests_passed}}/${{c.tests_total}}</td>
+    <td>${{esc(c.tests_passed)}}/${{esc(c.tests_total)}}</td>
     <td>${{c.timeout ? 'Y' : ''}}</td>
-    <td>${{(c.error_message || '').substring(0, 60)}}</td>
+    <td>${{esc((c.error_message || '').substring(0, 60))}}</td>
   </tr>`;
 }});
 
@@ -230,13 +233,13 @@ function renderGen(genNum) {{
   tbody.innerHTML = '';
   DATA.candidates.filter(c => c.gen == genNum).forEach(c => {{
     tbody.innerHTML += `<tr>
-      <td>${{c.id}}</td>
-      <td class="state-${{c.state}}">${{c.state}}</td>
+      <td>${{esc(c.id)}}</td>
+      <td class="state-${{esc(c.state)}}">${{esc(c.state)}}</td>
       <td>${{c.fitness?.toFixed(2) ?? '--'}}</td>
       <td>${{c.work_ratio?.toFixed(2) ?? '--'}}</td>
-      <td>${{c.tests_passed}}/${{c.tests_total}}</td>
+      <td>${{esc(c.tests_passed)}}/${{esc(c.tests_total)}}</td>
       <td>${{c.timeout ? 'Y' : ''}}</td>
-      <td>${{(c.parent_ids || []).join(', ')}}</td>
+      <td>${{esc((c.parent_ids || []).join(', '))}}</td>
     </tr>`;
   }});
 }}
@@ -249,8 +252,8 @@ if (failed.length > 0) {{
   refList.innerHTML = '<h3>Failed Candidates with Failing Cases</h3>';
   failed.forEach(c => {{
     refList.innerHTML += `<div style="margin-bottom:12px;padding:8px;border-left:3px solid #e94560;">
-      <strong>${{c.id}}</strong> (gen ${{c.gen}}, fitness ${{c.fitness?.toFixed(2)}})<br>
-      <pre>${{JSON.stringify(c.failing_case, null, 2)}}</pre>
+      <strong>${{esc(c.id)}}</strong> (gen ${{esc(c.gen)}}, fitness ${{c.fitness?.toFixed(2)}})<br>
+      <pre>${{esc(JSON.stringify(c.failing_case, null, 2))}}</pre>
     </div>`;
   }});
 }}

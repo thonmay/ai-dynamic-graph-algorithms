@@ -339,6 +339,43 @@ def test_resume_keeps_call_count(tmp_path):
     assert second["model_calls"] == len(calls) > first["model_calls"]
 
 
+
+def _gen_parents(run_dir, gen):
+    return [(e["id"], e.get("parent_ids")) for e in read_events(run_dir)
+            if e["type"] == "candidate_generated" and e.get("gen") == gen]
+
+
+def test_resume_draws_the_same_selection_stream(tmp_path):
+    """Parent selection in a generation must not depend on whether the run
+    was interrupted before it."""
+    base = dict(problem="dynamic_bfs", provider="mock", population_size=3, elitism_k=1,
+                early_stop_on_success=False, mock_script=["bad"] * 40, model_call_budget=100,
+                bound=Bound(n_max=3, n_random=0, seq_len_max=2, seq_count=1, seed=1),
+                search_n_max=2, search_seq_count=1, workdir=str(tmp_path), selection_seed=7)
+    Orchestrator(RunConfig(max_generations=3, **base), run_id="a").run()
+    Orchestrator(RunConfig(max_generations=1, **base), run_id="b").run()
+    Orchestrator(RunConfig(max_generations=3, **base), run_id="b").run()
+    for gen in (2, 3):
+        assert _gen_parents(tmp_path / "a", gen) == _gen_parents(tmp_path / "b", gen)
+
+
+def test_resume_counts_calls_of_a_crashed_generation(tmp_path):
+    """Calls logged after the last checkpoint (a crash mid-generation) stay
+    spent after a resume."""
+    base = dict(problem="dynamic_bfs", provider="mock", population_size=2, elitism_k=1,
+                early_stop_on_success=False, mock_script=["bad"] * 20, model_call_budget=100,
+                bound=Bound(n_max=3, n_random=0, seq_len_max=2, seq_count=1, seed=1),
+                search_n_max=2, search_seq_count=1, workdir=str(tmp_path))
+    Orchestrator(RunConfig(max_generations=1, **base), run_id="r").run()
+    from evoalgo.events import EventLog
+    log = EventLog(tmp_path / "r")
+    for i in range(3):  # three calls of a generation that never committed
+        log.emit("agent_call_start", gen=2, role="mutate", id=f"gen002_c0{i + 1}")
+    orch = Orchestrator(RunConfig(max_generations=1, **base), run_id="r")
+    assert orch._try_resume()
+    starts = sum(e["type"] == "agent_call_start" for e in read_events(tmp_path / "r"))
+    assert orch.model_calls == orch.provider.call_count == starts
+
 def test_api_error_text_drops_response_body():
     from evoalgo.agents.api import _safe_error
 

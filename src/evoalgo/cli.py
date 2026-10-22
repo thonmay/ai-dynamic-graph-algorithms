@@ -133,9 +133,12 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--goal", default=None, help="research goal for this run")
     p_init.add_argument("--harness", default=None,
                         help="which agent drives it (claude, codex, opencode), shown in the UI")
+    p_init.add_argument("--max-checks", type=int, default=None,
+                        help="graded checks allowed before the final grade (default: no limit)")
 
     p_check = subparsers.add_parser("check", help="grade a candidate in a workspace, print JSON")
-    p_check.add_argument("file", nargs="?", default=None, help="default: candidate.py")
+    p_check.add_argument("file", nargs="?", default=None,
+                         help="the workspace's candidate.py (the only file graded; default)")
     p_check.add_argument("--level", choices=["examples", "search", "full"], default="search",
                          help="examples: n<=3, s; search: n<=4, s (default); full: n<=5, minutes")
     p_check.add_argument("--final", action="store_true",
@@ -361,7 +364,8 @@ def cmd_workspace(args) -> int:
     try:
         if args.command == "init":
             ws = wsm.init_workspace(args.pack, args.dir, runs_root=args.runs, run_id=args.run_id,
-                                    goal=args.goal, harness=args.harness)
+                                    goal=args.goal, harness=args.harness,
+                                    max_checks=args.max_checks)
             print(json.dumps({"workspace": str(ws.dir), "run_dir": str(ws.run_dir),
                               "program": str(ws.dir / wsm.PROGRAM_FILE),
                               "candidate": str(ws.dir / wsm.CANDIDATE_FILE)}, indent=2))

@@ -67,7 +67,8 @@ def run_sequence(mod, graph: list[list[int]], ops: list[tuple[str, int, int]], d
         t0 = time.perf_counter_ns()
         state = fn(g, (u, v), state)
         total += time.perf_counter_ns() - t0
-        if check and i % CHECK_EVERY == 0:
+        # Every CHECK_EVERY-th state, and always the last one.
+        if check and (i % CHECK_EVERY == 0 or i == len(ops) - 1):
             try:
                 ok = problem.check_invariant(copy.deepcopy(state), np.array(g), 0 if problem.needs_root else None)
             except Exception as e:
@@ -182,7 +183,11 @@ def main() -> int:
     rows = []
     for r in passed:
         pack = r["pack"]
-        code = (REPO / "runs" / r["run_id"] / "candidates" / f"{r['final_id']}.py").read_text()
+        path = REPO / "runs" / r["run_id"] / "candidates" / f"{r['final_id']}.py"
+        if not path.is_file():
+            print(f"skip {r['run_id']}: no snapshot {path.name}", file=sys.stderr)
+            continue
+        code = path.read_text()
         ref = _generate_known_good_candidate(pack)
         for n in args.sizes:
             res = run_cell({"cand_code": code, "ref_code": ref, "pack": pack, "n": n,

@@ -26,6 +26,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -234,7 +235,8 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
         if (req.pack is None) == (req.config is None):
             raise HTTPException(422, "give exactly one of 'pack' or 'config'")
         if req.pack is not None:
-            if not RUN_ID.match(req.pack):
+            # A name under packs_root only (resolve_pack also takes paths).
+            if not RUN_ID.match(req.pack) or not (Path(packs_root) / req.pack).is_dir():
                 raise HTTPException(404, "unknown pack")
             try:
                 pack = resolve_pack(req.pack, packs_root)
@@ -278,13 +280,22 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
         launch_dir.mkdir(exist_ok=True)
         config_path = launch_dir / f"{run_id}.yaml"
         config.save(config_path)
-        with open(launch_dir / f"{run_id}.log", "ab") as log:
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "evoalgo.cli", "start", str(config_path),
-                 "--run-id", run_id],
-                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
+        # The run folder exists before the response: the UI opens the run's
+        # stream right away, and the engine starts writing only after its
+        # imports (~1 s), so an absent folder would refuse the first connect.
+        (root / run_id).mkdir()
+        config.save(root / run_id / "config.yaml")
+        try:
+            with open(launch_dir / f"{run_id}.log", "ab") as log:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "evoalgo.cli", "start", str(config_path),
+                     "--run-id", run_id],
+                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+        except OSError:
+            shutil.rmtree(root / run_id, ignore_errors=True)
+            raise
         return {"run_id": run_id, "pid": proc.pid}
 
     @app.websocket("/api/runs/{run_id}/ws")
@@ -390,6 +401,10 @@ async def _commands(ws: WebSocket, run_dir: Path) -> None:
             continue
         command = {k: message[k] for k in ("cmd", "text", "field", "value") if k in message}
         error = validate_command(command)
+        bounds = [e.get("type") for e in read_events(run_dir) if e.get("type") in ("run_start", "run_end")]
+        if not error and bounds and bounds[-1] == "run_end":  # a resume adds a run_start
+            # Nothing would read it; a later resume would apply a stale command.
+            error = "the run has ended"
         if error:
             await ws.send_json({"type": "error", "reason": error})
             continue
