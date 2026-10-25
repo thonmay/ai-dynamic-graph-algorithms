@@ -6,6 +6,8 @@ Executes candidate algorithms in a subprocess with:
     namespace, a read-only file tree holding only the interpreter and its
     import paths, so no home directory, token files or /proc/<pid>/environ
     of the verifier
+  - resource limits (address space, CPU time, process count) and capped
+    stdout/stderr, so a candidate cannot exhaust the host (see _limits)
   - a scrubbed environment and an isolated interpreter (-I)
   - structured result output (JSON over stdout)
 
@@ -47,8 +49,9 @@ import numpy as np
 # patch the verifier. The jail uses unprivileged user namespaces only (no
 # root, no extra packages):
 #
-#   unshare -rnmpf    new user (mapped to root inside), net (loopback only,
-#                     down), mount and pid namespaces
+#   unshare -rnmpfi   new user (mapped to root inside), net (loopback only,
+#                     down), mount, pid and IPC namespaces (SysV shared
+#                     memory would otherwise outlive the candidate on the host)
 #   mount script      bind the host tree at /mnt, hide /home, /proj, /tmp,
 #                     /var, /local, /repo and the run/session dirs behind tmpfs,
 #                     bind back only the interpreter's import paths, make the
@@ -189,13 +192,124 @@ def jailed_python(readonly: tuple[str, ...] = (), python: str | None = None) -> 
 
 def _jail_argv(python: str, keep: list[str]) -> list[str]:
     hidden = sorted({d for h in HIDDEN_DIRS for d in (h, os.path.realpath(h))})
-    return ["unshare", "-rnmpf", "--kill-child", "sh", "-c", _JAIL_SCRIPT, "jail",
+    return ["unshare", "-rnmpfi", "--kill-child", "sh", "-c", _JAIL_SCRIPT, "jail",
             str(os.getuid()), str(os.getgid()), *hidden, "--keep", *keep, "--", python]
+
+
+# numpy's BLAS otherwise starts one thread per core in every runner: the
+# candidate needs none, and threads count against the process limit.
+_THREAD_ENV = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
 
 
 def _jail_env() -> dict[str, str]:
     return {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": "/nonexistent", "LANG": "C.UTF-8",
-            "_EVOALGO_RDONLY": _RDONLY_SRC}
+            "_EVOALGO_RDONLY": _RDONLY_SRC, **_THREAD_ENV}
+
+
+# -- resource limits ----------------------------------------------------------
+#
+# The jail stops a candidate reading or writing the host; these stop it
+# exhausting it. Set by the runner before candidate code runs, soft = hard, so
+# the candidate cannot raise them (raising a hard limit needs CAP_SYS_RESOURCE
+# in the initial user namespace). RLIMIT_NPROC counts per user namespace, and
+# every runner has its own, so parallel workers do not share the budget.
+# Measured: a final-grade chunk (1000 base graphs at n = 5) peaks near 620 MB
+# resident and returns about 50 MB of JSON.
+MEMORY_LIMIT_MB = 4096      # address space per runner
+MAX_FILE_MB = 16            # largest file, also memory files (memfd); /tmp is 64 MB
+MAX_OPEN_FILES = 64         # file descriptors (numpy's import needs about 10)
+MAX_PROCESSES = 4           # tasks of the uid in the runner's user namespace
+                            # (inner unshare + runner + 2 for the candidate)
+MAX_RESULT_MB = 256         # result JSON the verifier will read
+MAX_STDERR_KB = 64          # stderr tail kept for error messages
+CPU_GRACE_SECONDS = 5       # CPU limit = wall-clock timeout + this
+
+
+def _limits(timeout: float, jailed: bool) -> dict[str, int]:
+    """rlimits the runner applies to itself. Without the jail the process
+    limit would count every process of the user on the host, so it is left
+    out (EVOALGO_SANDBOX=none is unconfined anyway)."""
+    limits = {"RLIMIT_AS": MEMORY_LIMIT_MB << 20,
+              "RLIMIT_CPU": int(timeout) + CPU_GRACE_SECONDS,
+              # Also bounds memfd_create files, which RLIMIT_AS does not
+              # count; with the open-file limit, memory files total at most
+              # MAX_OPEN_FILES * MAX_FILE_MB.
+              "RLIMIT_FSIZE": MAX_FILE_MB << 20,
+              "RLIMIT_NOFILE": MAX_OPEN_FILES,
+              "RLIMIT_CORE": 0}
+    if jailed:
+        limits["RLIMIT_NPROC"] = MAX_PROCESSES
+    return limits
+
+
+def _read_capped(stream, cap: int, keep_tail: bool, out: dict) -> None:
+    """Drain ``stream``; keep at most ``cap`` bytes (the head, or the tail when
+    ``keep_tail``). Sets out["overflow"] when more arrived."""
+    buf = bytearray()
+    while chunk := stream.read(1 << 16):
+        buf += chunk
+        if len(buf) > cap:
+            out["overflow"] = True
+            if keep_tail:
+                del buf[:-cap]
+            else:
+                del buf[cap:]
+                if out.get("kill"):
+                    out["kill"]()
+                    break
+    out["data"] = bytes(buf)
+
+
+def _run_capped(argv: list[str], input_bytes: bytes, env: dict[str, str], timeout: float,
+                stdout_cap: int, stderr_cap: int):
+    """subprocess.run with bounded memory: stdout beyond ``stdout_cap`` kills
+    the process, stderr keeps its last ``stderr_cap`` bytes.
+
+    Returns (returncode, stdout, stderr, timed_out, stdout_overflow).
+    """
+    import threading
+
+    # Own process group: unjailed (EVOALGO_SANDBOX=none), a forked child of
+    # the candidate would keep the pipes open after the runner is killed.
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=env, start_new_session=True)
+
+    def kill():
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    out: dict = {"kill": kill}
+    err: dict = {}
+
+    def feed():
+        try:
+            proc.stdin.write(input_bytes)
+        except (BrokenPipeError, OSError):
+            pass  # the runner died before reading all input
+        finally:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
+    threads = [threading.Thread(target=feed, daemon=True),
+               threading.Thread(target=_read_capped, args=(proc.stdout, stdout_cap, False, out), daemon=True),
+               threading.Thread(target=_read_capped, args=(proc.stderr, stderr_cap, True, err), daemon=True)]
+    for t in threads:
+        t.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    kill()  # whatever of the group is left (nothing, jailed: --kill-child)
+    proc.wait()
+    for t in threads:
+        t.join()
+    return (proc.returncode, out.get("data", b""), err.get("data", b""), timed_out,
+            bool(out.get("overflow")))
 
 
 _RUNNER_TEMPLATE = textwrap.dedent('''
@@ -220,6 +334,22 @@ def run():
     clock = time.perf_counter_ns
     reps = tuple(range(repeat))  # no range() call in the timed loops
     np = __import__("numpy")  # before the candidate can patch what it imports
+    # Resource limits (see the constants in sandbox.py), with hard limits the
+    # candidate cannot raise. After numpy: its import maps more memory.
+    import resource, signal
+    for name, value in data.get("limits", {}).items():
+        # CPU: the kernel sends SIGKILL at the hard limit, SIGXCPU at the
+        # soft one; equal limits would skip the signal handled below.
+        hard = value + 1 if name == "RLIMIT_CPU" else value
+        resource.setrlimit(getattr(resource, name), (value, hard))
+    # Through unshare the parent cannot see which signal ended the runner, so
+    # say it here. A candidate that replaces the handler is SIGKILLed one CPU
+    # second later instead (reported as "killed").
+    _err = os.dup(2)
+    def _on_xcpu(*_):
+        os.write(_err, b"\\nEVOALGO_CPU_LIMIT\\n")
+        os._exit(152)
+    signal.signal(signal.SIGXCPU, _on_xcpu)
     # The candidate's prints go to stderr, not into the result channel.
     sys.stdout = sys.stderr
     import linecache, types
@@ -455,61 +585,59 @@ class Sandbox:
             "root": root,
             "test_cases": test_cases,
             "repeat": repeat,
+            "limits": _limits(call_timeout, jailed=jail is not None),
         }
 
+        argv = (jail or [self.python]) + ["-I", "-B", "-c", _RUNNER_TEMPLATE]
+        rc, out, err, timed_out, overflow = _run_capped(
+            argv, json.dumps(input_data).encode(),
+            env=_jail_env() if jail else {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", **_THREAD_ENV},
+            timeout=call_timeout, stdout_cap=MAX_RESULT_MB << 20, stderr_cap=MAX_STDERR_KB << 10)
+        stdout = out.decode(errors="replace")
+        stderr = err.decode(errors="replace")
+
+        if timed_out:
+            return SandboxResult(status="timeout", error=f"Exceeded {call_timeout}s")
+        if overflow:
+            return SandboxResult(status="crash", error=f"Output exceeded {MAX_RESULT_MB} MB")
+
+        if "EVOALGO_CPU_LIMIT" in stderr[-200:]:
+            return SandboxResult(status="timeout", error="CPU time limit exceeded")
+        # Through unshare a signal death of the candidate shows as exit 1
+        # with this message instead of -N/128+N.
+        signalled = jail and not stdout and "sigprocmask unblock failed" in stderr
+        if rc in (-signal.SIGKILL, 137) or signalled:
+            return SandboxResult(status="timeout", error="Process killed (OOM or CPU limit)")
+
+        if rc != 0 and not stdout:
+            return SandboxResult(status="crash", error=stderr or f"Exit code {rc}")
+
         try:
-            argv = (jail or [self.python]) + ["-I", "-B", "-c", _RUNNER_TEMPLATE]
-            proc = subprocess.run(
-                argv,
-                input=json.dumps(input_data),
-                capture_output=True,
-                text=True,
-                timeout=call_timeout,
-                env=_jail_env() if jail else {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"},
+            result = json.loads(stdout)
+        except (ValueError, RecursionError):  # JSONDecodeError, or nesting a candidate forged
+            return SandboxResult(
+                status="crash",
+                error=f"Invalid output from runner: {stdout[:500]}",
+                traceback_str=stderr,
             )
 
-            # Through unshare a SIGKILL of the candidate (OOM killer) shows as
-            # exit 1 with this message instead of -9/137.
-            killed = proc.returncode in (-signal.SIGKILL, 137) or (
-                jail and not proc.stdout and "sigprocmask unblock failed" in proc.stderr)
-            if killed:
-                return SandboxResult(status="timeout", error="Process killed (likely OOM)")
-
-            if proc.returncode != 0 and not proc.stdout:
-                return SandboxResult(
-                    status="crash",
-                    error=proc.stderr or f"Exit code {proc.returncode}",
-                )
-
-            try:
-                result = json.loads(proc.stdout)
-            except json.JSONDecodeError:
-                return SandboxResult(
-                    status="crash",
-                    error=f"Invalid output from runner: {proc.stdout[:500]}",
-                    traceback_str=proc.stderr,
-                )
-
-            if result.get("status") == "ok":
-                return SandboxResult(
-                    status="ok",
-                    all_results=result.get("all_results", []),
-                )
-            elif result.get("status") == "crash":
-                return SandboxResult(
-                    status="crash",
-                    error=result.get("error"),
-                    traceback_str=result.get("traceback"),
-                    all_results=result.get("partial_all_results"),
-                )
-            else:
-                return SandboxResult(
-                    status="crash",
-                    error=f"Unknown status: {result.get('status')}",
-                )
-
-        except subprocess.TimeoutExpired:
-            return SandboxResult(status="timeout", error=f"Exceeded {call_timeout}s")
+        if result.get("status") == "ok":
+            return SandboxResult(
+                status="ok",
+                all_results=result.get("all_results", []),
+            )
+        elif result.get("status") == "crash":
+            return SandboxResult(
+                status="crash",
+                error=result.get("error"),
+                traceback_str=result.get("traceback"),
+                all_results=result.get("partial_all_results"),
+            )
+        else:
+            return SandboxResult(
+                status="crash",
+                error=f"Unknown status: {result.get('status')}",
+            )
 
     def execute(
         self,

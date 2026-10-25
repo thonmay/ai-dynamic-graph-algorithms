@@ -1,6 +1,6 @@
 """Known-good reference candidates for the verifier self-test.
 
-Two honest references per rooted problem (BFS, DFS), each a self-contained
+Two honest references per corpus problem (BFS, DFS, LBFS), each a self-contained
 candidate module (``init`` / ``insert_edge`` / ``delete_edge``) that the
 sandbox can exec:
 
@@ -19,9 +19,13 @@ sandbox can exec:
   partial repair.
 - **control** -- an *equivalent* valid variant: the same validate-or-rebuild
   structure but with a different tie-break (descending neighbour order in the
-  offline rebuild). It produces a different (but valid) tree/forest than the
-  known-good. The verifier must accept it -- this proves the checker is
-  invariant-based and not biased to one tie-break.
+  offline BFS/DFS rebuild; for LBFS the highest start vertex and maximum-id
+  ties). It produces a different (but valid) output than the known-good. The
+  verifier must accept it -- this proves the checker is invariant-based and
+  not biased to one tie-break.
+
+The LBFS reference keeps the ordering while it still satisfies the (LB)
+property and otherwise rebuilds by partition refinement (see the LBFS blocks).
 
 The references are assembled from named code blocks so the fault corpus
 (:mod:`evoalgo.selftest.faults`) can inject a one-line mutation by overriding a
@@ -223,6 +227,92 @@ def _recompute(graph):
 
 
 # ---------------------------------------------------------------------------
+# LBFS blocks (undirected, any start; certificate = the ordering)
+# ---------------------------------------------------------------------------
+#
+# Validate-or-rebuild, like BFS/DFS: an update keeps the ordering while it is
+# still a LexBFS ordering of the new graph, else rebuilds by partition
+# refinement (Habib et al. 2000). _is_lexbfs is the (LB) 4-point property the
+# verifier checks (Corneil & Krueger 2008); it agrees with the verifier's
+# check on all 124,469 orderings of the labelled graphs with n <= 5.
+
+_LBFS_BLOCKS: dict[str, str] = {
+    "recompute": '''
+def _recompute(graph):
+    """LexBFS by partition refinement from vertex 0, minimum-id tie-break."""
+    n = len(graph)
+    cells = [list(range(n))] if n else []
+    order = []
+    while cells:
+        p = cells[0].pop(0)
+        order.append(p)
+        refined = []
+        for cell in cells:
+            inside = [u for u in cell if graph[p][u]]
+            outside = [u for u in cell if not graph[p][u]]
+            refined.extend(c for c in (inside, outside) if c)
+        cells = refined
+    return order
+''',
+    "is_lexbfs": '''
+def _is_lexbfs(graph, order):
+    """(LB) 4-point property: for positions a < b < c with ac an edge and ab
+    not, some d before a is adjacent to b and not to c."""
+    n = len(order)
+    for i in range(n):
+        a = order[i]
+        for j in range(i + 1, n):
+            b = order[j]
+            if graph[a][b]:
+                continue
+            for k in range(j + 1, n):
+                c = order[k]
+                if not graph[a][c]:
+                    continue
+                if not any(graph[d][b] and not graph[d][c] for d in order[:i]):
+                    return False
+    return True
+''',
+    "init": '''
+def init(graph):
+    return {"ordering": _recompute(graph)}
+''',
+    "insert": '''
+def insert_edge(graph, edge, state):
+    # Keep the ordering while it is still a LexBFS ordering, else rebuild.
+    if _is_lexbfs(graph, state["ordering"]):
+        return state
+    return {"ordering": _recompute(graph)}
+''',
+    "delete": '''
+def delete_edge(graph, edge, state):
+    if _is_lexbfs(graph, state["ordering"]):
+        return state
+    return {"ordering": _recompute(graph)}
+''',
+}
+
+_LBFS_BLOCK_ORDER = ["recompute", "is_lexbfs", "init", "insert", "delete"]
+
+# LBFS control: start at vertex n-1 with the maximum-id tie-break. A different
+# (but valid) LexBFS ordering than the known-good.
+_LBFS_CONTROL_OVERRIDES = {
+    "recompute": _LBFS_BLOCKS["recompute"]
+    .replace("from vertex 0, minimum-id tie-break.", "from vertex n-1, maximum-id tie-break (equivalent control).")
+    .replace("cells = [list(range(n))] if n else []", "cells = [list(range(n - 1, -1, -1))] if n else []"),
+}
+
+_BLOCK_SETS = {
+    "dynamic_dfs": (_DFS_BLOCKS, _DFS_BLOCK_ORDER, _DFS_CONTROL_OVERRIDES),
+    "dynamic_bfs": (_BFS_BLOCKS, _BFS_BLOCK_ORDER, _BFS_CONTROL_OVERRIDES),
+    "dynamic_lbfs": (_LBFS_BLOCKS, _LBFS_BLOCK_ORDER, _LBFS_CONTROL_OVERRIDES),
+}
+
+# Problems with a reference, fault corpus and equivalent control.
+CORPUS_PROBLEMS = tuple(_BLOCK_SETS)
+
+
+# ---------------------------------------------------------------------------
 # Yang et al. fully dynamic DFS (VLDB 2019), basic algorithms
 # ---------------------------------------------------------------------------
 #
@@ -346,26 +436,22 @@ def _assemble(blocks: dict[str, str], order: list[str],
 def reference_code(problem_name: str, control: bool = False) -> str:
     """Return the self-contained candidate source for a reference.
 
-    ``problem_name`` is ``dynamic_bfs`` or ``dynamic_dfs``. ``control=True``
-    returns the equivalent (different tie-break) variant; ``False`` returns the
+    ``problem_name`` is one of ``CORPUS_PROBLEMS``. ``control=True`` returns
+    the equivalent (different tie-break) variant; ``False`` returns the
     known-good.
     """
-    if problem_name == "dynamic_dfs":
-        overrides = _DFS_CONTROL_OVERRIDES if control else None
-        return _assemble(_DFS_BLOCKS, _DFS_BLOCK_ORDER, overrides)
-    if problem_name == "dynamic_bfs":
-        overrides = _BFS_CONTROL_OVERRIDES if control else None
-        return _assemble(_BFS_BLOCKS, _BFS_BLOCK_ORDER, overrides)
-    raise ValueError(f"No reference for problem: {problem_name}")
+    if problem_name not in _BLOCK_SETS:
+        raise ValueError(f"No reference for problem: {problem_name}")
+    blocks, order, control_overrides = _BLOCK_SETS[problem_name]
+    return _assemble(blocks, order, control_overrides if control else None)
 
 
 def reference_blocks(problem_name: str) -> tuple[dict[str, str], list[str]]:
-    """Return (blocks, order) for a rooted problem, for fault composition."""
-    if problem_name == "dynamic_dfs":
-        return _DFS_BLOCKS, _DFS_BLOCK_ORDER
-    if problem_name == "dynamic_bfs":
-        return _BFS_BLOCKS, _BFS_BLOCK_ORDER
-    raise ValueError(f"No reference blocks for problem: {problem_name}")
+    """Return (blocks, order) for a corpus problem, for fault composition."""
+    if problem_name not in _BLOCK_SETS:
+        raise ValueError(f"No reference blocks for problem: {problem_name}")
+    blocks, order, _ = _BLOCK_SETS[problem_name]
+    return blocks, order
 
 
 def reference_functions(problem_name: str) -> tuple:
@@ -417,8 +503,5 @@ def yang_mutation_code(mutation: dict) -> str:
     return code
 
 
-# Convenience: the known-good source for each rooted problem.
-REFERENCE_CODE = {
-    "dynamic_bfs": reference_code("dynamic_bfs"),
-    "dynamic_dfs": reference_code("dynamic_dfs"),
-}
+# Convenience: the known-good source for each corpus problem.
+REFERENCE_CODE = {name: reference_code(name) for name in CORPUS_PROBLEMS}

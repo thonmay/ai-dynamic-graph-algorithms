@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyEvents, bestPath, genAt, initialState } from './state'
+import { applyEvents, bestPath, failKind, failurePatterns, genAt, initialState } from './state'
 import type { RunEvent } from './types'
 
 function stream(): RunEvent[] {
@@ -94,5 +94,33 @@ describe('dynamic agent generation', () => {
                                 spawnedGen: 2, retiredGen: 3, retireReason: 'no_gain' }])
     expect(s.cands['gen003_c02'].agent).toBe('specialist-1')
     expect(s.log.some((l) => l.text === 'spawned specialist-1 · efficiency')).toBe(true)
+  })
+})
+
+describe('failure patterns', () => {
+  it('counts failures per generation by kind and graph size, up to the viewed generation', () => {
+    let seq = 200
+    const ev = (e: Record<string, unknown>) => ({ seq: seq++, ts: '2026-01-01T00:02:00Z', ...e }) as RunEvent
+    const s = applyEvents(initialState(), [
+      ...stream(),
+      ev({ type: 'candidate_verified', id: 'gen002_c02', gen: 2, state: 'FAIL', fitness: 0.9,
+           failing_case: { operation: 'delete (0, 2)', graph_n: 3 } }),
+      ev({ type: 'candidate_verified', id: 'gen002_c03', gen: 2, state: 'FAIL', timeout: true,
+           failing_case: { operation: 'timeout' } }),
+      ev({ type: 'candidate_verified', id: 'gen002_c04', gen: 2, state: 'CRASH',
+           failing_case: { operation: 'crash', graph_n: 2 }, error: 'KeyError: 0' }),
+      ev({ type: 'candidate_verified', id: 'gen002_c05', gen: 2, state: 'FAIL',
+           failing_case: { operation: 'insert (1, 0)', graph_n: 3 } }),
+    ])
+    const fp = failurePatterns(s, Infinity)
+    expect(fp.byGen.map((g) => [g.gen, g.failed, g.verified])).toEqual([[1, 1, 2], [2, 4, 5]])
+    // gen001_c02 has no operation in its failing case: counted as an unexplained failure
+    expect(fp.byGen[0].counts).toEqual({ crash: 1 })
+    expect(fp.byGen[1].counts).toEqual({ delete: 1, timeout: 1, crash: 1, insert: 1 })
+    expect(fp.byGen[1].example.delete).toBe('gen002_c02')
+    expect(fp.totals).toEqual({ crash: 2, delete: 1, timeout: 1, insert: 1 })
+    expect(fp.bySize).toEqual({ 2: 1, 3: 2 })
+    expect(failurePatterns(s, 1).failed).toBe(1)
+    expect(failKind(s.cands['gen002_c01'])).toBeNull()
   })
 })

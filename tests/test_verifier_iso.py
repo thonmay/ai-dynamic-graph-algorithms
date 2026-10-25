@@ -55,8 +55,10 @@ DIRECTED_COUNTS = {1: 1, 2: 3, 3: 16, 4: 218, 5: 9608}
 # Expected (digraph, root-orbit) class counts (OEIS A353996).
 ROOTED_COUNTS = {1: 1, 2: 4, 3: 36, 4: 752, 5: 45960}
 
-# Rooted problems that have a reference + fault corpus in the self-test.
-ROOTED_PROBLEMS = ("dynamic_bfs", "dynamic_dfs")
+# Problems that have a reference + fault corpus in the self-test.
+CORPUS_PROBLEMS = ("dynamic_bfs", "dynamic_dfs", "dynamic_lbfs")
+# Real faults per problem in the corpus.
+REAL_FAULTS = {"dynamic_bfs": 14, "dynamic_dfs": 15, "dynamic_lbfs": 12}
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +231,7 @@ def _verify_code(problem_name: str, code: str, n_max: int, tmp_path: Path) -> Ca
 @pytest.mark.slow
 def test_known_good_references_pass_n5(tmp_path):
     """The known-good validate-or-rebuild references must PASS at n<=5."""
-    for pname in ROOTED_PROBLEMS:
+    for pname in CORPUS_PROBLEMS:
         cand = _verify_code(pname, reference_code(pname), 5, tmp_path)
         assert cand.state.value == "PASS", (pname, cand.state.value, cand.failing_case)
 
@@ -241,7 +243,7 @@ def test_equivalent_controls_accepted_n5(tmp_path):
     This proves the checker is invariant-based and not biased to one
     tie-break: a different-but-valid tree/forest must pass.
     """
-    for pname in ROOTED_PROBLEMS:
+    for pname in CORPUS_PROBLEMS:
         for ctrl in equivalent_controls(pname):
             cand = _verify_code(pname, compose_fault_code(pname, ctrl), 5, tmp_path)
             assert cand.state.value == "PASS", (pname, ctrl["id"], cand.state.value)
@@ -253,7 +255,7 @@ def test_real_faults_rejected_n5(tmp_path):
 
     Zero false negatives: |{f in F : verifier accepts f}| == 0.
     """
-    for pname in ROOTED_PROBLEMS:
+    for pname in CORPUS_PROBLEMS:
         for fault in real_faults(pname):
             cand = _verify_code(pname, compose_fault_code(pname, fault), 5, tmp_path)
             assert cand.state.value in ("FAIL", "CRASH"), (
@@ -295,7 +297,7 @@ def test_parallel_workers_match_serial_n4(tmp_path):
     chunks before the first failing chunk, and stopping at it) rather than the
     degenerate single-chunk case.
     """
-    for pname in ROOTED_PROBLEMS:
+    for pname in CORPUS_PROBLEMS:
         codes = {
             "known-good": reference_code(pname),
             "fault0": compose_fault_code(pname, real_faults(pname)[0]),
@@ -317,37 +319,52 @@ def test_fault_counterexamples_trigger_invariant():
     """Fast (in-process): each real fault's documented counterexample violates
     the invariant, and each equivalent control does not. This re-checks the
     corpus metadata against the real check_invariant without the sandbox."""
-    problems = {n: get_problem(n) for n in ROOTED_PROBLEMS}
+    problems = {n: get_problem(n) for n in CORPUS_PROBLEMS}
     for fault in FAULTS:
         pname = fault["problem"]
         p = problems[pname]
+        root = 0 if p.needs_root else None
         code = compose_fault_code(pname, fault)
         ns: dict = {}
         exec(compile(code, "<cand>", "exec"), ns)
         init, ins, dele = ns["init"], ns["insert_edge"], ns["delete_edge"]
         if fault["is_equivalent"]:
             # Spot-check the control is valid on a small universe.
-            for g in load_nauty_rooted_digraphs(3):
+            for g in (load_nauty_rooted_digraphs(3) if p.directed else _undirected(3)):
                 gl = g.tolist()
                 st = init(gl)
-                assert p.check_invariant(st, g, 0), fault["id"]
+                assert p.check_invariant(st, g, root), fault["id"]
             continue
         n, gl = counterexample_graph(fault)
+        if not p.directed:
+            gl = [[gl[u][v] | gl[v][u] for v in range(n)] for u in range(n)]
         g = np.array(gl, dtype=int)
         st = init(gl)
         op = fault["counterexample"][2]
         if op == "init":
-            assert not p.check_invariant(st, g, 0), fault["id"]
+            assert not p.check_invariant(st, g, root), fault["id"]
         else:
             ot, (u, v) = op
             g2 = [row[:] for row in gl]
-            if ot == "insert":
-                g2[u][v] = 1
-                st2 = ins(g2, (u, v), st)
-            else:
-                g2[u][v] = 0
-                st2 = dele(g2, (u, v), st)
-            assert not p.check_invariant(st2, np.array(g2, dtype=int), 0), fault["id"]
+            bit = 1 if ot == "insert" else 0
+            g2[u][v] = bit
+            if not p.directed:
+                g2[v][u] = bit
+            st2 = (ins if ot == "insert" else dele)(g2, (u, v), st)
+            assert not p.check_invariant(st2, np.array(g2, dtype=int), root), fault["id"]
+
+
+def _undirected(n: int) -> list[np.ndarray]:
+    """Every labelled undirected graph on n vertices."""
+    import itertools
+    pairs = list(itertools.combinations(range(n), 2))
+    out = []
+    for bits in itertools.product([0, 1], repeat=len(pairs)):
+        g = np.zeros((n, n), dtype=int)
+        for (u, v), b in zip(pairs, bits):
+            g[u, v] = g[v, u] = b
+        out.append(g)
+    return out
 
 
 def test_bfs_distance_field_is_certified():
@@ -370,13 +387,13 @@ def test_bfs_distance_field_is_certified():
 
 
 def test_fault_corpus_metadata_complete():
-    """Each problem has 14 real faults (15 for DFS) + 1 equivalent control,
+    """Each problem has its real faults (REAL_FAULTS) + 1 equivalent control,
     all with documented metadata; real faults carry an n<=5 counterexample."""
-    for pname in ROOTED_PROBLEMS:
+    for pname in CORPUS_PROBLEMS:
         faults = faults_for(pname)
         real = [f for f in faults if not f["is_equivalent"]]
         ctrl = [f for f in faults if f["is_equivalent"]]
-        assert len(real) == (15 if pname == "dynamic_dfs" else 14), (pname, len(real))
+        assert len(real) == REAL_FAULTS[pname], (pname, len(real))
         assert len(ctrl) == 1, (pname, len(ctrl))
         for f in faults:
             assert f["id"] and f["description"] and f["fault_class"]

@@ -1,4 +1,7 @@
-import { rank, type AgentInfo, type Cand, type GenInfo, type LogEntry, type LogKind } from '../state'
+import {
+  FAIL_KINDS, rank, type AgentInfo, type Cand, type FailKind, type FailurePatterns, type GenInfo,
+  type LogEntry, type LogKind,
+} from '../state'
 import { clock, f3, isNum } from '../format'
 
 export type LogFilter = LogKind | 'all'
@@ -78,6 +81,52 @@ export function Population({ gen, cands, selected, onSelect }: {
         ))}
       </tbody>
     </table>
+  )
+}
+
+const FAIL_LABEL: Record<FailKind, string> = {
+  init: 'wrong after init', insert: 'wrong after insert', delete: 'wrong after delete',
+  crash: 'crash or no verdict', timeout: 'timeout',
+}
+
+/** Failure patterns: how the verified candidates of each generation failed. */
+export function Failures({ fp, onSelect }: { fp: FailurePatterns; onSelect: (id: string) => void }) {
+  if (!fp.byGen.length) return <div className="empty small">no verified candidates yet</div>
+  const sizes = Object.entries(fp.bySize).sort((a, b) => Number(a[0]) - Number(b[0]))
+  return (
+    <>
+      <ul className="fail-legend" aria-label="Failures by kind">
+        {FAIL_KINDS.map((k) => (
+          <li key={k}><i className={`fk ${k}`} />{FAIL_LABEL[k]} <span className="num">{fp.totals[k] ?? 0}</span></li>
+        ))}
+        {sizes.length > 0 && (
+          <li className="muted">first failing graph: {sizes.map(([n, c]) => `n = ${n} (${c})`).join(', ')}</li>
+        )}
+      </ul>
+      <table className="pop fails">
+        <thead><tr><th>gen</th><th className="r">failed</th><th>kinds</th></tr></thead>
+        <tbody>
+          {fp.byGen.map((g, i) => (
+            <tr key={g.gen} style={{ ['--i' as string]: i }}>
+              <td className="num">g{g.gen}</td>
+              <td className="r num">{g.failed}/{g.verified}</td>
+              <td>
+                <div className="fbar" role="group"
+                     aria-label={FAIL_KINDS.filter((k) => g.counts[k]).map((k) => `${g.counts[k]} ${FAIL_LABEL[k]}`).join(', ') || 'none failed'}>
+                  {FAIL_KINDS.filter((k) => g.counts[k]).map((k) => (
+                    <button key={k} className={`fk ${k}`} style={{ flexGrow: g.counts[k] }}
+                            title={`${g.counts[k]} ${FAIL_LABEL[k]} · e.g. ${g.example[k]}`}
+                            aria-label={`${FAIL_LABEL[k]}: open ${g.example[k]}`}
+                            onClick={() => onSelect(g.example[k]!)} />
+                  ))}
+                  {g.verified > g.failed && <span className="fk pass" style={{ flexGrow: g.verified - g.failed }} />}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   )
 }
 

@@ -109,10 +109,11 @@ def main(argv: list[str] | None = None) -> int:
     p_verify = subparsers.add_parser("verify", help="run verifier self-test (FR-VER-08)")
     p_verify.add_argument("--problem", choices=sorted(VALID_PROBLEMS), default="dynamic_bfs")
     p_verify.add_argument("--n-max", type=int, default=None,
-                          help="max graph size for self-test (default 5 for BFS/DFS)")
+                          help="max graph size for self-test (default 5 for BFS/DFS/LBFS)")
     p_verify.add_argument("--relabels", type=int, default=0,
                           help="deterministic relabels per nauty class (default 0; "
-                               "use 2 for the full documented universe)")
+                               "use 2 for the full documented universe; undirected "
+                               "problems always use every labelled graph)")
     p_verify.add_argument("--chunk-size", type=int, default=None,
                           help="base graphs per sandbox subprocess (default: auto "
                                "-- 2000 serial, 1000 when parallelizing)")
@@ -614,10 +615,9 @@ def cmd_history(args) -> int:
 def cmd_verify(args) -> int:
     """Run the verifier self-test (FR-VER-08).
 
-    For the rooted problems with a fault corpus (``dynamic_bfs``,
-    ``dynamic_dfs``) this runs the full exhaustive self-test:
-      - the known-good reference (validate-or-rebuild, Yang Lemma-1 informed)
-        must PASS,
+    For the problems with a fault corpus (``dynamic_bfs``, ``dynamic_dfs``,
+    ``dynamic_lbfs``) this runs the full exhaustive self-test:
+      - the known-good reference (validate-or-rebuild) must PASS,
       - every seeded real fault must be REJECTED (FAIL or CRASH),
       - every equivalent control (a valid variant) must be ACCEPTED (PASS).
     and prints a compact summary table plus the zero-false-negative verdict.
@@ -628,9 +628,9 @@ def cmd_verify(args) -> int:
     """
     from .problem_definitions import get_problem
 
-    # Default n_max: 5 for the rooted corpus problems (the documented bound),
-    # 4 otherwise.
-    corpus_problems = ("dynamic_bfs", "dynamic_dfs")
+    # Default n_max: 5 for the corpus problems (the documented bound), 4
+    # otherwise.
+    from .selftest.references import CORPUS_PROBLEMS as corpus_problems
     n_max = args.n_max if args.n_max is not None else (5 if args.problem in corpus_problems else 4)
 
     problem = get_problem(args.problem)
@@ -675,7 +675,7 @@ def _run_candidate(verifier: "Verifier", code: str, name: str, tmpdir: Path) -> 
 
 
 def _cmd_verify_corpus(problem, n_max: int, args, tmpdir: Path) -> int:
-    """Full exhaustive self-test for a rooted corpus problem (BFS/DFS)."""
+    """Full exhaustive self-test for a corpus problem (BFS/DFS/LBFS)."""
     from .selftest.references import reference_code
     from .selftest.faults import (
         compose_fault_code,

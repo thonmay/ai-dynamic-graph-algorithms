@@ -146,7 +146,7 @@ Source: `eval3/results.csv`, `eval3/final_regrade.json`.
 
 ## Verifier (contribution 2)
 
-Source: `selftest_dfs_n5.log`, `tests/test_verifier_iso.py`.
+Source: `selftest_dfs_n5.log`, `selftest_lbfs_n5.log`, `tests/test_verifier_iso.py`.
 
 - **Self-test:** `evoalgo verify --problem dynamic_dfs --n-max 5` passes
   (ALL PASS).
@@ -155,7 +155,17 @@ Source: `selftest_dfs_n5.log`, `tests/test_verifier_iso.py`.
   - The equivalent control (different tie-break) is accepted.
   - All 22 real faults are rejected: 15 seeded faults and 7 one-line
     mutations of the Yang implementation. **Zero false negatives at n <= 5.**
+    (BFS: 14 seeded faults, also all rejected.)
     D16 (wrong parent with valid times) was added after the bug hunt below.
+- **LBFS corpus:** `evoalgo verify --problem dynamic_lbfs --n-max 5` passes
+  (`selftest_lbfs_n5.log`). A validate-or-rebuild LBFS reference and an
+  equivalent control (other start vertex and tie-break) are accepted; all 12
+  seeded faults (L1-L12: missed updates, wrong refinement or pivot, wrong
+  validity check, stale graph, incomplete ordering) are rejected. Each has a
+  documented minimal counterexample (n <= 4), re-derived independently by a
+  reviewer. For undirected problems the verifier tests every labelled graph,
+  so the result does not depend on vertex labels. **Zero false negatives at
+  n <= 5 for LBFS too**, which backs the LBFS PASS verdicts in eval1-eval3.
 - **Neighbour order:** the Yang reference visits neighbours in old discovery
   order. The paper leaves the order open; vertex order (mutation Y7) breaks
   the tree over update sequences, and the self-test catches it only through
@@ -175,6 +185,11 @@ Source: `ui_check/*.png`, `runs/ui_browser_e2e_bfs`.
   (final PASS, n <= 4).
 - **Access:** the browser went through the token link and an HttpOnly cookie
   (not visible to page scripts).
+- **Failure patterns** (`ui_check/08_failures.png`, `09_failure_drawer.png`):
+  a panel counts the failed candidates of each generation by kind (wrong
+  after init / insert / delete, crash, timeout) and by size of the first
+  failing graph; each bar segment opens an example candidate. On eval2 seed 4
+  it shows 5 init and 5 insert failures, all at n = 3 or 4.
 
 ## Threats to validity
 
@@ -202,3 +217,13 @@ These are the confirmed findings, each fixed with a regression test:
 | Harness | agent could grade a file other than candidate.py, edit graded snapshots, exceed max_checks, run --final repeatedly | transcripts show none of this; now enforced, snapshots hashed (`final_intact` column) |
 | Engine | resume reseeded selection differently and refunded calls of a crashed generation; duplicate specialist ids | no campaign run was resumed (one run_start per run) |
 | UI server | first websocket after launch refused (403); control accepted on ended runs; dashboard HTML injection from LLM text | UI only |
+| Sandbox limits | no CPU, memory, process, file or output limits: a candidate could fork, allocate or print without bound on the shared host; SysV shared memory outlived it; a deeply nested result crashed the verifier | none: all campaigns ran correct or failing candidates without such behaviour |
+
+Since the bug hunt the runner limits itself before candidate code runs: 4 GB
+address space, CPU time = timeout + 5 s, 4 tasks in its user namespace,
+16 MB per file and 64 open files (memory files included), its own IPC
+namespace, 256 MB of result output and 64 KB of stderr. A final-grade chunk
+(1000 graphs at n = 5) peaks near 620 MB and returns about 50 MB, well
+inside them. Negative tests cover fork and thread explosion, memory, memory
+files, disk, shared memory, output floods, CPU spinning (also with SIGXCPU
+ignored) and raising a limit.

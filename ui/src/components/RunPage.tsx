@@ -1,10 +1,10 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useRunStream } from '../api'
-import { deriveStatus, genAt, type Live } from '../state'
+import { deriveStatus, failurePatterns, genAt, type Live } from '../state'
 import { duration, f3, pct } from '../format'
 import { Activity } from './Activity'
 import { Lineage, Spark, WorkRatioChart } from './charts'
-import { Agents, EventLog, Population, type LogFilter } from './panels'
+import { Agents, EventLog, Failures, Population, type LogFilter } from './panels'
 import { Drawer } from './Drawer'
 import { Steer } from './Steer'
 import { Toast } from './Toast'
@@ -34,6 +34,7 @@ export function RunPage({ runId }: { runId: string }) {
   const popGen = live ? lastGen : Math.min(replayGen, lastGen)
   const viewGen = live ? Math.max(state.currentGen, lastGen) : popGen
   const gen = genAt(state, popGen)
+  const fp = failurePatterns(state, live ? Infinity : popGen)
   const shownGens = state.gens.filter((g) => g.gen <= popGen)
   const status = deriveStatus(state, connected)
   const active = ACTIVE.includes(status)
@@ -171,8 +172,13 @@ export function RunPage({ runId }: { runId: string }) {
           <Population gen={gen} cands={state.cands} selected={selected} onSelect={setSelected} />
         </section>
 
+        <section className="panel" style={delay(5)}>
+          <div className="ph"><h3>Failure patterns</h3><span className="meta num">{fp.failed} failed</span></div>
+          <Failures fp={fp} onSelect={setSelected} />
+        </section>
+
         {state.agents.length > 0 && (
-          <section className="panel" style={delay(5)}>
+          <section className="panel" style={delay(6)}>
             <div className="ph"><h3>Specialist agents</h3><span className="meta">spawned on a plateau</span></div>
             <Agents agents={state.agents} viewGen={live ? Infinity : popGen} />
           </section>

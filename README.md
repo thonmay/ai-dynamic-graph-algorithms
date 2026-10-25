@@ -1,6 +1,6 @@
 # AI-Assisted Discovery of Dynamic Graph Algorithms via Evolutionary Code Repair
 
-Master's thesis project at Eotvos Lorand University, Faculty of Informatics.
+BSc thesis project at Eotvos Lorand University, Faculty of Informatics.
 
 A research platform combining LLM-driven evolutionary code repair with exhaustive
 isomorphism-aware verification to assist algorithm designers in developing correct
@@ -74,8 +74,11 @@ algorithm for pack dynamic_bfs". Each session is a run in `runs/` and shows in
   variable name is stored in run configs and logs.
 - Candidate code is LLM-written and runs in a Linux namespace jail (no
   network, no home directory or token files, read-only file tree, own pid
-  namespace). It needs unprivileged user namespaces; without them the sandbox
-  refuses to run unless `EVOALGO_SANDBOX=none` is set.
+  namespace, own IPC namespace) with resource limits: 4 GB address space,
+  CPU time near the wall-clock timeout, 4 processes, 16 MB per file and 64
+  open files, 64 MB scratch, 256 MB result output. It
+  needs unprivileged user namespaces; without them the sandbox refuses to
+  run unless `EVOALGO_SANDBOX=none` is set.
 - Coding-agent harnesses get an allow-listed environment, not your full shell
   environment.
 - `evoalgo ui` binds to 127.0.0.1 and needs the access token from the link it
@@ -84,4 +87,7 @@ algorithm for pack dynamic_bfs". Each session is a run in `runs/` and shows in
 
 ## Status
 
-Design phase. Code implementation is the next phase.
+Implemented and evaluated: the web UI (`evoalgo ui`), the verifier and its
+self-test (`evoalgo verify`), the cooperative and dynamic agents
+(`evoalgo start`), and the evaluation campaigns in
+[`campaign/analysis.md`](campaign/analysis.md).

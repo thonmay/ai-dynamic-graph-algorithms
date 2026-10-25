@@ -1,16 +1,16 @@
 """Seeded-fault corpus for the verifier self-test.
 
-Each fault is a one-line mutation of the known-good reference
+Each fault is a small mutation (mostly one line) of the known-good reference
 (:mod:`evoalgo.selftest.references`), expressed as an override of one (or two)
 named code block. Every *real* fault is documented with its minimal
 counterexample (n, base edge list, single-edge op) at n<=5 -- the smallest
-case where the mutated candidate violates the problem invariant. These were
-derived and verified against the real ``check_invariant`` (see
-``/tmp/enlcode/yang/fault_results.json`` in the research notes; reproduced and
-re-checked by ``tests/test_verifier_iso.py``).
+case where the mutated candidate violates the problem invariant -- found by
+exhaustive search against the real ``check_invariant`` and re-checked by
+``tests/test_verifier_iso.py``.
 
-Two entries are **equivalent controls** (``is_equivalent=True``): D9 (DFS,
-descending neighbour order) and B12 (BFS, descending neighbour order). These
+Three entries are **equivalent controls** (``is_equivalent=True``): D9 (DFS,
+descending neighbour order), B12 (BFS, descending neighbour order) and L13
+(LBFS, highest start vertex and maximum-id tie-break). These
 are *valid* algorithm variants, not bugs -- the verifier must ACCEPT them,
 which demonstrates the checker is invariant-based and not biased to one
 tie-break. They are excluded from the zero-false-negative count.
@@ -21,7 +21,7 @@ rejected (FAIL or CRASH) by the n<=5 verifier.
 
 from __future__ import annotations
 
-from .references import _assemble, reference_blocks
+from .references import _LBFS_BLOCKS, _LBFS_CONTROL_OVERRIDES, _assemble, reference_blocks
 
 # ---------------------------------------------------------------------------
 # Fault block overrides. Each value is a full replacement for the named block.
@@ -564,6 +564,54 @@ def _recompute(graph):
     },
 }
 
+_LBFS_RECOMPUTE = _LBFS_BLOCKS["recompute"]
+_LBFS_CHECK = _LBFS_BLOCKS["is_lexbfs"]
+
+_LBFS_FAULT_OVERRIDES: dict[str, dict[str, str]] = {
+    # L1/L2: an update keeps the old ordering without revalidating it
+    "L1": {"insert": "\ndef insert_edge(graph, edge, state):\n    return state\n"},
+    "L2": {"delete": "\ndef delete_edge(graph, edge, state):\n    return state\n"},
+    # L3: non-neighbours of the pivot go before its neighbours
+    "L3": {"recompute": _LBFS_RECOMPUTE.replace("(inside, outside)", "(outside, inside)")},
+    # L4: cells are never split (vertex order)
+    "L4": {"recompute": _LBFS_RECOMPUTE.replace("(inside, outside)", "(cell,)")},
+    # L5: only the first cell is refined by each pivot
+    "L5": {"recompute": _LBFS_RECOMPUTE
+           .replace("        for cell in cells:\n", "        for cell in cells[:1]:\n")
+           .replace("        cells = refined\n", "        cells = refined + cells[1:]\n")},
+    # L6: the pivot comes from the last cell
+    "L6": {"recompute": _LBFS_RECOMPUTE.replace("p = cells[0].pop(0)", "p = cells[-1].pop(0)")},
+    # L7: cells are split by the first vertex's neighbourhood, not the pivot's
+    "L7": {"recompute": _LBFS_RECOMPUTE.replace("graph[p][u]", "graph[order[0]][u]")},
+    # L8: the validity check never looks for a witness (accepts any triple)
+    "L8": {"is_lexbfs": _LBFS_CHECK.replace(
+        "if not any(graph[d][b] and not graph[d][c] for d in order[:i]):",
+        "if not any(graph[d][b] and not graph[d][c] for d in order[:i]) and False:")},
+    # L9: the witness d may come from anywhere in the ordering, not only before a
+    "L9": {"is_lexbfs": _LBFS_CHECK.replace("for d in order[:i]", "for d in order")},
+    # L10: the rebuild undoes the update first (stale graph)
+    "L10": {
+        "insert": _LBFS_BLOCKS["insert"].replace(
+            '    return {"ordering": _recompute(graph)}',
+            '    u, v = edge\n    g = [row[:] for row in graph]\n    g[u][v] = g[v][u] = 0\n'
+            '    return {"ordering": _recompute(g)}'),
+        "delete": _LBFS_BLOCKS["delete"].replace(
+            '    return {"ordering": _recompute(graph)}',
+            '    u, v = edge\n    g = [row[:] for row in graph]\n    g[u][v] = g[v][u] = 1\n'
+            '    return {"ordering": _recompute(g)}'),
+    },
+    # L11: the ordering is missing its last vertex
+    "L11": {"init": '\ndef init(graph):\n'
+            '    return {"ordering": _recompute(graph)[:-1] if len(graph) > 1 else _recompute(graph)}\n'},
+    # L12: two-vertex cells are never split
+    "L12": {"recompute": _LBFS_RECOMPUTE.replace(
+        "            inside = [u for u in cell if graph[p][u]]\n",
+        "            if len(cell) == 2:\n                refined.append(cell)\n                continue\n"
+        "            inside = [u for u in cell if graph[p][u]]\n")},
+    # L13 (equivalent control): start at the highest vertex, maximum-id tie-break
+    "L13": _LBFS_CONTROL_OVERRIDES,
+}
+
 # ---------------------------------------------------------------------------
 # Fault metadata table.
 # counterexample = (n, edges, op) where op is "init" or (type, (u, v)).
@@ -727,13 +775,79 @@ _FAULTS: list[dict] = [
      "fault_class": "ignores direction",
      "counterexample": (2, [(0, 1), (1, 0)], ("delete", (0, 1))),
      "overrides": _BFS_FAULT_OVERRIDES["B15"], "is_equivalent": False},
+    # ---- LBFS (undirected; counterexamples are minimal over n <= 5 single updates) ----
+    {"id": "L1", "problem": "dynamic_lbfs",
+     "description": "insert keeps the old ordering without revalidating it",
+     "fault_class": "missed update on insert",
+     "counterexample": (3, [], ("insert", (0, 2))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L1"], "is_equivalent": False},
+    {"id": "L2", "problem": "dynamic_lbfs",
+     "description": "delete keeps the old ordering without revalidating it",
+     "fault_class": "missed update on delete",
+     "counterexample": (3, [(0, 1), (0, 2)], ("delete", (0, 1))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L2"], "is_equivalent": False},
+    {"id": "L3", "problem": "dynamic_lbfs",
+     "description": "refinement puts non-neighbours of the pivot first",
+     "fault_class": "wrong refinement order",
+     "counterexample": (3, [], ("insert", (0, 2))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L3"], "is_equivalent": False},
+    {"id": "L4", "problem": "dynamic_lbfs",
+     "description": "refinement never splits a cell (vertex order)",
+     "fault_class": "no refinement",
+     "counterexample": (3, [], ("insert", (0, 2))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L4"], "is_equivalent": False},
+    {"id": "L5", "problem": "dynamic_lbfs",
+     "description": "each pivot refines only the first cell",
+     "fault_class": "partial refinement",
+     "counterexample": (4, [(2, 3)], ("insert", (0, 2))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L5"], "is_equivalent": False},
+    {"id": "L6", "problem": "dynamic_lbfs",
+     "description": "pivot taken from the last cell, not the first",
+     "fault_class": "wrong pivot",
+     "counterexample": (3, [], ("insert", (0, 2))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L6"], "is_equivalent": False},
+    {"id": "L7", "problem": "dynamic_lbfs",
+     "description": "cells split by the first vertex's neighbours, not the pivot's",
+     "fault_class": "wrong pivot",
+     "counterexample": (4, [], ("insert", (1, 3))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L7"], "is_equivalent": False},
+    {"id": "L8", "problem": "dynamic_lbfs",
+     "description": "validity check never requires a witness (keeps any ordering)",
+     "fault_class": "wrong predicate",
+     "counterexample": (3, [], ("insert", (0, 2))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L8"], "is_equivalent": False},
+    {"id": "L9", "problem": "dynamic_lbfs",
+     "description": "validity check takes the witness from anywhere, not only before a",
+     "fault_class": "wrong predicate (positions)",
+     "counterexample": (3, [(1, 2)], ("insert", (0, 2))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L9"], "is_equivalent": False},
+    {"id": "L10", "problem": "dynamic_lbfs",
+     "description": "rebuild from the pre-update graph",
+     "fault_class": "stale state",
+     "counterexample": (3, [], ("insert", (0, 2))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L10"], "is_equivalent": False},
+    {"id": "L11", "problem": "dynamic_lbfs",
+     "description": "ordering drops the last vertex",
+     "fault_class": "incomplete ordering",
+     "counterexample": (2, [], "init"),
+     "overrides": _LBFS_FAULT_OVERRIDES["L11"], "is_equivalent": False},
+    {"id": "L12", "problem": "dynamic_lbfs",
+     "description": "two-vertex cells are never split",
+     "fault_class": "partial refinement",
+     "counterexample": (3, [], ("insert", (0, 2))),
+     "overrides": _LBFS_FAULT_OVERRIDES["L12"], "is_equivalent": False},
+    {"id": "L13", "problem": "dynamic_lbfs",
+     "description": "start at the highest vertex, maximum-id tie-break (valid variant, not a bug)",
+     "fault_class": "equivalent control",
+     "counterexample": None,
+     "overrides": _LBFS_FAULT_OVERRIDES["L13"], "is_equivalent": True},
 ]
 
 FAULTS: list[dict] = _FAULTS
 
 
 def faults_for(problem_name: str) -> list[dict]:
-    """Return the fault entries for a rooted problem (BFS or DFS)."""
+    """Return the fault entries for a corpus problem (BFS, DFS or LBFS)."""
     return [f for f in FAULTS if f["problem"] == problem_name]
 
 

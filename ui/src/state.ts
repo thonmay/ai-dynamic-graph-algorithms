@@ -312,6 +312,52 @@ export function bestPath(s: RunState, gen: number): string[] {
   return path
 }
 
+/** How a candidate failed: the step where the invariant broke, or why it gave no answer. */
+export type FailKind = 'init' | 'insert' | 'delete' | 'crash' | 'timeout'
+export const FAIL_KINDS: FailKind[] = ['init', 'insert', 'delete', 'crash', 'timeout']
+
+export function failKind(c: Cand): FailKind | null {
+  if (c.state === null || c.state === 'PASS') return null
+  if (c.timeout) return 'timeout'
+  if (c.state === 'CRASH') return 'crash'
+  const op = String(c.failingCase?.operation ?? '').split(' ')[0]
+  return (FAIL_KINDS as string[]).includes(op) ? (op as FailKind) : 'crash'
+}
+
+export interface FailurePatterns {
+  /** Failed candidates per generation and kind, with the first one as an example. */
+  byGen: { gen: number; counts: Partial<Record<FailKind, number>>; example: Partial<Record<FailKind, string>>; failed: number; verified: number }[]
+  /** All failures up to the viewed generation, by kind and by failing graph size. */
+  totals: Partial<Record<FailKind, number>>
+  bySize: Record<number, number>
+  failed: number
+}
+
+/** Aggregate failure patterns of the verified candidates up to `viewGen`. */
+export function failurePatterns(s: RunState, viewGen: number): FailurePatterns {
+  const out: FailurePatterns = { byGen: [], totals: {}, bySize: {}, failed: 0 }
+  const rows = new Map<number, FailurePatterns['byGen'][number]>()
+  for (const id of s.order) {
+    const c = s.cands[id]
+    if (c.gen > viewGen || c.state === null) continue
+    let row = rows.get(c.gen)
+    if (!row) rows.set(c.gen, (row = { gen: c.gen, counts: {}, example: {}, failed: 0, verified: 0 }))
+    row.verified++
+    const k = failKind(c)
+    if (!k) continue
+    row.failed++
+    row.counts[k] = (row.counts[k] ?? 0) + 1
+    row.example[k] ??= c.id
+    out.totals[k] = (out.totals[k] ?? 0) + 1
+    out.failed++
+    const hang = c.failingCase?.hang as { graph_n?: unknown } | null | undefined
+    const n = c.failingCase?.graph_n ?? hang?.graph_n
+    if (isNum(n)) out.bySize[n] = (out.bySize[n] ?? 0) + 1
+  }
+  out.byGen = [...rows.values()].sort((a, b) => a.gen - b.gen)
+  return out
+}
+
 /** Same order as population._rank_key: passing, higher fitness, lower work ratio. */
 export function rank(a: PopEntry, b: PopEntry): number {
   const k = (p: PopEntry) => [p.state === 'PASS' ? 0 : 1, -(p.fitness ?? 0), p.work_ratio ?? Infinity]
