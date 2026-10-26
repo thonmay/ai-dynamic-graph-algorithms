@@ -210,7 +210,7 @@ These are the confirmed findings, each fixed with a regression test:
 
 | area | finding | effect on reported results |
 |---|---|---|
-| DFS checker | accepted a parent tree no DFS produces (parent = shallower ancestor via a forward edge); NaN times could hang it | none: all 12 DFS finals re-graded PASS with the fixed checker (`dfs_checker_regrade.json`); an exhaustive n <= 4 check confirms 0 wrong accepts/rejects |
+| DFS checker | accepted a parent tree no DFS produces (parent = shallower ancestor via a forward edge); NaN times could hang it | none: all 12 DFS finals re-graded PASS with the fixed checker (`dfs_checker_regrade.json`); an exhaustive n <= 4 cross-check over 274,942 certificates (every DFS-producible certificate and its single-field perturbations) gives 0 wrong verdicts (`scripts/dfs_certificate_crosscheck.py`, `dfs_certificate_crosscheck.log`) |
 | SCC checker | pairwise maximality missed a cycle through 3+ components | none: no SCC campaign |
 | Timing | a candidate could patch the clock, `range`, `json` or stdout, or cache by graph object across repeats | none found: no campaign candidate touches timing or these modules (grep); integrity stays best-effort against frame-walking code |
 | Sandbox | world-readable host data (/var/log, /opt, /boot, /etc/ssh) was readable and could reach the LLM via the result | secrets, network and writes were blocked already; now hidden too; /etc stays (interpreter needs it) |

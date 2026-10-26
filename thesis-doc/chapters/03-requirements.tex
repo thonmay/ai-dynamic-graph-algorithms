@@ -1,63 +1,706 @@
 \chapter{Requirements Specification}
 \label{ch:requirements}
 
-\TemplateGuidance{The detailed specification belongs in the developer documentation.
-Make every commitment testable. Use stable IDs and trace each approved proposal item
-through design, implementation, and evidence. User stories or use cases may explain
-context, but they do not replace precise functional and non-functional requirements.}
+This chapter is the single canonical requirements baseline for the thesis. It
+replaces the earlier standalone planning specification, which the checkpoint-2
+audit found insufficient, and it states every requirement against the system
+as it is implemented at the current source revision. Where the earlier draft
+described behaviour that the implemented system does not have, the requirement
+is rewritten to match the code or marked explicitly as not met or deferred,
+with the reason. Requirement identifiers (\texttt{FR-*}, \texttt{NFR-*}) are
+stable and are the keys used by the traceability matrix in
+Section~\ref{sec:traceability} and by the test-evidence families in the
+testing chapter.
 
 \section{System context, stakeholders, assumptions, and constraints}
-<Define the system boundary, actors, external systems, constraints, and assumptions.>
+\label{sec:context}
+
+\subsection{System context}
+
+The system is a research tool for discovering correct and efficient
+\emph{dynamic} graph algorithms. A dynamic algorithm maintains a structural
+result (a BFS tree, a DFS tree, a lexicographic BFS ordering, a strongly
+connected component partition, or a reachability set) incrementally under edge
+insertions and deletions, instead of recomputing it from scratch after every
+change. The tool combines LLM-based code generation and repair with exhaustive,
+isomorphism-aware verification inside an evolutionary search loop. It reports
+both positive results (a discovered correct algorithm) and negative results
+(where and why the search fails); both are valid outcomes.
+
+The system has one trusted component and many untrusted ones. The verifier,
+the sandbox, and the evolutionary orchestrator are pre-built and trusted.
+Candidate algorithms are untrusted Python written by an LLM; they are executed
+only inside the sandbox jail and are never given access to the verifier, the
+test graphs, the oracle, or the host. The boundary between these two sides is
+the central design constraint and is stated as a requirement in
+Section~\ref{sec:fr-ver} and \ref{sec:fr-sbx}.
+
+The system is a Python package (\texttt{evoalgo}) with a command-line
+interface, a local web user interface served from the same package, and a
+harness mode in which an external coding agent drives the search while the
+system only grades and records. There is no database; all state is JSON,
+line-delimited JSON, and CSV under a per-run directory.
+
+\subsection{Stakeholders}
+
+\begin{itemize}
+  \item \textbf{Researcher.} Configures and launches runs, monitors and steers
+  them, inspects candidates, replays generation history, exports results, and
+  runs the verifier self-test. The researcher is the primary actor and the one
+  who interprets outcomes.
+  \item \textbf{Supervisor.} Reviews run status, exported artifacts, and the
+  verification evidence; audits the verifier and its acceptance evidence.
+  The tool has no separate roles: anyone holding the access token can steer,
+  so a read-only review is a convention, not an enforced permission.
+  \item \textbf{External coding agent.} In harness mode, a coding agent
+  (for example enlcode, Claude Code, or Codex) edits the single candidate file
+  and calls \texttt{evoalgo check}; the system grades and records each check.
+  \item \textbf{LLM provider} (secondary actor). A hosted or local
+  OpenAI-compatible model API, or an agent harness backend, that supplies the
+  model calls for the generation, repair, and reflection roles.
+\end{itemize}
+
+\subsection{Assumptions}
+
+\begin{itemize}
+  \item A reachable model provider (hosted or local) is available for the
+  duration of a run, or a scripted mock backend is used for offline tests.
+  \item The host operating system is Linux with unprivileged user namespaces
+  enabled, so the sandbox jail can be built. On a host without them the sandbox
+  refuses to run unless explicitly disabled (see \texttt{FR-SBX-05}).
+  \item The \texttt{nauty} graph data files are committed in the repository
+  (\texttt{src/evoalgo/data/nauty/}); the \texttt{nauty} command line is not
+  required at run time, only the pre-generated representative files.
+  \item Dynamic outputs (BFS/DFS trees, orderings, partitions) are not unique;
+  correctness is judged by an invariant or certificate, not by equality to a
+  single reference output (Refinement R1, Section~\ref{sec:refinements}).
+\end{itemize}
+
+\subsection{Constraints}
+
+\begin{itemize}
+  \item \textbf{Platform.} Linux only, for the sandbox jail (namespaces and
+  \texttt{mount\_setattr}). Python 3.11 or later.
+  \item \textbf{No database.} Persistence is files only (JSON, JSONL, CSV).
+  \item \textbf{No network for candidates.} Candidate code runs with the
+  network namespace down; the verifier and agents use the network, the
+  candidate never does.
+  \item \textbf{Bounded verification.} Correctness is established by exhaustive
+  finite testing within a stated graph-size and sequence bound, not by a
+  proof (Refinement R3). The word ``proof'' is reserved for a mathematical or
+  formal proof, which is out of scope.
+\end{itemize}
+
+\subsection{Non-goals}
+
+\begin{itemize}
+  \item A formal proof of correctness of a discovered algorithm beyond the
+  stated bound. The Lean~4 formalization step exists in the code but is
+  experimental and never gates a run; it is not a committed deliverable.
+  \item A general program synthesizer. The system targets a fixed set of
+  dynamic graph problems with a fixed candidate interface; it does not
+  synthesize arbitrary programs.
+  \item A multi-user or remote service. The web UI binds to the loopback
+  address and is intended for a single researcher on one host.
+  \item Guaranteeing an efficiency improvement. The search may return a
+  correct algorithm that is not faster than recomputing; that is a valid,
+  reported outcome, not a failure.
+\end{itemize}
+
+\section{Use-case model}
+\label{sec:usecases}
+
+Figure~\ref{fig:use-cases} gives the use-case view. Actors sit outside the
+system boundary. White ellipses are triggered by a user or by the external
+coding agent; grey ellipses are performed automatically by the system inside
+the evolutionary loop or by the harness. \texttt{$\ll$include$\gg$} arrows run
+from a base use case to the use case it always includes;
+\texttt{$\ll$extend$\gg$} arrows run from an optional extension to the base it
+conditions on.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/use-cases.pdf}
+\caption{Use case diagram of the discovery platform. White ellipses are
+user- or agent-triggered; grey ellipses are automatic. Reflection extends
+verification (it runs only on a failure), and specialist spawning extends
+generation (it runs only on a plateau).}
+\label{fig:use-cases}
+\end{figure}
+
+The use cases are: \emph{Configure run}, \emph{Launch run}, \emph{Monitor run},
+\emph{Steer run}, \emph{Replay run}, \emph{Inspect candidate}, \emph{Export
+results}, \emph{Review history}, \emph{Run verifier self-test}, \emph{Grade
+candidate in a workspace (harness)}, and the internal \emph{Generate/Repair
+candidate}, \emph{Verify candidate}, \emph{Reflect on failure}, and \emph{Spawn
+specialist agent}. The narratives below expand the five most important ones,
+each with its main flow and its alternate and failure flows.
+
+\subsection{Launch run}
+
+\begin{description}
+  \item[Actor / precondition] Researcher; a validated configuration exists
+  (from the CLI \texttt{configure} command or the web New Run page).
+  \item[Trigger] The researcher runs \texttt{evoalgo start <config.yaml>} or
+  submits the New Run form.
+  \item[Main flow] The orchestrator validates the configuration, writes
+  \texttt{config.yaml} under the run directory, seeds the initial population
+  through the generation role, and enters the evolutionary loop. Each
+  generation selects parents, generates or repairs offspring, verifies every
+  candidate, reflects on failures, scores, culls, and commits a checkpoint. A
+  progress line is printed per generation and an event is appended to the run's
+  event log.
+  \item[Outcome] The run proceeds to a stop condition (success, maximum
+  generations, consecutive all-failed generations, model-call budget, or user
+  stop) and then grades the best passing candidates on the final bound.
+  \item[Alternate] The researcher may enable dynamic specialist agents, or
+  launch the same configuration again from a finished run (\emph{Run again} in
+  the UI), which starts a new run.
+  \item[Error / failure] If the model provider is unreachable, the affected
+  role call is recorded as a failed call and the loop continues with the next
+  candidate; the run does not abort on a single failed call. If the
+  configuration is invalid, the launch is refused with a named-field message
+  and a non-zero exit, and no run directory is started.
+  \item[Boundary] A population size of 1 is allowed (degenerate but valid).
+  \item[Permission] Any holder of the UI access token (or shell access to the
+  run directory) may launch; there is no role-based permission.
+\end{description}
+
+\subsection{Monitor run}
+
+\begin{description}
+  \item[Actor / precondition] Researcher or supervisor; a run exists and is
+  active or finished.
+  \item[Trigger] The researcher opens the run in the web UI or runs
+  \texttt{evoalgo status <run\_dir>}.
+  \item[Main flow] The UI subscribes to the run's event stream (websocket) and
+  renders the current generation, the best fitness and work ratio, the
+  population, and recent failures. The CLI reads the latest checkpoint and
+  reports the same summary.
+  \item[Outcome] The user sees live or final run state.
+  \item[Alternate] The user may switch to the failure-patterns panel to see
+  failures grouped by kind and by the size of the first failing graph.
+  \item[Error / failure] If the run directory is unknown, the CLI reports it
+  and exits non-zero; the UI shows the run as offline.
+  \item[Permission] Any holder of the access token may monitor.
+\end{description}
+
+\subsection{Steer run}
+
+\begin{description}
+  \item[Actor / precondition] Researcher; a run is active.
+  \item[Trigger] The researcher sends a control command from the UI Steer panel
+  or the CLI \texttt{control} command: \texttt{pause}, \texttt{resume},
+  \texttt{stop}, \texttt{hint} (a free-text research hint), or \texttt{set}
+  (change \texttt{model\_call\_budget} or \texttt{population\_size}).
+  \item[Main flow] The command is appended to the run's control file. The
+  orchestrator applies it at the next control point (a generation boundary, or
+  before the next model call for pause), acknowledges it with a
+  \texttt{control\_ack} event, and the UI reflects the change.
+  \item[Outcome] The search is redirected without restarting the run.
+  \item[Alternate] A hint is carried into every subsequent agent call; an empty
+  hint clears it.
+  \item[Error / failure] A command for an ended run is refused
+  (\texttt{control\_reject}); an unknown command is rejected at validation
+  time. Each command is applied exactly once even across restarts.
+  \item[Permission] Any holder of the access token may steer; commands on an
+  ended run are refused.
+\end{description}
+
+\subsection{Verify candidate (internal)}
+
+\begin{description}
+  \item[Actor / precondition] System (automatic); a candidate file exists.
+  \item[Trigger] The evolutionary loop (or the harness) verifies a candidate.
+  \item[Main flow] The verifier builds the bounded test universe for the
+  problem, splits it into chunks of base graphs, and runs each chunk in its own
+  sandbox subprocess. After every edge operation in every sequence it checks
+  the problem's invariant or certificate against the offline oracle. Chunks are
+  evaluated in parallel and merged in chunk order, stopping at the first
+  failing chunk.
+  \item[Outcome] The candidate is marked \texttt{PASS}, \texttt{FAIL}, or
+  \texttt{CRASH}, with a fitness, a work ratio, and the first failing case
+  (graph, operation, violated invariant) when it failed.
+  \item[Alternate] A timeout is located to the first hanging graph and sequence
+  so the reflector gets a concrete failing case rather than a bare timeout.
+  \item[Error / failure] A candidate that crashes, times out, or produces a
+  malformed state is a failure, never a pass; a malformed state fails that
+  candidate without aborting the run.
+  \item[Permission] No human action; the candidate never sees the verifier,
+  the test graphs, or the oracle.
+\end{description}
+
+\subsection{Grade candidate in a workspace (harness)}
+
+\begin{description}
+  \item[Actor / precondition] External coding agent; a workspace created by
+  \texttt{evoalgo init <pack>} exists, holding \texttt{candidate.py} and
+  \texttt{program.md}.
+  \item[Trigger] The agent edits \texttt{candidate.py} and runs
+  \texttt{evoalgo check}.
+  \item[Main flow] The system grades only the workspace's
+  \texttt{candidate.py}, stores a hashed snapshot, appends a row to
+  \texttt{results.tsv}, and emits the usual events so the web UI shows the
+  session like any other run (one check is one generation).
+  \item[Outcome] The agent sees the grade and iterates; the final verdict is the
+  system's independent \texttt{check --final} re-grade of the kept candidate.
+  \item[Alternate] The agent may request cheaper levels (\texttt{examples},
+  \texttt{search}) before the full grade.
+  \item[Error / failure] Grading a file other than \texttt{candidate.py},
+  exceeding \texttt{max\_checks}, or repeating \texttt{--final} is refused; a
+  finished workspace refuses further checks. Editing a graded snapshot is not
+  prevented but detected: each grade records the snapshot's SHA-256, and the
+  report marks a changed snapshot as not intact.
+  \item[Permission] The coding agent runs with the user's file access and an
+  allow-listed environment; only the candidate it submits is executed in the
+  sandbox. That it does not read or edit the verifier is a rule stated in its
+  instructions, checked afterwards in the transcripts, not an enforced boundary.
+\end{description}
 
 \section{Functional requirements}
-\begin{longtable}{@{}p{0.10\textwidth}p{0.42\textwidth}p{0.36\textwidth}@{}}
-\caption{Functional requirements.}\label{tab:functional-requirements}\\
+\label{sec:fr}
+
+The functional requirements are atomic and testable, and each has a stable
+identifier whose prefix names the capability. Table~\ref{tab:fr-summary}
+summarises them; the full catalogue in Appendix~\ref{app:requirements} gives,
+for every requirement, its input, precondition, behaviour, output, error or
+rejection behaviour, priority, and acceptance evidence (named tests or campaign
+artifacts). Priorities follow MoSCoW: \emph{Must} requirements are the
+registered commitments, \emph{Should} and \emph{Could} requirements support them.
+
+\begingroup\footnotesize
+\begin{longtable}{@{}p{0.13\textwidth}p{0.66\textwidth}p{0.11\textwidth}@{}}
+\caption{Functional requirements (summary; full catalogue in Appendix~\ref{app:requirements}).}\label{tab:fr-summary}\\
 \toprule
-\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance evidence} \\
+\textbf{ID} & \textbf{Requirement} & \textbf{Priority} \\
 \midrule
 \endfirsthead
 \toprule
-\textbf{ID} & \textbf{Requirement} & \textbf{Acceptance evidence} \\
+\textbf{ID} & \textbf{Requirement} & \textbf{Priority} \\
 \midrule
 \endhead
-FR-01 & The system shall <observable behaviour and conditions>. & <test case, demo, or analysis reference> \\
-FR-02 & The system shall <observable behaviour and conditions>. & <test case, demo, or analysis reference> \\
 \bottomrule
+\endfoot
+\multicolumn{3}{@{}l}{\textit{Command line and run control} (Section~\ref{sec:fr-cli})} \\
+\texttt{FR-CLI-01} & Configure and validate a run & Must \\
+\texttt{FR-CLI-02} & Launch a run & Must \\
+\texttt{FR-CLI-03} & Report run status & Must \\
+\texttt{FR-CLI-04} & Export results & Must \\
+\texttt{FR-CLI-05} & Review run history & Should \\
+\texttt{FR-CLI-06} & Steer a running run & Must \\
+\texttt{FR-CLI-07} & Resume a run & Must \\
+\texttt{FR-CLI-09} & Serve the web UI & Must \\
+\addlinespace[3pt]
+\multicolumn{3}{@{}l}{\textit{Web user interface} (Section~\ref{sec:fr-ui})} \\
+\texttt{FR-UI-01} & Configure and launch from the UI & Must \\
+\texttt{FR-UI-02} & Monitor a run live & Must \\
+\texttt{FR-UI-03} & Steer a run from the UI & Must \\
+\texttt{FR-UI-04} & Replay generation history & Must \\
+\texttt{FR-UI-05} & Show failure patterns & Must \\
+\texttt{FR-UI-06} & Show efficiency and lineage charts & Should \\
+\texttt{FR-UI-07} & Inspect a candidate & Must \\
+\texttt{FR-UI-08} & Authenticate UI access & Must \\
+\texttt{FR-UI-09} & Provide an accessible interface & Should \\
+\addlinespace[3pt]
+\multicolumn{3}{@{}l}{\textit{Verification engine} (Section~\ref{sec:fr-ver})} \\
+\texttt{FR-VER-01} & Isomorphism-aware enumeration & Must \\
+\texttt{FR-VER-02} & Exhaustive single-edge flips & Must \\
+\texttt{FR-VER-03} & Seeded random sequences & Must \\
+\texttt{FR-VER-04} & Invariant checking after every operation & Must \\
+\texttt{FR-VER-05} & Fitness scoring & Must \\
+\texttt{FR-VER-06} & Efficiency scoring & Must \\
+\texttt{FR-VER-07} & Efficiency-improvement flag & Must \\
+\texttt{FR-VER-08} & Verifier self-test & Must \\
+\texttt{FR-VER-09} & Trust boundary & Must \\
+\texttt{FR-VER-10} & Two-tier grading & Must \\
+\texttt{FR-VER-11} & Update-mode filtering & Should \\
+\addlinespace[3pt]
+\multicolumn{3}{@{}l}{\textit{Sandbox} (Section~\ref{sec:fr-sbx})} \\
+\texttt{FR-SBX-01} & Namespace jail & Must \\
+\texttt{FR-SBX-02} & Resource limits & Must \\
+\texttt{FR-SBX-03} & Timeout and hang location & Must \\
+\texttt{FR-SBX-04} & No secrets or network for candidates & Must \\
+\texttt{FR-SBX-05} & Fail closed & Must \\
+\addlinespace[3pt]
+\multicolumn{3}{@{}l}{\textit{Agents and model provider} (Section~\ref{sec:fr-agent})} \\
+\texttt{FR-AGENT-01} & Provider abstraction & Must \\
+\texttt{FR-AGENT-02} & Generation role & Must \\
+\texttt{FR-AGENT-03} & Repair role & Must \\
+\texttt{FR-AGENT-05} & Prompt and call logging & Should \\
+\texttt{FR-AGENT-06} & Agent tool loop & Must \\
+\texttt{FR-AGENT-07} & Lean formalization (deferred) & Could \\
+\addlinespace[3pt]
+\multicolumn{3}{@{}l}{\textit{Evolutionary loop} (Section~\ref{sec:fr-evo})} \\
+\texttt{FR-EVO-01} & Tournament parent selection & Must \\
+\texttt{FR-EVO-02} & Elitism & Must \\
+\texttt{FR-EVO-03} & Cull with failure deduplication & Must \\
+\texttt{FR-EVO-04} & Stop on success & Must \\
+\texttt{FR-EVO-05} & Stop on maximum generations & Must \\
+\texttt{FR-EVO-06} & Stop on consecutive all-failed generations & Should \\
+\texttt{FR-EVO-07} & Stop on model-call budget & Must \\
+\texttt{FR-EVO-09} & Spawn a specialist agent & Must \\
+\texttt{FR-EVO-10} & Retire a specialist agent & Must \\
+\addlinespace[3pt]
+\multicolumn{3}{@{}l}{\textit{Persistence and recovery} (Section~\ref{sec:fr-per})} \\
+\texttt{FR-PER-01} & Checkpoint every generation & Must \\
+\texttt{FR-PER-02} & Atomic writes & Must \\
+\texttt{FR-PER-03} & Event log for monitoring and replay & Must \\
+\texttt{FR-PER-04} & Refuse a corrupt checkpoint & Must \\
+\addlinespace[3pt]
+\multicolumn{3}{@{}l}{\textit{Harness (external agent mode)} (Section~\ref{sec:fr-har})} \\
+\texttt{FR-HAR-01} & Initialize a workspace & Must \\
+\texttt{FR-HAR-02} & Grade the workspace candidate & Must \\
+\texttt{FR-HAR-03} & Independent final grade & Must \\
+\texttt{FR-HAR-04} & Enforce harness integrity & Must \\
+\addlinespace[3pt]
 \end{longtable}
+\endgroup
 
-\section{Non-functional requirements and quality attributes}
-\TemplatePrompt{Quantify performance, reliability, security, privacy, accessibility,
-compatibility, maintainability, or model-quality thresholds where applicable. State
-the workload, environment, measurement method, and threshold.}
 
-\begin{longtable}{@{}p{0.10\textwidth}p{0.42\textwidth}p{0.36\textwidth}@{}}
-\caption{Non-functional requirements.}\label{tab:nonfunctional-requirements}\\
+\section{Bounded verification universe}
+\label{sec:universe}
+
+The coverage claim of the verification engine is a finite, reproducible test
+universe, not a proof. This section defines it precisely so a reviewer can
+calculate its size and distinguish exhaustive from sampled evidence.
+
+\subsection{Base graphs}
+
+Graphs are simple and loop-free, represented as an adjacency matrix of zeros and
+ones. The base-graph set depends on the problem's direction and rooting:
+
+\begin{itemize}
+  \item \textbf{Directed, unrooted problems} use the non-isomorphic digraph
+  representatives from the committed \texttt{nauty} data files
+  (\texttt{directed\_n$<$n$>$.d6}), one per isomorphism class. The class counts
+  for $n = 1$ to $5$ are 1, 3, 16, 218, and 9,608 (OEIS A000273).
+  \item \textbf{Directed, rooted problems} (BFS, DFS, reachability, which fix a
+  source at vertex 0) use the rooted representatives
+  (\texttt{rooted\_n$<$n$>$.d6}), one per (digraph, root-orbit) class with the
+  root relabeled to vertex 0. The class counts for $n = 1$ to $5$ are 1, 4, 36,
+  752, and 45,960 (OEIS A353996).
+  \item \textbf{Undirected problems} (MCS, LBFS) use \emph{every} labelled graph
+  up to the bound, so the result does not depend on vertex labels. The labelled
+  counts for $n = 2$ to $5$ are 2, 8, 64, and 1,024.
+\end{itemize}
+
+For directed problems the engine also applies a fixed number of deterministic
+random relabelings of each representative (two per class for the final grade, one
+for the search grade) to exercise label-dependent behaviour such as id
+tie-breaks. A relabeling is isomorphic to its representative, so this adds
+coverage of label handling without adding new isomorphism classes.
+
+\subsection{Operation sequences}
+
+For every base graph of size at most the exhaustive-flip bound (5), the universe
+contains two kinds of sequences:
+
+\begin{itemize}
+  \item \textbf{All legal single-edge flips.} For each possible edge, one
+  length-1 sequence that inserts it if absent or deletes it if present. This is
+  ``every possible edge operation'' on the base graph: $n(n-1)$ flips for a
+  directed graph and $n(n-1)/2$ for an undirected one.
+  \item \textbf{Seeded random sequences.} \texttt{seq\_count} sequences of up to
+  \texttt{seq\_len\_max} operations, each operation legal on the evolving graph,
+  seeded by the bound seed plus the graph size, so the set is reproducible.
+\end{itemize}
+
+The defaults are \texttt{bound.n\_max} 5, \texttt{n\_random} 20,
+\texttt{seq\_len\_max} 20, \texttt{seq\_count} 10, and \texttt{seed} 1337. The
+\texttt{update\_mode} (\texttt{mixed}, \texttt{insert\_only},
+\texttt{delete\_only}) filters the sequences to the allowed operation type while
+keeping them legal.
+
+\subsection{Exhaustive versus sampled}
+
+Within the stated bound the universe is \emph{exhaustive up to isomorphism} for
+directed problems (every non-isomorphic class, plus relabelings) and
+\emph{exhaustive over labels} for undirected problems (every labelled graph).
+Random sampling (\texttt{n\_random}) is used only for a graph size that has no
+committed data file (that is, beyond the bound), so it never reduces coverage
+inside the documented bound.
+
+\subsection{Two grades and their exact sizes}
+
+The engine uses two grades. The \emph{search grade} runs during the evolution on
+every candidate: non-isomorphic graphs up to \texttt{search\_n\_max} (4), every
+single flip, and \texttt{search\_seq\_count} (3) short sequences, with one
+relabel per class; it takes seconds per candidate. The \emph{final grade} runs on
+the best passing candidates on the full bound: $n \le 5$, every single flip, and
+\texttt{seq\_count} (10) sequences of up to \texttt{seq\_len\_max} (20), with two
+relabels per class.
+
+The exact final-grade sizes, computed from the committed data files and the
+sequence rules above, are:
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{@{}lrrrrr@{}}
 \toprule
-\textbf{ID} & \textbf{Measurable requirement} & \textbf{Measurement and threshold} \\
+Problem & $n{=}2$ & $n{=}3$ & $n{=}4$ & $n{=}5$ & Total sequences \\
+\midrule
+Dynamic BFS / DFS (directed, rooted) & 96 & 1{,}728 & 49{,}632 & 4{,}136{,}400 & 4{,}187{,}856 \\
+Dynamic LBFS (undirected, all labelled) & 22 & 104 & 1{,}024 & 20{,}480 & 21{,}630 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These are the figures reported in the evaluation. A candidate that passes the
+final grade has no counterexample within this bound; that is bounded exhaustive
+verification, and it is not called a proof.
+
+\section{Non-functional requirements}
+\label{sec:nfr}
+
+Each quality attribute has a measurable target or an explicit statement of what
+is and is not asserted. The numbers are taken from the committed code, the test
+suite, and the campaign artifacts; none is estimated.
+
+\begin{longtable}{@{}p{0.11\textwidth}p{0.42\textwidth}p{0.37\textwidth}@{}}
+\caption{Non-functional requirements.}\label{tab:nfr}\\
+\toprule
+\textbf{ID} & \textbf{Requirement} & \textbf{Measurement and threshold} \\
 \midrule
 \endfirsthead
 \toprule
-\textbf{ID} & \textbf{Measurable requirement} & \textbf{Measurement and threshold} \\
+\textbf{ID} & \textbf{Requirement} & \textbf{Measurement and threshold} \\
 \midrule
 \endhead
-NFR-01 & <quality attribute under stated conditions> & <instrument, workload, threshold> \\
+\bottomrule
+\endfoot
+
+\texttt{NFR-PERF-01} & A final grade of one BFS or DFS candidate on the full
+bound ($n \le 5$) completes in a bounded, predictable time. & About 10 minutes
+per candidate, as recorded in the evaluation (the harness agent's own
+\texttt{check --final} was killed by a 2 to 5 minute shell timeout on exactly this
+grade, and the re-grade of the kept candidates passed all 4,187,856 cases). \\
+\addlinespace[2pt]
+
+\texttt{NFR-PERF-02} & A final-grade chunk stays within the sandbox memory limit.
+& A chunk of 1,000 base graphs at $n = 5$ peaks near 620 MB resident and returns
+about 50 MB of JSON, well inside the 4 GB address-space limit
+(\texttt{test\_limits\_leave\_room\_for\_a\_final\_grade\_chunk}). \\
+\addlinespace[2pt]
+
+\texttt{NFR-SEC-01} & Candidate code is isolated from the host, the network, and
+the verifier's secrets. & A Linux namespace jail with the network down, a read-only
+tree, hidden host data, and rlimits (4 GB address space, CPU = timeout + 5 s, 4
+tasks, 16 MB per file, 64 open files, 256 MB result); negative tests cover
+network, secrets, filesystem escape, process and memory exhaustion
+(\texttt{test\_candidate\_cannot\_reach\_secrets\_or\_network},
+\texttt{test\_candidate\_cannot\_exhaust\_host\_resources},
+\texttt{test\_jail\_fails\_closed}). \\
+\addlinespace[2pt]
+
+\texttt{NFR-SEC-02} & Secrets are passed only by environment-variable name, never
+by value, and never written to code, configuration, or logs. & The configuration
+stores \texttt{api\_key\_env} (a name); the key is read from the environment at
+call time; agent options and API error text are checked to drop secrets
+(\texttt{test\_agent\_options\_never\_leak\_keys},
+\texttt{test\_api\_error\_text\_drops\_response\_body}). \\
+\addlinespace[2pt]
+
+\texttt{NFR-SEC-03} & The web UI is reachable only on the loopback address and
+only with the access token. & The server binds to 127.0.0.1 by default; every API
+request and websocket needs the token (HttpOnly cookie or bearer); non-local
+browser Origins are refused (\texttt{test\_access\_token},
+\texttt{test\_cross\_site\_origin\_refused}). \\
+\addlinespace[2pt]
+
+\texttt{NFR-REL-01} & A run survives interruption and resumes without losing
+completed work. & A checkpoint is written every generation; resume reloads the
+latest complete checkpoint, restores specialist state, and reseeds selection for
+the current generation (\texttt{test\_resume\_keeps\_call\_count},
+\texttt{test\_resume\_draws\_the\_same\_selection\_stream},
+\texttt{test\_stop\_mid\_generation\_commits\_what\_was\_produced}). \\
+\addlinespace[2pt]
+
+\texttt{NFR-REL-02} & Transient model-call failures do not abort a run. & The API
+backend retries a failed request up to 3 times (the client's retry policy) and, on
+a 401 from the EricAI endpoint, forces one token refresh and retry; a call that
+still fails is recorded as one failed call and the loop continues
+(\texttt{test\_api\_loop\_step\_limit\_and\_errors}). \\
+\addlinespace[2pt]
+
+\texttt{NFR-REPR-01} & The verification universe and parent selection are
+reproducible; the model sampling is not. & The test universe is deterministic
+across calls and the relabels are seeded (\texttt{test\_universe\_deterministic\_across\_calls},
+\texttt{test\_relabel\_determinism}); parent selection is reseeded per generation
+from the selection seed (\texttt{test\_resume\_draws\_the\_same\_selection\_stream}).
+LLM sampling is \emph{not} seeded, so two runs with the same configuration do
+\emph{not} produce identical fitness trajectories; reproducibility is claimed only
+for the verifier and the selection, not for the model output. \\
+\addlinespace[2pt]
+
+\texttt{NFR-USAB-01} & The UI is usable by keyboard and carries screen-reader
+labels. & Semantic controls with ARIA roles and labels and focus management are
+present in the components; full WCAG conformance requires manual testing with
+assistive technology and is not asserted by the automated suite. \\
+\addlinespace[2pt]
+
+\texttt{NFR-PORT-01} & The tool runs on a stated platform and interpreter. &
+Linux (for the namespace jail) and Python 3.11 or later; the sandbox fails closed
+on a host without user namespaces (\texttt{test\_jail\_fails\_closed}). \\
+\addlinespace[2pt]
+
+\texttt{NFR-MAINT-01} & The behaviour is covered by an automated test suite. &
+193 pytest tests (188 fast, 5 marked slow) over the engine, verifier, sandbox,
+harness, and UI server, plus 14 vitest cases over the UI state, new-run form, and
+status derivation; the suite is the regression gate for every requirement above. \\
 \bottomrule
 \end{longtable}
 
-\section{Use cases, user stories, and acceptance scenarios}
-<Use the notation that best fits the project; cover alternate and failure paths.>
+\section{Acceptance criteria per contribution}
+\label{sec:acceptance}
+
+Each registered contribution has a named demonstration or test, an explicit
+pass/fail threshold, and a stored evidence artifact. Finite exhaustive testing
+establishes bounded correctness within the stated bound; it is not a proof for
+arbitrary graph size.
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{longtable}{@{}p{2.7cm}p{5.0cm}p{3.6cm}@{}}
+\toprule
+\textbf{Contribution} & \textbf{Named demonstration / test} & \textbf{Threshold and evidence} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Contribution} & \textbf{Named demonstration / test} & \textbf{Threshold and evidence} \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+
+C1: research tool UI framework & A run is launched from the web New Run page,
+monitored live, steered with a hint (acknowledged by the engine), and its
+generation history is replayed with the scrubber, end to end. & The recorded
+browser run completes with a final verdict and no error; the hint is acknowledged
+at a generation boundary. Evidence: \texttt{ui\_check/01\_runs.png} through
+\texttt{ui\_check/09\_failure\_drawer.png} and the recorded run
+\texttt{runs/ui\_browser\_e2e\_bfs}. \\
+\addlinespace[2pt]
+
+C2: isomorphism-aware verification engine & The verifier self-test on the full
+bound for a corpus problem: known-good references and equivalent controls
+accepted, every seeded fault and one-line mutation rejected. & Zero false
+negatives at $n \le 5$ (every fault rejected) and every reference and control
+accepted. Evidence: \texttt{selftest\_dfs\_n5.log} (22 faults rejected, including
+15 seeded and 7 one-line mutations of the known dynamic DFS reference) and
+\texttt{selftest\_lbfs\_n5.log} (12 faults rejected); \texttt{test\_real\_faults\_rejected\_n5},
+\texttt{test\_known\_good\_references\_pass\_n5}. \\
+\addlinespace[2pt]
+
+C3: cooperative agents with dynamic generation & An unattended orchestrator run
+on dynamic BFS reaches a correct candidate, and the dynamic-agent variant spawns
+and retires specialists on a plateau. & A search-grade pass is reached within the
+configured generations with no human intervention; the final grade of the kept
+candidate passes the full bound. Evidence: the campaign runs
+(\texttt{eval1} orchestrator arm, 9/9 final-grade PASS) and
+\texttt{test\_mock\_run\_spawns\_and\_retires\_a\_specialist},
+\texttt{test\_plateau\_on\_fitness\_or\_work\_ratio}. \\
+\bottomrule
+\caption{Acceptance criteria per registered contribution.}
+\label{tab:acceptance}
+\end{longtable}
+\end{center}
 
 \section{Traceability to the approved proposal}
-\begin{longtable}{@{}p{0.17\textwidth}p{0.13\textwidth}p{0.13\textwidth}p{0.15\textwidth}p{0.17\textwidth}@{}}
-\caption{End-to-end traceability matrix.}\label{tab:traceability}\\
+\label{sec:traceability}
+
+Table~\ref{tab:traceability} traces each registered contribution and deliverable
+to the requirement identifiers in this chapter, to the design sections that will
+carry them (Chapter~\ref{ch:design}), to the implementation sections
+(Chapter~\ref{ch:implementation}), and to the test-evidence families
+(Chapter~\ref{ch:testing}). No registered contribution is removed; the four
+refinements in Section~\ref{sec:refinements} narrow or re-prioritize the
+registered wording and are stated explicitly.
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{longtable}{@{}p{2.5cm}p{2.7cm}p{2.6cm}p{2.3cm}p{2.2cm}@{}}
 \toprule
-\textbf{Proposal commitment} & \textbf{Req. IDs} & \textbf{Design evidence} & \textbf{Code evidence} & \textbf{Test evidence} \\
+\textbf{Commitment} & \textbf{Req IDs} & \textbf{Design section} & \textbf{Implementation section} & \textbf{Test evidence} \\
 \midrule
 \endfirsthead
 \toprule
-\textbf{Proposal commitment} & \textbf{Req. IDs} & \textbf{Design evidence} & \textbf{Code evidence} & \textbf{Test evidence} \\
+\textbf{Commitment} & \textbf{Req IDs} & \textbf{Design section} & \textbf{Implementation section} & \textbf{Test evidence} \\
 \midrule
 \endhead
-<commitment / C1> & FR-01, NFR-01 & Sec.~<x> & Sec.~<y> & TC-01 \\
 \bottomrule
+\endfoot
+
+C1: research tool UI framework & \texttt{FR-CLI-01} to \texttt{FR-CLI-09},
+\texttt{FR-UI-01} to \texttt{FR-UI-09}, \texttt{FR-PER-01} to \texttt{FR-PER-04} &
+\texttt{sec:design-architecture}, \texttt{sec:design-ui},
+\texttt{sec:design-concurrency}, \texttt{sec:design-persistence} &
+\texttt{sec:impl-ui} & \texttt{TC-UI}, \texttt{TC-EVO} \\
+\addlinespace[2pt]
+
+C2: isomorphism-aware verification engine & \texttt{FR-VER-01} to
+\texttt{FR-VER-11}, \texttt{FR-SBX-01} to \texttt{FR-SBX-05} &
+\texttt{sec:design-verifier}, \texttt{sec:design-sandbox},
+\texttt{sec:design-domain} & \texttt{sec:impl-verifier},
+\texttt{sec:impl-sandbox} & \texttt{TC-VER}, \texttt{TC-SBX} \\
+\addlinespace[2pt]
+
+C3: cooperative agents with dynamic generation & \texttt{FR-AGENT-01} to
+\texttt{FR-AGENT-06}, \texttt{FR-EVO-01} to \texttt{FR-EVO-10} &
+\texttt{sec:design-agents}, \texttt{sec:design-architecture},
+\texttt{sec:design-concurrency} & \texttt{sec:impl-agents} &
+\texttt{TC-AG}, \texttt{TC-EVO} \\
+\addlinespace[2pt]
+
+Deliverable: tiered evaluation (calibration BFS/DFS to open LBFS) &
+\texttt{FR-VER-10}, \texttt{FR-VER-11}, \texttt{NFR-PERF-01} &
+\texttt{sec:design-verifier}, \texttt{sec:design-domain} &
+\texttt{sec:impl-verifier} & \texttt{TC-VER}; campaign \texttt{analysis.md} \\
+\addlinespace[2pt]
+
+Deliverable: harness mode (Refinement R4) & \texttt{FR-HAR-01} to
+\texttt{FR-HAR-05}, \texttt{FR-VER-09} & \texttt{sec:design-agents},
+\texttt{sec:design-sandbox} & \texttt{sec:impl-agents}, \texttt{sec:impl-sandbox}
+& \texttt{TC-AG}, \texttt{TC-SBX} \\
+\bottomrule
+\caption{End-to-end traceability from the registered commitments to
+requirements, design, implementation, and test evidence.}
+\label{tab:traceability}
 \end{longtable}
+\end{center}
+
+\section{Refinements of the registered topic}
+\label{sec:refinements}
+
+Four refinements relative to the registered wording are stated here so they are
+visible and judgeable rather than hidden. None removes a registered contribution.
+
+\begin{description}
+  \item[R1: comparison by invariant or certificate, not raw equality.] The
+  registered wording compares a candidate's output against offline
+  recomputation. Dynamic BFS and DFS outputs are not unique (ties in the
+  traversal), so raw equality would reject correct candidates. The offline
+  oracle still defines the semantics and is the efficiency baseline (the work
+  ratio), but the checker accepts any valid structure: for BFS the parent tree
+  and distances are certified, for DFS the parent and discover/finish times are
+  certified by laminarity and the absence of a forward-cross edge, and for LBFS
+  the ordering is certified by the four-point property. This is a sound
+  refinement of the verifier contract, not a change of what is being measured.
+  \item[R2: LBFS is undirected.] Lexicographic BFS is defined on undirected
+  graphs, so dynamic LBFS runs on undirected graphs (every labelled graph up to
+  the bound); BFS, DFS, SCC, and reachability run on directed graphs. The
+  earlier draft listed LBFS as directed; that is corrected here.
+  \item[R3: two-tier grading and bounded verification.] Every candidate is
+  graded during the run on the small search bound ($n \le 4$), and the best
+  passing candidates are graded on the full final bound ($n \le 5$, 4,187,856
+  test sequences for BFS/DFS). A result is reported as bounded exhaustive
+  verification, that is no counterexample within the stated bound, and is never
+  called a proof.
+  \item[R4: the verifier is also exposed as a harness.] Besides the built-in
+  orchestrator, the same verifier is exposed to an external coding agent through
+  a harness (\texttt{evoalgo init} and \texttt{evoalgo check}, packaged as an
+  agent skill). This is an extra mode, evaluated as a baseline against the
+  orchestrator, not a replacement for it.
+\end{description}
