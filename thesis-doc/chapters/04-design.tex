@@ -1,58 +1,750 @@
 \chapter{Solution Design}
 \label{ch:design}
 
-\TemplateGuidance{Aim for at least about 10 substantive pages and 3--4 genuinely
-useful figures: for example system context/container architecture, data model or
-class diagram, an important interaction sequence, and a UI/navigation or API view.
-Every figure needs a legible caption, must be cited and interpreted in the prose,
-and should reveal a decision rather than decorate the chapter. Prefer vector PDF;
-keep text readable at 100\% and do not use screenshots of diagrams or source code.}
+This chapter is the software design of the discovery platform, written to be
+implementable: a reader who has not seen the code should be able to build the
+system from it alone. It covers the user interface design, the data and
+persistence design, and the core application logic, and states the rationale
+behind each consequential choice. It is a design, not an implementation: the
+mechanism level is given here, and the code-level walk-through is deferred to
+Chapter~\ref{ch:implementation}. Where the design refines the registered topic,
+the refinement is stated explicitly and traced to the requirements in
+Chapter~\ref{ch:requirements}.
 
 \section{Architectural drivers and overview}
-<Connect the architecture to requirement IDs and the three contributions.>
+\label{sec:design-architecture}
+
+The architecture is driven by the three registered contributions and the
+non-functional requirements. C1 (the interactive research tool) forces a
+separation between a control plane (the engine) and an observation plane (the
+user interface) that does not import the engine. C2 (the verification engine)
+forces a hard trust boundary enforced by the operating system rather than by
+convention (\texttt{NFR-SEC-01}). C3 (cooperative agents with dynamic
+generation) forces a pluggable agent layer and an event stream from which
+specialist state can be derived. Reliability (\texttt{NFR-REL-01}) forces
+checkpointing and a replayable event log; reproducibility
+(\texttt{NFR-REPR-01}) forces the engine to own its randomness and reseed it per
+generation; and the loopback-only deployment (\texttt{NFR-SEC-03},
+\texttt{NFR-PORT-01}) means the system is for one researcher on one machine.
+
+Figure~\ref{fig:components} gives the component view. Each box is a component
+with a single responsibility; each arrow points from the component that
+\emph{requires} an interface to the one that \emph{provides} it, and the label
+names the interface. The dashed boundary is the trusted core, the pre-built
+components no agent can read or modify: the engine, the verifier, the sandbox
+runner, the event log and control files, and the checkpoint store. The untrusted
+side is the agent layer (the agent backends and the coding-agent harness) and the
+external LLM provider.
 
 \begin{figure}[H]
   \centering
-  \fbox{\parbox[c][45mm][c]{0.82\textwidth}{\centering
-    Replace with a legible architecture figure exported as vector PDF.\\
-    Explain system boundaries, components, protocols, and trust boundaries.}}
-  \caption{System architecture and principal responsibilities (placeholder).}
-  \label{fig:architecture}
+  \includegraphics[width=0.4\textwidth]{figures/components.pdf}
+  \caption{Component diagram of the discovery platform. Arrows point from the
+  requiring component to the providing one and are labelled with the interface
+  they cross: REST and WebSocket between the Web UI and the UI server, the
+  append-only \texttt{events.jsonl} and \texttt{control.jsonl} files between the
+  server and the engine, \texttt{Backend.run} between the engine and the agent
+  backends, HTTPS to the LLM provider, a subprocess to the coding-agent harness,
+  and JSON over a pipe from the verifier to the sandbox runner. The dashed box is
+  the trusted core; \texttt{ProblemDefinition}, which the verifier requires, is
+  shown as a dependency because it is a class, not a component.}
+  \label{fig:components}
 \end{figure}
 
-Figure~\ref{fig:architecture} must be discussed here: identify the consequential
-boundaries and explain why this decomposition satisfies the architectural drivers.
+The interfaces in Figure~\ref{fig:components} are the load-bearing decisions. The
+\textbf{REST + WebSocket} interface is the only channel between the browser and
+the server. The \textbf{event log and control files} are the interface between
+the engine and everything else: the engine writes events, the server and CLI read
+them, and the server and CLI write the commands the engine consumes. This is a
+publish-subscribe boundary: the UI, the CLI, and the specialist replay all
+observe the same run without importing the engine. The
+\textbf{\texttt{Backend.run}} interface is the single method every agent backend
+implements, so the API, mock, and harness backends are substitutable. The
+\textbf{JSON over pipe} interface is the only channel between the trusted verifier
+and the untrusted candidate code: the candidate receives adjacency matrices and
+edge tuples and returns a structured result, and nothing else crosses the
+boundary. 
 
-\section{Business rules and domain model}
-<Define invariants, state transitions, permissions, and edge cases. Include a class
-or domain diagram when required by the consultation checkpoint or project type.>
+\section{Domain model and business rules}
+\label{sec:design-domain}
+
+\subsection{Class model}
+
+Figure~\ref{fig:class} is the class diagram of the core domain, drawn to match
+the modules in \texttt{src/evoalgo}. It answers the static-structure question:
+which classes exist, how they are related, and who owns whom. The
+\emph{Orchestrator} is the composition root; it composes the \emph{Population},
+two \emph{Verifier} instances (the search grade and the final grade), the
+\emph{LLMProvider}, the \emph{Reflector}, the \emph{Checkpoint}, and the
+\emph{EventLog}; each has a lifetime bound to the run, so it is created when the
+run starts and destroyed when it ends. The \emph{Population} aggregates
+\emph{Candidate} with multiplicity $0$ to \texttt{max\_size}; aggregation
+rather than composition is chosen because candidates outlive culling, a culled
+candidate being written to the checkpoint and the event log before it is dropped
+from the live population.
+Each \emph{Candidate} has exactly one \emph{CandidateState}, an enumeration. The
+\emph{Verifier} composes a \emph{Sandbox} and navigates an abstract
+\emph{ProblemDefinition} with six concrete subclasses. The \emph{LLMProvider}
+has $0$ to $1$ \emph{Backend}, an interface realised by \emph{ApiBackend},
+\emph{MockBackend}, and the abstract \emph{HarnessBackend} (a template method)
+with \emph{EnlcodeBackend}, \emph{ClaudeBackend}, and \emph{CodexBackend} as
+subclasses. The \emph{ControlChannel} composes the \emph{EventLog}.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.4\textwidth]{figures/class-diagram.pdf}
+  \caption{Class diagram of the core domain. Composition (filled diamond) marks a
+  part whose lifetime is bound to the whole; aggregation (open diamond) marks a
+  part that outlives the container; a dashed arrow with an open triangle marks
+  realisation of an interface; a solid arrow with an open triangle marks
+  generalisation. The diagram shows the core domain only; the UI, the server, and
+  the harness workspace are separate components covered in
+  Sections~\ref{sec:design-ui} and \ref{sec:design-agents}.}
+  \label{fig:class}
+\end{figure}
+
+Each class maps to one module in \texttt{src/evoalgo}. The point of the
+\texttt{ProblemDefinition} and \texttt{Backend} abstractions is that this static
+structure does not change when a problem or a provider is added.
+
+\subsection{Candidate state machine}
+
+The candidate is a single state machine, used identically by the engine, the
+checkpoint, the event log, and the UI. Figure~\ref{fig:states} shows it. A
+candidate is written by an agent in state \texttt{NEW}; the verifier moves it to
+\texttt{TESTING}; and it leaves \texttt{TESTING} to exactly one of three terminal
+verdicts, \texttt{PASS}, \texttt{FAIL}, or \texttt{CRASH}. Selection may then
+move any of the three to \texttt{DISCARDED}. Every transition not drawn raises
+\texttt{TransitionError}, enforced by \texttt{Candidate.transition} against the
+table in \texttt{candidate.py}.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.5\textwidth]{figures/candidate-states.pdf}
+  \caption{State machine of a candidate. A timeout maps to \texttt{FAIL} with a
+  timeout flag; a runtime exception, a missing function, or a sandbox kill maps
+  to \texttt{CRASH}. Any transition not shown is rejected.}
+  \label{fig:states}
+\end{figure}
+
+The state machine fixes the contradiction the earlier draft had, in which one
+table called a timeout \texttt{CRASH} and another called it \texttt{FAIL}. The
+rule is unambiguous and is the one the code enforces: \textbf{a timeout is
+\texttt{FAIL} with a timeout flag, and a crash is \texttt{CRASH}}. 
+
+\subsection{Business rules}
+
+\textbf{Ranking.} Candidates are ranked by the key
+$(\texttt{not passing}, -\texttt{fitness}, \texttt{work\_ratio})$ in
+\texttt{population.py}: passing before failing, then higher fitness, then lower
+work ratio; a candidate with no measured work ratio ranks last among equals. The
+same key is implemented independently in the UI (\texttt{rank} in
+\texttt{ui/src/state.ts}) so the population table and the engine agree.
+
+\textbf{Elitism and selection.} Parent selection is tournament selection over the
+viable candidates (those in \texttt{PASS} or \texttt{FAIL}), with a tournament
+size of the smaller of three and the number of viable candidates. Elitism keeps
+the top-$k$ by rank (default $k=2$) regardless of the cull. Selection is the
+engine's only randomness, and it is reseeded per generation from
+$(\texttt{selection\_seed}, \texttt{generation})$, so a resumed run draws the
+same parent stream as an uninterrupted one (\texttt{NFR-REPR-01}).
+
+\textbf{Culling.} When the population exceeds its size, the cull keeps the elite
+and then fills the remaining slots with passing candidates (ranked by work
+ratio) and failing candidates deduplicated by failure signature.
+
+\textbf{Stop conditions.} A run stops when a candidate reaches fitness $1.0$
+within the bound (success), when the generation budget is exhausted, when the
+model-call budget is exhausted, or after a configurable number of consecutive
+all-failed generations. A plateau does not stop the run; it only triggers
+specialist generation (Section~\ref{sec:design-agents}).
+
+\textbf{Plateau rule.} A plateau is declared at a generation boundary when, over
+the last \texttt{plateau\_window} generations, the population best improved
+neither its fitness by \texttt{plateau\_epsilon} nor its work ratio by
+\texttt{plateau\_epsilon} (relative). Both correctness and efficiency plateaus
+count: on the calibration problems fitness reaches $1.0$ quickly, so in practice
+the search stalls on cost.
+
+\subsection{Design patterns}
+
+Table~\ref{tab:patterns} lists the patterns the design actually uses, where each
+lives, and why it was chosen. They are the mechanism by which the two
+abstractions in Figure~\ref{fig:class} keep the core stable while problems and
+providers are added.
+
+\begin{table}[H]
+  \centering
+  \scriptsize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}p{0.16\textwidth}p{0.42\textwidth}p{0.34\textwidth}@{}}
+  \toprule
+  \textbf{Pattern} & \textbf{Where} & \textbf{Why} \\
+  \midrule
+  Strategy & \texttt{ProblemDefinition} and its six subclasses, injected into \texttt{Verifier}; \texttt{Backend} strategies & The checker and the model call are interchangeable algorithms behind one interface; adding a problem or provider leaves the verifier and orchestrator untouched. \\
+  Template Method & \texttt{HarnessBackend.run} with \texttt{command()}/\texttt{parse()} hooks & The harness backends share the run shape and differ only in command and parser. \\
+  Adapter & \texttt{LLMProvider} adapts orchestrator calls to \texttt{Task}/\texttt{Backend}; \texttt{EnlcodeBackend.parse} adapts JSON lines to \texttt{CallResult} & The orchestrator speaks roles; the backends speak vendor formats. The adapter keeps them from leaking into each other. \\
+  Command & Control commands as data in \texttt{control.jsonl}, executed later at a control point & A command is recorded and applied exactly once, even across a resume, because the command is data and the acknowledgement is in the event log. \\
+  Factory / registry & \texttt{make\_backend}; \texttt{PROBLEMS} and \texttt{get\_problem}; \texttt{from\_json} & Objects are built by name from configuration, so a run is defined by data, not code. \\
+  Observer / pub-sub & \texttt{EventLog.emit} publishes; the server tail, UI reducer, specialist replay, and resume accounting subscribe & Subscribers never import the engine; the event log alone records how a run was steered. \\
+  Facade & \texttt{LLMProvider} over the agents subsystem; \texttt{Verifier} over the sandbox and graph generation & The orchestrator sees one method per concern, not the internals. \\
+  State & \texttt{CandidateState} and \texttt{transition} & One state machine, enforced, shared by engine, checkpoint, and UI. \\
+  \bottomrule
+  \end{tabular}
+  \caption{Design patterns in the core, their location, and their rationale.}
+  \label{tab:patterns}
+\end{table}
+
+\section{Verification engine design}
+\label{sec:design-verifier}
+
+The verification engine is the trusted core of contribution C2. It decides, for
+a candidate algorithm, whether it maintains its problem's invariant after every
+edge operation in a bounded test universe, and measures how much work it does
+relative to recomputing from scratch. The test universe is defined once in
+Chapter~\ref{ch:requirements}, Section~\ref{sec:universe}, and is not repeated
+here.
+
+\subsection{Correctness by certificate, not by equality}
+
+The registered wording compares a candidate's output against offline
+recomputation, which cannot be done by raw equality because dynamic BFS and DFS
+outputs are not unique: two correct algorithms with different tie-breaks produce
+different trees. Refinement R1 resolves this: the offline oracle still defines
+the semantics and is the efficiency baseline, but the checker accepts any valid
+structure by verifying a \emph{certificate}, a property every correct output
+satisfies and no incorrect output satisfies. This is the same separation of
+discovery and verification used in LLM-driven program search
+\citep{funsearch2023,alphaevolve2025}. Each problem owns its certificate in a
+\texttt{ProblemDefinition} subclass. The certificates are:
+
+\textbf{Dynamic BFS.} The output is a parent tree and a distance field. The
+certificate has four clauses: every non-root vertex has at most one parent that
+is a graph neighbour; the tree spans exactly the vertices reachable from the
+root; the distance of a vertex is one more than its parent's; and the
+candidate's own reported distances equal the true BFS distances; the last clause
+catches a candidate that keeps a valid parent tree but corrupts its distance field
+(\texttt{DynamicBFS.check\_invariant}).
+
+\textbf{Dynamic DFS.} The output is a parent forest plus discovery and finish
+times from one shared counter. The certificate is that the times are a valid
+traversal of the parent tree: a vertex's interval lies inside exactly its tree
+ancestors' intervals and is disjoint from all others, and the parent of a
+reachable vertex is a reachable in-neighbour discovered before it. The checker
+also enforces Lemma~1 of \citet{yang2019dynamic}: there is no forward-cross
+edge, that is, for an edge $u \to v$ with $\text{discover}[u] <
+\text{discover}[v]$, the vertex $v$ must be a tree descendant of $u$. The earlier draft's predicate, which simply forbade forward
+and cross edges, was wrong: a directed DFS forest legitimately admits forward
+edges. The certificate accepts exactly the forests a DFS can produce
+(\texttt{DynamicDFS.check\_invariant}).
+
+\textbf{Dynamic LBFS.} Lexicographic BFS is defined on undirected graphs
+(Refinement R2). The certificate is the (LB) four-point property of
+\citet{corneil2008unified}: for all positions $a < b < c$ with $ac$ an edge and
+$ab$ not an edge, there exists $d < a$ with $db$ an edge and $dc$ not an edge.
+The checker accepts any valid LexBFS ordering, with any start vertex and any
+tie-break, and the offline oracle is the partition-refinement LexBFS of
+\citet{habib2000lexbfs} started at vertex $0$ with the minimum-id tie-break
+(\texttt{DynamicLBFS.check\_invariant}). The earlier draft's ``consecutive
+earlier neighbours'' rule was wrong: it rejects ordinary valid LexBFS orderings
+such as those of a four-cycle.
+
+\textbf{Dynamic SCC.} The output partitions the vertices into strongly connected
+components. The certificate is internal reachability (every vertex in a
+component reaches every other by edges inside it), disjointness, coverage, and
+maximality. Maximality is checked by comparing the partition to the unique SCC
+partition computed by Tarjan's algorithm \citep{tarjan1972dfs}, not by pairwise
+merging, which misses a cycle that passes through three or more components
+(\texttt{DynamicSCC.check\_invariant}).
+
+\textbf{Reachability} and \textbf{dynamic MCS} are checked against the true
+reachability set and the MCS definition respectively (each vertex, when chosen,
+had maximum cardinality among the unchosen), the MCS check running in $O(n+m)$
+using a cardinality-bucket pointer.
+
+\subsection{The two-tier grade and the work ratio}
+
+The engine grades a candidate on two tiers (Refinement R3). The \emph{search
+grade} runs during the evolution on every candidate: non-isomorphic graphs up to
+\texttt{search\_n\_max} (4), every single flip, and a few short sequences, with
+one relabel per class; it takes seconds per candidate. The \emph{final grade}
+runs on the best passing candidates on the full bound: $n \le 5$, every single
+flip, and the longer seeded sequences, with two relabels per class; it takes
+minutes. The two tiers cover different graphs and update sequences, so a candidate that
+passes the search grade can still fail the final grade, the gap the tiering exists
+to close. A result is reported as bounded exhaustive verification, that is no
+counterexample within the stated bound, and is never called a proof. The directed universe uses the non-isomorphic digraph
+representatives from the committed \texttt{nauty} data files, one per isomorphism
+class \citep{mckay2014nauty}, with a fixed number of deterministic random
+relabelings to exercise label-dependent behaviour such as id tie-breaks; the
+undirected universe is every labelled graph up to the bound, so the result does
+not depend on vertex labels.
+
+The efficiency metric is the \textbf{work ratio}, the candidate's measured time
+divided by the offline baseline's measured time on the same operation, both
+measured in the sandbox with the same clock and the same adaptive repeat
+amplification, so the ratio cancels the environment. The metric is measured wall
+time, not instrumented operation counting: the candidate could patch an operation
+counter, but it cannot patch the clock the runner binds before candidate code
+runs, so a forged counter would only make the candidate look better to itself,
+not to the ratio. Because the baseline runs on a numpy array (about twice as slow
+as the same algorithm on lists), a recompute-from-scratch candidate does not score
+exactly $1$; the reported ``vs recompute'' figure divides the work ratio by the
+recompute reference so that $1.0$ means no better than recomputing. An efficiency
+improvement is declared only when the candidate is fully correct and its work
+ratio is below $1$.
+
+\subsection{Chunking, parallel merge, and hang localisation}
+
+The test universe is split into chunks of base graphs, each executed in its own
+sandbox subprocess with its own wall-clock timeout, so a correct candidate
+finishes within the timeout while one that loops forever on a case fails fast.
+When the worker count is greater than one, the chunks are evaluated in parallel
+in a process pool, because the per-chunk work is CPU-bound Python and the
+interpreter's global lock would serialise it in threads. The parent merges the
+partial results in chunk order, stopping at the first failing chunk, so the
+parallel result is identical to the serial one. When a chunk times out, the
+engine localises the hang by re-running it one base graph at a time, then one
+sequence at a time, with a short timeout, and records the first graph and
+sequence that hang, so the reflector receives a concrete failing case rather than
+a bare timeout. The fault corpus used to validate the engine follows the mutation-based
+methodology of \citet{jia2011mutation}: each seeded fault is a deliberate,
+documented change to a known-good algorithm with a minimal counterexample, and the
+engine is accepted only when every fault is rejected and every reference is
+accepted within the bound.
+
+\section{Cooperative agents and the evolutionary loop}
+\label{sec:design-agents}
+
+The evolutionary loop is the core application logic of contribution C3. It is a
+cooperative multi-agent search in which the agents propose and repair code and
+the trusted verifier grades it, in the spirit of large-scale model search
+\citep{funsearch2023,alphaevolve2025} applied to program repair
+\citep{legoues2012genprog}. The loop is driven by the \texttt{Orchestrator} and
+is shown, for one generation, in Figure~\ref{fig:sequence}.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.3\textwidth]{figures/generation-sequence.pdf}
+  \caption{Sequence diagram of one generation. The orchestrator emits
+  \texttt{gen\_start}, selects a parent, and for each offspring slot checks the
+  control channel (pausing if requested), generates or repairs a candidate, and
+  emits \texttt{candidate\_generated}. It then verifies each new candidate (the
+  verifier loops over test chunks and calls the sandbox), emits
+  \texttt{candidate\_verified}, reflects on failures, adds and culls the
+  population, commits the generation, and emits \texttt{gen\_committed}. On a
+  plateau it emits \texttt{agent\_spawned}.}
+  \label{fig:sequence}
+\end{figure}
+
+\subsection{Roles and the reflection schema}
+
+There are four roles, all implemented as calls to a \texttt{Backend} through the
+\texttt{LLMProvider}. The \emph{generator} proposes a new candidate from a parent
+(or blank) and the problem interface. The \emph{repairer} is the generator given
+a failing candidate and its reflection; the repair prompt is the distinguishing
+feature of the system, because it converts a bounded counterexample into a
+targeted edit rather than a blind rewrite. The \emph{reflector} reads a failing
+candidate and its failing case and writes a structured reflection. The
+\emph{specialist} is a generator with an extra focus section, spawned on a
+plateau. The orchestrator routes every artifact between the agents, keeping the
+verifier out of their reach.
+
+The reflection is structured, not free text. The reflector is given the problem
+name, the failing code, and the failing case (the graph, the operation, and the
+violated invariant or the error), and it writes a Markdown file under
+\texttt{reflections/} with the failure description, the root cause, and the
+repair hints. This is the verbal-reinforcement mechanism of \citet{reflexion2023}
+applied to code, and it is the input the repairer receives. The repair role is
+what \citet{lehman2023elm} calls the feedback loop that turns a test failure
+into a correction; here the feedback is the certificate violation, which names
+the invariant clause and the operation.
+
+\subsection{Operators, selection, budgets, and terminal behaviour}
+
+The operators are concrete functions of the population and the problem.
+\emph{Generation} (mutation from a parent) prompts the backend with the problem
+interface, the parent code, and a directive to produce a modified candidate.
+\emph{Repair} (reflection-driven) prompts with the same template plus the
+reflection. \emph{Crossover} (multi-parent) is optional and gated by a config
+flag, off by default; when on, the offspring records both parent ids in
+\texttt{parent\_ids}, which is why the schema uses a list rather than a single
+parent id. \emph{Diversity injection} adds a fresh no-parent candidate when the
+population's pairwise similarity falls below a threshold.
+
+Selection is the fixed order: elitism keeps the top-$k$; among the remaining
+slots, candidates with informative reflections are preferred for repair over
+fresh generation, because a targeted edit is cheaper than a blind rewrite; a
+diversity slot is reserved when the threshold is exceeded; and the population is
+culled to its size, worst first, preserving at least one distinct failure
+signature. Every run has a model-call budget and a generation budget; the
+orchestrator enforces both, and exceeding either stops the run and exports the
+best so far.
+
+\subsection{Dynamic agent generation}
+
+Contribution C3's completion signal is that a correct dynamic BFS algorithm is
+produced within a bounded number of generations without human intervention; the
+dynamic-agent variant adds specialists. On a plateau (the rule in
+Section~\ref{sec:design-domain}), the system spawns a specialist: the generator
+role with a focus written from the dominant signature of the window, either the
+update kind most failures hit (a correctness plateau) or the best candidate's
+work ratio (an efficiency plateau). At most \texttt{agent\_budget} specialists
+are active at once; one is retired after its generation budget or after a window
+without producing a new population best. The whole specialist state is derived
+from the event log (the \texttt{agent\_spawned}, \texttt{agent\_retired},
+specialist \texttt{candidate\_generated}, and \texttt{gen\_committed} events), so
+a resumed run continues with the same specialists. The cooperation policy, that
+is whether cooperative agents and dynamic generation actually help, is the
+empirical question decided from the experiments in Chapter~\ref{ch:testing}; the
+design fixes the mechanism.
+
+\section{Concurrency and synchronisation design}
+\label{sec:design-concurrency}
+
+The system is concurrent in three different ways, and each is chosen for a
+specific reason. Figure~\ref{fig:processes} shows the runtime processes and the
+paths between them.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.4\textwidth]{figures/processes.pdf}
+  \caption{Runtime processes and their communication paths. The browser talks to
+  the UI server over a WebSocket; the server reads the engine's
+  \texttt{events.jsonl} and writes \texttt{control.jsonl}; the engine drives the
+  verifier workers through a process pool and the LLM provider over HTTPS; each
+  verifier worker spawns a jailed runner subprocess per chunk and reads its
+  result over a pipe.}
+  \label{fig:processes}
+\end{figure}
+
+\subsection{Process, thread, and task model}
+
+The engine is a single Python process and is itself single-threaded. The
+verifier fans out to a pool of worker \emph{processes} (up to eight, one per CPU)
+because the per-chunk work is CPU-bound Python and the interpreter's global lock
+would serialise it in threads. The sandbox runs one jailed \emph{subprocess} per
+verifier chunk, so a candidate that loops or forks cannot slow the engine or the
+other workers. The UI server is a single asynchronous process; for each connected
+WebSocket it runs two \emph{tasks}, a tail that polls \texttt{events.jsonl} by
+byte offset and a command loop that receives steering, and it waits for the first
+to finish before cancelling the other.
+
+\subsection{Shared resources and their synchronisation}
+
+The shared resources are files, and each has a single-writer, multiple-reader
+protocol, which makes the design safe without locks in most cases.
+\texttt{events.jsonl} is written only by the engine, one event per line, each
+line written, flushed, and synchronised to disk; readers (the server tail, the
+resume accounting, the specialist replay) take only complete newline-terminated
+lines, so a reader never sees a half-written record, and the sequence number is
+monotonic and rebuilt on reopen. \texttt{control.jsonl} is written by the server
+and the CLI and read by the engine; a command is handled when its id appears in
+an acknowledgement or rejection event, and the handled set is rebuilt from the
+event log on restart, so a command is applied exactly once even across a resume.
+\texttt{engine.json} is written atomically (a temporary file replaced with an
+atomic rename) and removed when the engine exits; liveness is checked by
+signalling the recorded process with no signal and matching the host, so a stale
+file left by a crash is detected. The generation checkpoints are written the same
+way, with a checksum. The two resources that genuinely need a lock
+are the harness workspace (guarded by an exclusive file lock for the whole check)
+and the model token file (guarded by an exclusive lock with a re-check after
+waiting).
+
+\subsection{Producer-consumer chains and the pipe deadlock}
+
+There are three producer-consumer chains. The engine produces events, the server
+tails them, and the UI consumes them through the WebSocket. The UI produces
+commands, the server validates and appends them, and the engine consumes them at
+a control point. The sandbox runner produces a result JSON on a pipe, and a
+reader thread consumes it. The last chain is where a naive design deadlocks: if
+the parent writes the input to the child's standard input while also waiting for
+the child to finish, and the child writes more output than the pipe buffer holds,
+the child blocks on a full output pipe and the parent blocks on the child, and
+neither proceeds. The design breaks this with three concurrent daemon threads per
+sandbox call: one feeds the input, one drains the output (capped, and the group
+is killed on overflow), and one drains the error stream (keeping its tail). All
+four of Coffman's conditions for deadlock \citep{coffman1971deadlock} must hold
+for a deadlock to occur, and the concurrent draining breaks the
+\emph{hold-and-wait} condition: the parent holds no pipe while it waits, because
+a dedicated thread is always consuming, so the child never blocks on a full pipe
+while the parent blocks on it.
+
+\subsection{Races designed out}
+
+Several races are designed out rather than guarded. The \emph{first-connect}
+race, in which the UI connects before the engine has created the run directory,
+is handled by the server writing the run's configuration before it replies to a
+launch. The \emph{duplicate command} race, in which a command is applied twice
+across a restart, is handled by the exactly-once rule above. The \emph{ordered
+merge} is designed so that the parallel verifier equals the serial one: partials
+are held until it is their turn in chunk order, so the result does not depend on
+which worker finishes first. The \emph{reconnect} race in the UI is handled by
+resuming from the last received sequence number with exponential backoff, and by
+the reducer ignoring any event with a sequence number at or below the last it
+applied, so a dropped connection neither loses nor repeats an event. The
+\emph{pause} is a blocking pause: the engine's control point polls the control
+channel and sleeps while the run is paused, so a pause takes effect before the
+next model call and the run blocks until it is resumed.
+
+\section{Sandbox and isolation design}
+\label{sec:design-sandbox}
+
+The sandbox is the enforcement of the trust boundary. Its threat model is
+untrusted generated code: a candidate is Python written by an LLM, and it must be
+able to do nothing but compute on the adjacency matrices it is given. The earlier
+draft claimed that a restricted \texttt{subprocess} environment blocks network
+access and limits file writes. That is false: the environment mapping of a
+subprocess controls environment variables only and is not a security boundary; a
+candidate could read the parent's process environment (which holds the model
+keys), open sockets, or write to the host. The design replaces it with an
+operating-system isolation mechanism, so the boundary is enforced by the kernel.
+
+\subsection{Isolation by processes and namespaces}
+
+Each candidate chunk runs in its own process, placed in new Linux namespaces
+\citep{manNamespaces,silberschatz2018os,tanenbaum2015modern}. The jail is built
+with \texttt{unshare} using unprivileged user namespaces only (no root, no extra
+packages): a new user namespace (mapped to root inside, so the candidate can
+mount), a new network namespace with the interface down (no network at all, so
+the candidate cannot reach the provider or exfiltrate), a new mount namespace, a
+new PID namespace (the candidate is not process $1$ and sees only its own process
+tree), and a new IPC namespace. A second user namespace is then created, mapped back to
+the real user id, so the candidate keeps no capabilities over its mounts. The
+process runs with an isolated interpreter, a scrubbed environment, and the
+standard-library paths it needs bound back in.
+
+\subsection{Filesystem view}
+
+Inside the mount namespace the host tree is bound at a private root, and the
+directories that hold user data, shared storage, temporary files, system logs,
+and host daemon sockets are hidden behind empty read-only temporary filesystems.
+Only the interpreter's import paths are bound back, and the whole tree is then
+made read-only recursively, after which the process pivots its root into it with
+a fresh private temporary directory. The candidate source is sent in the input,
+not as a path, so the run directory, the verifier source, the test graphs, and
+the oracle are absent from the candidate's filesystem. The only writable location
+is the private temporary directory.
+
+\subsection{Resource limits as operating-system mechanisms}
+
+The jail stops a candidate reading or writing the host; resource limits stop it
+exhausting the host. These are set by the runner before candidate code runs, as
+soft limits equal to hard limits, so the candidate cannot raise them. The limits
+are: an address-space limit (four gigabytes, which bounds virtual memory and is
+distinct from a resident-memory limit, because a candidate can map far more than
+it touches); a CPU-time limit equal to the wall-clock timeout plus a grace period,
+enforced by the kernel sending a CPU signal at the soft limit and a kill at the
+hard limit, so a candidate that spins is stopped even if it ignores the signal;
+a per-file size limit (sixteen megabytes, which also bounds memory files); an
+open-file-descriptor limit (sixty-four); a core-dump limit of zero; and a
+process-count limit (four tasks in the runner's user namespace, so a fork bomb
+dies quickly and parallel runners do not share the budget). The result output is
+capped at two hundred fifty-six megabytes and the error stream at sixty-four
+kilobytes.
+
+\subsection{Signals, process groups, and IPC}
+
+The runner starts the candidate in its own process group, so when the timeout
+fires or the output overflows, the parent kills the whole group, not just the
+direct child; this is what stops a forked grandchild from keeping the pipes open
+after the runner is killed. The CPU signal handler writes a marker to the error
+stream and exits, so the parent can tell a CPU-limit kill from a wall-clock
+timeout. Input and output cross the boundary only over pipes: the input is a
+single JSON document on standard input, and the output is a single JSON document
+on a duplicated file descriptor that is bound before candidate code runs, so the
+candidate's own prints go to the error stream and cannot corrupt the result
+channel. The code-level walk-through of the jail script and the limit setup is in
+Chapter~\ref{ch:implementation}.
 
 \section{Data and persistence design}
-<Describe schemas, ownership, lifecycle, migrations, consistency, indexing, privacy,
-backup, retention, and deletion. Link decisions to requirements and tests.>
+\label{sec:design-persistence}
 
-\section{Interfaces, API, and interaction design}
-<Document contracts, validation, errors, authentication/authorization, versioning,
-and one difficult interaction sequence.>
+All state is persisted to the local filesystem as files under a per-run
+directory; there is no database. This is a deliberate choice for a
+single-writer, single-host research tool, and it is what makes the run
+human-inspectable and replayable.
 
-\section{User-interface and accessibility design}
-<Explain information architecture, core screens, states, responsive behaviour,
-feedback, keyboard use, contrast, and accessibility decisions where applicable.>
+\subsection{The run directory as the data model}
 
-\section{Security, privacy, and failure design}
-<State assets, trust boundaries, threats, mitigations, degraded modes, and recovery.>
+The run directory is the data model. Its entities and multiplicities are: a
+\emph{run} (one, named by a unique run id that namespaces every file so parallel
+runs never collide), with one \emph{configuration}; a run has many
+\emph{generation snapshots} (ordered by number); a generation has many
+\emph{candidates} (the surviving population of that generation); a candidate has
+zero or one \emph{reflection} (when it failed) and zero or more \emph{prompt
+logs} (one per agent call); a run has many \emph{events} (the append-only log)
+and many \emph{commands} (the append-only control log); and candidate lineage is
+carried by the \texttt{parent\_ids} list, which supports multi-parent crossover.
+The on-disk layout is: \texttt{config.yaml}, \texttt{engine.json},
+\texttt{events.jsonl}, \texttt{control.jsonl}, \texttt{COMMITTED},
+\texttt{generation\_NNNN.json}, and the \texttt{candidates/},
+\texttt{reflections/}, \texttt{prompt\_logs/}, \texttt{dashboard/}, and
+\texttt{results/} directories.
 
-\section{Decisions, alternatives, and trade-offs}
-\begin{longtable}{@{}p{0.16\textwidth}p{0.25\textwidth}p{0.24\textwidth}p{0.24\textwidth}@{}}
-\caption{Architectural decision summary.}\label{tab:decisions}\\
+\subsection{Formats, atomicity, and crash recovery}
+
+The configuration is YAML, validated at launch. The generation snapshot is JSON
+with a fixed schema version, carrying the run id, the generation number, the
+timestamp, the problem, the bound, the surviving candidates, the model-call
+count, the consecutive-all-failed count, the fitness history, the stop reason,
+and a checksum. The candidate code is a self-contained Python module implementing
+the fixed interface (\texttt{init}, \texttt{insert\_edge},
+\texttt{delete\_edge}). The reflection is Markdown. The event and control logs
+are line-delimited JSON, one record per line. The results are a run summary JSON
+and an efficiency report CSV.
+
+A generation is written to a temporary file and then renamed over the target with
+an atomic replace, which on POSIX means a crash mid-write leaves either the old
+complete file or the new complete file, never a torn file. The snapshot carries a
+SHA-256 checksum over its canonical form, verified on load; a mismatch is treated
+as corruption and the run refuses to resume. The \texttt{COMMITTED} marker names
+the last fully committed generation. On resume, the engine reads the marker to
+find the last complete generation, discards any incomplete file beyond it,
+restores the specialist state by replaying the event log, and reseeds selection
+for the current generation so the resumed run draws the same parent stream as an
+uninterrupted one. The model calls spent in a generation that crashed before its
+checkpoint are counted from the event log, so a resume does not refund them.
+
+\subsection{Why files and no database}
+
+The reasons are project-specific. The data model is small and hierarchical (runs
+to generations to candidates), so there is no query benefit from a relational
+store. A researcher needs to inspect state by hand, and files are
+human-readable, and files need no server, no schema migration story, and no
+setup. The single-writer rule (only the engine writes to a run directory; the server and
+CLI only read, except for the control log) is what makes files safe here: there
+are no concurrent writers to coordinate, so there are no transactions to manage,
+and the append-only event log gives the durability and replay that a database
+would otherwise provide. Generation files are retained by default; a retention
+policy can prune old generations while always keeping the last committed one and
+the run summary. The schema version is
+read on load; an incompatible version is rejected with a clear error and is never
+silently migrated.
+
+\section{User interface design}
+\label{sec:design-ui}
+
+The user interface is the realisation of contribution C1: an interactive
+platform that launches, monitors, replays, and steers a run. It is a single-page
+web application that talks to the UI server over REST and a WebSocket, and it is
+designed around the event stream, so the live view and the replay view are the
+same code.
+
+\subsection{Screen inventory and navigation}
+
+The interface has three top-level screens, navigated by hash routes. The
+\emph{Runs} screen lists every run with its problem, model, current generation,
+best fitness, best work ratio, and state, and is the landing page
+(Figure~\ref{fig:ui-runs}). The \emph{New Run} screen is a form that offers a
+problem pack or a saved configuration, the model-call budget, the population
+size, the graph bound, and the provider and endpoint, and validates each field
+before launch. The \emph{Run} screen is the main view; it has a live/replay
+toggle, a row of key figures (generation, best fitness, best work ratio, pass
+rate, model calls), a work-ratio chart, a lineage view, an event log, the
+population table, a failure-patterns panel, a specialists panel, a candidate
+drawer, and a Steer panel (Figure~\ref{fig:ui-live}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.34\textwidth]{../campaign/ui_check/01_runs.png}
+  \caption{The Runs screen: every run with its problem, model, generation, best
+  fitness and work ratio, and state, most recently updated first.}
+  \label{fig:ui-runs}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.34\textwidth]{../campaign/ui_check/04_live.png}
+  \caption{The Run screen while a run is live: the key figures, the work-ratio
+  chart, the population table, and the event log, all derived from the same event
+  stream that replay uses.}
+  \label{fig:ui-live}
+\end{figure}
+
+\subsection{The event-sourced state model}
+
+The central UI decision is that the interface state is a pure reducer over the
+event stream. One function, \texttt{applyEvents} in \texttt{ui/src/state.ts},
+folds a list of events into the run state, and both the live view (fed by the
+WebSocket) and the replay view (fed by a prefix of the committed events) call the
+same function. This is what makes the registered replay completion signal honest:
+replaying generation $k$ is not a second rendering path that could disagree with
+the live view; it is the same reducer applied to fewer events. The reducer ignores
+any event with a sequence number at or below the last it applied, so a reconnect that re-sends events does not double-apply them.
+
+\subsection{Status derivation and steering feedback}
+
+The run status shown to the user is derived, not stored: it combines the events
+(the last event, the pause and resume events), the pending commands, and the
+engine liveness reported by the server. A command the user sends is shown as
+pending until the engine acknowledges it, so a pause shows as ``pausing'' until
+the engine actually waits, and an acknowledged command never returns to pending
+after a reconnect. Steering is the Steer panel: a free-text research hint
+(carried into every subsequent agent call, or cleared), and setters for the
+model-call budget and the population size, applied at the next generation
+boundary.
+
+\subsection{Access control and accessibility}
+
+The server binds to the loopback address by default, and every API request and
+WebSocket requires the access token, passed as an HttpOnly cookie (set by
+following a token link at start-up) or a bearer header; non-local browser origins
+are refused. There are no roles: anyone holding the token can steer, so a
+read-only review is a convention, not an enforced permission. For accessibility,
+the controls are semantic with ARIA roles and labels (the event log is a live
+region, the filter pills are a labelled group with pressed state, the candidate
+rows are focusable), keyboard focus is managed (the Steer panel focuses its first
+field on open, and Escape closes overlays), and the population and event log are
+real tables and lists rather than styled divs. Full conformance requires manual
+testing with assistive technology, which the automated suite does not assert
+(\texttt{NFR-USAB-01}, \citep{wcag22}).
+
+\section{Design decisions and trade-offs}
+\label{sec:design-decisions}
+
+Table~\ref{tab:adr} records the principal decisions as architecture decision
+records: the decision, the chosen option and its rationale, the rejected
+alternative, and the consequences and evidence. The decisions are the ones a
+reviewer would most challenge, and each is tied to a requirement or a
+contribution.
+
+\begingroup\setlength{\tabcolsep}{4pt}
+\begin{longtable}{@{}p{0.14\textwidth}p{0.29\textwidth}p{0.21\textwidth}p{0.25\textwidth}@{}}
+\caption{Architecture decision records.}\label{tab:adr}\\
 \toprule
-\textbf{Decision} & \textbf{Chosen option and rationale} & \textbf{Rejected alternative} & \textbf{Consequences / evidence} \\
+\textbf{Decision} & \textbf{Chosen option and rationale} & \textbf{Rejected alternative} & \textbf{Consequences and evidence} \\
 \midrule
 \endfirsthead
 \toprule
-\textbf{Decision} & \textbf{Chosen option and rationale} & \textbf{Rejected alternative} & \textbf{Consequences / evidence} \\
+\textbf{Decision} & \textbf{Chosen option and rationale} & \textbf{Rejected alternative} & \textbf{Consequences and evidence} \\
 \midrule
 \endhead
-ADR-01 & <choice and requirement driver> & <credible alternative> & <costs, risks, validation> \\
+\bottomrule
+\endfoot
+ADR-01 & Correctness by certificate, not raw equality with the offline output (R1). & Comparing the candidate's tree to one offline reference tree. & Accepts any valid alternative and rejects any invalid one; generalises across all six problems. The offline oracle is kept as the efficiency baseline. Evidence: \texttt{check\_invariant} per problem; zero false negatives in the self-test. \\
+\addlinespace[2pt]
+ADR-02 & Isomorphism classes (nauty) for the directed universe, every labelled graph for the undirected one. & Every labelled digraph, or a random sample. & Finite, meaningful, reproducible bound, label-independent where it matters; relabelings add label-handling coverage. Evidence: \texttt{graph\_generator.py}; the universe sizes in Section~\ref{sec:universe}. \\
+\addlinespace[2pt]
+ADR-03 & Two-tier grade: search bound during the run, full bound on the best candidates (R3). & One bound for everything. & Seconds per candidate during the search, minutes on the finalists; closes the gap where a search-grade pass fails the full bound. Evidence: the no-reflection BFS seed that passed $n \le 4$ and failed one case at $n = 5$. \\
+\addlinespace[2pt]
+ADR-04 & Verifier workers as processes, not threads. & A thread pool over the chunks. & The per-chunk work is CPU-bound Python; the interpreter lock would serialise threads, so processes give real parallelism. Evidence: \texttt{ProcessPoolExecutor} in \texttt{verifier.py}; parallel equals serial in the merge test. \\
+\addlinespace[2pt]
+ADR-05 & Namespace jail for the sandbox, not a plain subprocess or a container runtime. & A restricted subprocess environment; a full container. & A subprocess env is not a boundary; a container adds a runtime dependency. Unprivileged user namespaces give network, PID, mount, and IPC isolation with no root and no extra packages. Evidence: \texttt{sandbox.py}; the negative tests in Chapter~\ref{ch:testing}. \\
+\addlinespace[2pt]
+ADR-06 & Event-sourced files, not a database. & A relational or key-value store. & Single writer, append-only history, human-inspectable artifacts, replayable, no server or migrations. Evidence: \texttt{events.jsonl}, \texttt{checkpoint.py}; resume and replay tests. \\
+\addlinespace[2pt]
+ADR-07 & Built-in agents plus an external coding-agent harness (R4). & Built-in agents only, or harness only. & The harness exposes the same verifier to an external agent as a baseline; the built-in loop is the registered contribution. Both share one \texttt{Backend} interface. Evidence: \texttt{agents/harness.py}; the harness arm in the evaluation. \\
+\addlinespace[2pt]
+ADR-08 & A pure reducer for the UI, shared by live and replay. & Separate live and replay rendering paths. & Replay is the same code on fewer events, so it cannot disagree with the live view; reconnects neither lose nor repeat events. Evidence: \texttt{ui/src/state.ts}; the Vitest reducer tests. \\
+\addlinespace[2pt]
+ADR-09 & Plateau-triggered specialist agents, with state derived from the event log. & Fixed agent roles only; or specialists with their own persistent state. & Dynamic generation is the registered C3 mechanism; deriving state from the log makes it resume-safe and auditable. Evidence: \texttt{specialists.py}; the spawn-and-retire test. \\
 \bottomrule
 \end{longtable}
+\endgroup
+
+The decisions above are the design. The next chapter walks through the
+implementation of each, at the code level, and the testing chapter reports the
+evidence that the design holds: the self-test that establishes zero false
+negatives, the sandbox negative tests, the resume and parallel-merge tests, and
+the evaluation of the three contributions.
