@@ -17,8 +17,10 @@
 - Supervisor guides (downloaded): study guide, past questions, committee profiles in `/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch/guide/`.
 
 ## Status
-- [x] Template set up, form embedded, builds (26 pp of placeholders).
-- [ ] Figures (vector PDF): use case, component, class, sequence (one generation), state (CandidateState), process/deployment.
-- [ ] Ch1 Introduction, Ch2 User doc, Ch3 Requirements, Ch4 Design, Ch5 Implementation, Ch6 Testing, Ch7 Conclusion, appendices.
-- [ ] Bibliography >= 30; AI-use disclosures at point of use; AI declaration (separate file).
-- [ ] bsc-thesis audits: requirements and architecture checkpoints, then the 30-point audit; re-run the exam-topic scorer.
+- [x] Template set up, form embedded. Figures: use cases, components, class, state, sequence, processes (all TikZ, figures/).
+- [x] First drafts: Ch2 user doc, Ch3 requirements (catalogue in Appendix B), Ch4 design, Ch5 implementation, Ch6 testing. Commit b7ebe04.
+- [x] bsc-thesis 30-point draft audit (2026-10-26): 16 awarded, 7 lost, 7 pending; factual fixes applied (crossover/retention invented, test count, relabels, token link, culled files, TC prefixes TC-HAR/TC-SRV, FR summary complete, traceability refs, `--` in texttt, duplicate Rose bib).
+- [ ] Length: body ~104 pp -> 75-85 pp. Audit cut list: ADR table to appendix; NFR table 2 columns; use-case narratives to a table; sandbox/concurrency/universe explained once (design in Ch4, code in Ch5, one-line refs elsewhere); Ch2 complex-features section to a table; duplicate screenshots in Ch4; drop "earlier draft/checkpoint audit" mentions.
+- [ ] Remaining audit items: hardware requirements (Ch2); event-schema table (Ch4 persistence); ruff/mypy result or coding standard (Ch5); cite >= 30 keys without \nocite; figures legible (class and sequence at full width, split class diagram); UML validity (one class per box); process figure as a UML deployment diagram; copy ui_check PNGs into thesis-doc/figures for Overleaf; commit the chunk RSS measurement; British spelling throughout; object and package diagram for OOM; reader-writer, monitors, semaphore, paging mentions for Concurrency/OS.
+- [ ] Ch1 Introduction, Ch7 Conclusion, Appendix A reproducibility, AI-use disclosures + declaration, guidance flag off.
+- [ ] Background: DFS self-test with --relabels 2 (campaign/selftest_dfs_n5_relabels2.log) to back the full-universe wording.
