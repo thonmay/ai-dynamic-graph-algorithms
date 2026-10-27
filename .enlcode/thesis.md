@@ -16,11 +16,11 @@
 - Exam-topic scorer output (supervisor's skill): `/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch/examtopic/` (re-run after the chapters are written).
 - Supervisor guides (downloaded): study guide, past questions, committee profiles in `/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch/guide/`.
 
-## Status
-- [x] Template set up, form embedded. Figures: use cases, components, class, state, sequence, processes (all TikZ, figures/).
-- [x] First drafts: Ch2 user doc, Ch3 requirements (catalogue in Appendix B), Ch4 design, Ch5 implementation, Ch6 testing. Commit b7ebe04.
-- [x] bsc-thesis 30-point draft audit (2026-10-26): 16 awarded, 7 lost, 7 pending; factual fixes applied (crossover/retention invented, test count, relabels, token link, culled files, TC prefixes TC-HAR/TC-SRV, FR summary complete, traceability refs, `--` in texttt, duplicate Rose bib).
-- [ ] Length: body ~104 pp -> 75-85 pp. Audit cut list: ADR table to appendix; NFR table 2 columns; use-case narratives to a table; sandbox/concurrency/universe explained once (design in Ch4, code in Ch5, one-line refs elsewhere); Ch2 complex-features section to a table; duplicate screenshots in Ch4; drop "earlier draft/checkpoint audit" mentions.
-- [ ] Remaining audit items: hardware requirements (Ch2); event-schema table (Ch4 persistence); ruff/mypy result or coding standard (Ch5); cite >= 30 keys without \nocite; figures legible (class and sequence at full width, split class diagram); UML validity (one class per box); process figure as a UML deployment diagram; copy ui_check PNGs into thesis-doc/figures for Overleaf; commit the chunk RSS measurement; British spelling throughout; object and package diagram for OOM; reader-writer, monitors, semaphore, paging mentions for Concurrency/OS.
-- [ ] Ch1 Introduction, Ch7 Conclusion, Appendix A reproducibility, AI-use disclosures + declaration, guidance flag off.
-- [ ] Background: DFS self-test with --relabels 2 (campaign/selftest_dfs_n5_relabels2.log) to back the full-universe wording.
+## Status (2026-10-26, commit 8b6b656)
+- [x] All chapters written (Ch1-Ch7, Appendices A reproducibility, B FR catalogue + use-case narratives, C design decision record, D checklist); 156 pp PDF, body pp 6-100 (95 pp), 55 bib entries all cited, 0 undefined refs, no overfull box > 3.5 pt.
+- [x] Two bsc-thesis 30-point audits applied; latest provisional 21-27/30 (21 awarded, 3 lost, 6 pending demo). Exam topics 8/19/17 all "Strong now" (7/2/0, 13/1/0, 14/3/12).
+- [x] Committed evidence: self-test logs BFS/DFS/LBFS (+ DFS relabels 2), DFS certificate cross-check (274,942), Yang random-update check (1.44 M), chunk memory (618 MB DFS).
+- [ ] Still lost: C2.3 template guidance boxes (turn \showtemplateguidancefalse at submission), C2.4 AI point-of-use disclosures (needs the user's list of AI tools and where they were used), C5.3 should now pass (real ruff result).
+- [ ] Optional: body 95 pp vs 60-80 typical (fold Table 3.2 to Appendix B, state sandbox limits once); class diagram one class per box; object and package diagrams for OOM.
+- [ ] AI-use declaration (separate signed file, ELTE IK template) and point-of-use footnotes.
+- [ ] Demo (C7.x) with the supervisor on revision 7895107.
