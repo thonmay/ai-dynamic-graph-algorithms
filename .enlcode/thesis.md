@@ -20,7 +20,9 @@
 - [x] All chapters written (Ch1-Ch7, Appendices A reproducibility, B FR catalogue + use-case narratives, C design decision record, D checklist); 156 pp PDF, body pp 6-100 (95 pp), 55 bib entries all cited, 0 undefined refs, no overfull box > 3.5 pt.
 - [x] Two bsc-thesis 30-point audits applied; latest provisional 21-27/30 (21 awarded, 3 lost, 6 pending demo). Exam topics 8/19/17 all "Strong now" (7/2/0, 13/1/0, 14/3/12).
 - [x] Committed evidence: self-test logs BFS/DFS/LBFS (+ DFS relabels 2), DFS certificate cross-check (274,942), Yang random-update check (1.44 M), chunk memory (618 MB DFS).
-- [ ] Still lost: C2.3 template guidance boxes (turn \showtemplateguidancefalse at submission), C2.4 AI point-of-use disclosures (needs the user's list of AI tools and where they were used), C5.3 should now pass (real ruff result).
-- [ ] Optional: body 95 pp vs 60-80 typical (fold Table 3.2 to Appendix B, state sandbox limits once); class diagram one class per box; object and package diagrams for OOM.
-- [ ] AI-use declaration (separate signed file, ELTE IK template) and point-of-use footnotes.
+- [x] AI disclosure (commit 42c5667): Section 5.3 overview table, point-of-use footnotes on generated figures, filled ELTE declaration `thesis-doc/ai-declaration.docx` (official template; models only, no harness/provider names, per user). Supervisor explicitly permitted AI use; logs available on request.
+- [x] Template guidance off (`\showtemplateguidancefalse`); 157 pp, 0 undefined refs.
+- [ ] User: print, sign and date the declaration; add it to the submission zip as a separate file.
+- [ ] Third bsc-thesis audit on the final build.
+- Length: user chose to keep 95 pp body.
 - [ ] Demo (C7.x) with the supervisor on revision 7895107.
