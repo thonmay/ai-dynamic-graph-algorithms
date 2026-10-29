@@ -1,7 +1,7 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-21 (`arxiv-r3/r10.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-21 (`arxiv-r3/r11.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
@@ -85,12 +85,12 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (57962 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (58036 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 15 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 15 pages, 48021 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 15 pages, 48049 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `8d29e71161f729331838adffa5bb628779ec773b9601ed8f3ac74d014d0dec65`.
-- `archive-built.pdf` SHA-256: `a64fdd1ac05757e110a82067b9c58198d9f78701537b6c7375b9c122456cb406`.
+- ZIP SHA-256: `75bd7baac24a98f5ce61c362566ad272e055c291782d8b5387cc52c4cd329d24`.
+- `archive-built.pdf` SHA-256: `06b938b4d9baabc050bc3597b3945422debb445ca0d99e45da9f0ab9666d5e55`.
 
 ## 12. Rendered-PDF audit
 
@@ -98,7 +98,7 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
-- Authors: Md Thoriqul Islam Thonmay (first), Gregory Morse. Both ELTE, Department of Programming Languages and Compilers. Author order unchanged. Submitter is the first author.
+- Authors: Md Thoriqul Islam Thonmay (first; ORCID 0009-0009-8317-6645, public record name matches, checksum valid), Gregory Morse (no ORCID given). Both ELTE, Department of Programming Languages and Compilers. Author order unchanged. Submitter is the first author.
 - AI disclosure: visible unnumbered section; provider + exact model ID + thinking mode + role for all four models, plus who produced the internal review rounds, `stab.c` and the $2P_3$ witness (second author, Claude Opus 5.5) and the probe and prefix-hypothesis scripts (first author, same model); "No AI system is an author"; authors accept full responsibility. Divergence check (metadata line vs visible text) passes: the metadata field copies the visible paragraph verbatim.
 - Rights: arXiv license CC BY 4.0 (author-confirmed); repository Apache-2.0; third-party deps (Lean 4, Mathlib) under their own licenses.
 
