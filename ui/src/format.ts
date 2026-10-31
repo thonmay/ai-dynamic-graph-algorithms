@@ -1,3 +1,6 @@
+// AI-assisted code: generated and revised with Claude Opus 5.5
+// under the author's direction; reviewed and tested by the author
+// (see the thesis section "Use of AI tools").
 export const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 
 export const f3 = (v: number | null | undefined) => (isNum(v) ? v.toFixed(3) : '-')

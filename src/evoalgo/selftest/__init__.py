@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Qwen3.8-27B
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Verifier self-test references and fault corpus.
 
 This package holds the known-good reference candidates and the seeded-fault

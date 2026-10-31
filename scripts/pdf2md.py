@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# AI-assisted code: generated and revised with GLM-5.2
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Convert PDF files to markdown using PyMuPDF (fitz).
 
 Usage:

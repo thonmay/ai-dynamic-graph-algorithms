@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Exhaustive n <= 4 cross-check of the DFS certificate checker.
 
 Ground truth: a certificate (parent, discover, finish) restricted to the vertices

@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Qwen3.8-27B
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Problem packs: generic, researcher-defined problem specifications.
 
 A problem pack is a folder (by convention under ``problems/<name>/``) that

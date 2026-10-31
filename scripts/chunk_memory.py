@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Peak memory and time of one final-grade verifier chunk in the sandbox.
 
 Runs the known-good reference of a problem on the last ``chunk_size`` base

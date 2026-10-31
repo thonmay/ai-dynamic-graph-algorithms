@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5 and Qwen3.8-27B
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Known-good reference candidates for the verifier self-test.
 
 Two honest references per corpus problem (BFS, DFS, LBFS), each a self-contained

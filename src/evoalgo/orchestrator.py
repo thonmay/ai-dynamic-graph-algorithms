@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5, GLM-5.2 and Qwen3.8-Flash-Next
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Orchestrator: composition root and evolutionary loop driver.
 
 The Orchestrator owns the evolutionary loop:

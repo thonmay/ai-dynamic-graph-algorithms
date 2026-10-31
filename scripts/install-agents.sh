@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# AI-assisted code: generated and revised with DeepSeek-V4-Flash
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 # Keep the thesis role-agent configs in sync between the repo and ~/.enlcode.
 #
 # The repo (./agents, ./skills) holds the versioned copies; ~/.enlcode is what

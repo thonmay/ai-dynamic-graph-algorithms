@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Qwen3.8-Flash-Next
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Tests for Population selection/ranking (efficiency pressure).
 
 Regression coverage for the bug where selection ranked by fitness only, so

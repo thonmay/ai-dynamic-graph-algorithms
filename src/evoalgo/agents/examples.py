@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Public examples: the small check an agent may run on its own candidate.
 
 The full verifier (all non-isomorphic graphs up to the run bound, n <= 5 by

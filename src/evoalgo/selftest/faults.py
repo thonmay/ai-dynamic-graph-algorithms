@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5 and Qwen3.8-27B
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Seeded-fault corpus for the verifier self-test.
 
 Each fault is a small mutation (mostly one line) of the known-good reference

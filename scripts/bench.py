@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Benchmark final candidates on graphs larger than the exhaustive bound.
 
     python scripts/bench.py campaign/eval1.yaml [--sizes 16 64 128] [--graphs 10] [--updates 200]

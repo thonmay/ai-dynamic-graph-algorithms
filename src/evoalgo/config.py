@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with GLM-5.2, Claude Opus 5.5, Qwen3.8-Flash-Next and Qwen3.8-27B
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Run configuration: YAML loading, validation, and defaults.
 
 Config schema (config.yaml):

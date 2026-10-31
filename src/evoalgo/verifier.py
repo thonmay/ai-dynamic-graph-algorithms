@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with GLM-5.2, DeepSeek-V4-Flash, Qwen3.8-27B and Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Verifier and Evaluator: test candidates against invariants.
 
 The Verifier runs each candidate through the bounded test universe:

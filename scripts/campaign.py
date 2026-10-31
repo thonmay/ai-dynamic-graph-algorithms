@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Evaluation campaign: run a grid of (mode, problem, seed) and collect results.
 
     python scripts/campaign.py run  campaign/plan.yaml [--parallel 4] [--dry-run]

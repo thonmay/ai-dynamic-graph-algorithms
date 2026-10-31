@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with GLM-5.2
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Candidate state machine and serialization.
 
 Implements the single state machine from the design doc:

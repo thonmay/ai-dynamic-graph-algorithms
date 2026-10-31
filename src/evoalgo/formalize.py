@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with DeepSeek-V4-Flash and Qwen3.8-Flash-Next
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Formalization runner: dispatch the lean-prover agent and verify its output.
 
 Takes a run directory and a candidate that passed bounded verification, invokes

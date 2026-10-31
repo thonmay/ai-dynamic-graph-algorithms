@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Dynamic agent generation: spawn a specialist agent when the search plateaus.
 
 A plateau is declared at a generation boundary when, over the last

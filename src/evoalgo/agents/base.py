@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Backend interface shared by the orchestrator and every agent backend.
 
 A backend performs one role call (generate, repair or reflect) and leaves its

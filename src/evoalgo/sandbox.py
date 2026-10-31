@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with GLM-5.2, Claude Opus 5.5, DeepSeek-V4-Flash and Qwen3.8-27B
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Sandbox: isolated execution of candidate code.
 
 Executes candidate algorithms in a subprocess with:

@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Random-update check of the Yang et al. dynamic DFS reference beyond the bound.
 
 For every graph size n = 6..30 and eight edge densities, build seeded random

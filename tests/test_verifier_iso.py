@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Qwen3.8-27B and Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Verifier self-test: nauty universe, decoder, relabeling, fault corpus.
 
 Covers contribution 2 of the topic proposal: an exhaustive correctness checker

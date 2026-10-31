@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Web UI server: run list, candidate files, live event stream, control.
 
 Binds to 127.0.0.1 by default. Loopback is not a trust boundary on a shared

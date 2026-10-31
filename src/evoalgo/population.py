@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Qwen3.8-Flash-Next and GLM-5.2
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Population management: selection, elitism, diversity, culling."""
 
 from __future__ import annotations

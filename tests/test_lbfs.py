@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Qwen3.8-27B
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Tests for the dynamic_lbfs problem definition (open-problem tier).
 
 Covers the (LB) 4-point certificate:

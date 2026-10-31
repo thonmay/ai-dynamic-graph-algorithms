@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with GLM-5.2
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Atomic checkpoint persistence for generation state.
 
 Implements the Checkpoint class from the design doc:

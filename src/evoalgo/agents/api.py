@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """The ``api`` backend: a small agent loop over any OpenAI-compatible endpoint.
 
 The model only ever returns text or tool calls; this loop executes the calls

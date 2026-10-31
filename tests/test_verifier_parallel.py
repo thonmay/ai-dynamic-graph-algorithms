@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Qwen3.8-27B
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Parallel chunk evaluation: timeout semantics and worker determinism.
 
 The infinite-loop tests confirm that a candidate that loops forever on one

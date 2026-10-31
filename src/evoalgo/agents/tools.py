@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Tools the built-in agent loop executes on behalf of the model.
 
 The model sees JSON schemas and returns tool calls; nothing here trusts its

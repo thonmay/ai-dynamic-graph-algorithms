@@ -1,3 +1,6 @@
+// AI-assisted code: generated and revised with Claude Opus 5.5
+// under the author's direction; reviewed and tested by the author
+// (see the thesis section "Use of AI tools").
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useRunStream } from '../api'
 import { deriveStatus, failurePatterns, genAt, type Live } from '../state'

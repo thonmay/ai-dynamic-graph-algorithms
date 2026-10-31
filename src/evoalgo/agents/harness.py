@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with Claude Opus 5.5
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """Harness backends: an existing coding agent does the call with its own tools.
 
 The harness is told the same role prompt and task text as the api backend,

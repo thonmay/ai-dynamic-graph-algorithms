@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# AI-assisted code: generated and revised with Qwen3.8-Flash-Next
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """High-n cross-check for the proven dynamic-MCS candidate.
 
 The search's bounded verifier only tests graphs of size n=2..5

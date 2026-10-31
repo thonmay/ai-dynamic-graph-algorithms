@@ -1,3 +1,6 @@
+# AI-assisted code: generated and revised with GLM-5.2, Claude Opus 5.5 and Qwen3.8-27B
+# under the author's direction; reviewed and tested by the author
+# (see the thesis section "Use of AI tools").
 """LLM provider: the orchestrator's single entry point to the agent layer.
 
 It builds the problem prompt (problem definition, pack brief, research goal,
