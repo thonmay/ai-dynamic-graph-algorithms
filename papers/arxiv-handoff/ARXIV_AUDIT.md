@@ -1,7 +1,7 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-21 (`arxiv-r3/r11.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-10-31 (`arxiv-r3/r12.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
@@ -85,12 +85,12 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (58036 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (58021 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 15 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 15 pages, 48049 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 15 pages, 48033 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `75bd7baac24a98f5ce61c362566ad272e055c291782d8b5387cc52c4cd329d24`.
-- `archive-built.pdf` SHA-256: `06b938b4d9baabc050bc3597b3945422debb445ca0d99e45da9f0ab9666d5e55`.
+- ZIP SHA-256: `91d39f7f89dda3484d5e5e02862f96861f6d7fb97d8a772fc0fee157521c9982`.
+- `archive-built.pdf` SHA-256: `7ff5b13d4d16592e5e6577c3c484e3e7e968e23f1f01d07677c143ba58d01c63`.
 
 ## 12. Rendered-PDF audit
 
@@ -130,6 +130,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 14. (2026-10-19, rendered-PDF review) All 14 pages rendered at 110 dpi and reviewed visually page by page, then re-reviewed after the fix. Found and fixed: a stranded first line at the bottom of the Related-work page and a single "2." line at the bottom of the obstructions page (now `\clubpenalty=\widowpenalty=10000` and two `$F$-degree~$2$` ties). Measured with `pdftotext -bbox`: no text line ends more than 2.1 pt past the 540 pt text edge (normal TeX tolerance; 0 lines beyond 543 pt); the Lean listing stays inside (max 537.4 pt). All 6 external links resolve (GitHub repo, two Palomar v2 URLs, arXiv 2604.12370) or are mailto; 89 internal links; 32/32 fonts embedded; `⟨ ⟩` and other Unicode glyphs in the listing render. Accepted as cosmetic: mid-name wraps of long monospace Lean identifiers in theorem headers, and the Theorem 14 header's loose line (the one underfull box).
 
 15. (2026-10-21, supervisor round 3) B1: Theorem 14 now states `exec_insert_update_eq`/`exec_delete_update_eq` exactly (both matrices symmetric and loop-free, `FlipOf`, canonical ordering of the *old* graph, deletion edge hypotheses; display equation). B2: bibliography corrected against Crossref/doi.org (Donald J. Rose, R. Endre Tarjan, George S. Lueker; Baswana et al. key `baswana2019dynamic`, DOI 10.1137/17M114306X; `{G}abow's ... Component`; Shiloach-Even author order; dynamic topological order now cites Pearce-Kelly JEA 2007 and Bender-Fineman-Gilbert-Tarjan TALG 2016 instead of Ramalingam-Reps; Morse-Kozsik described as BFS only, LexBFS left open, checked against the arXiv v1 text; stale "re-verified against Crossref" header replaced). B3: abstract and Sec. 8 say the external kernel re-check is at the pinned commit and that Palomar v2 holds the every-vertex form; v3 pending. 4.2/4.3: paragraph after Theorem 2 (lower bound at singleton prefixes forces E(G) in E(G'); hypothesis is not a practical test). 4.4: "combinatorial core/heart" replaced; AxiomAudit gains an AUX block for the six cited lemmas (artifact re-pinned to `mcs-arxiv-v10` = `0d0ddff`, statements byte-identical to v9). 4.5: Lemma 11 "justifies shrinking", executable still checks pos(v). 4.6: deletion proof covers S after pos(v), cites `legal_after_laterPos`. 4.7: abstract cost sentence dropped. Minor 1-6: review-response phrasing removed, "iff" -> "roughly when", cost item 4 "within one unit", probe preprocessing O(n log n)/O(n), appendix helper names pointed to `Challenge.lean`, SWHID is now a revision ID. ORCIDs not added. Subagent review of the diff: all items addressed and correct; three prose fixes applied. Visual review of all 15 pages: clean. Page count 14 -> 15.
+
+16. (2026-10-31, supervisor round 4: "ready for arXiv") Optional items: Sec. 8 now says v3 "has been submitted and is awaiting registration" (the registry review cannot be checked by readers until v3 is public); related work says "the Even--Shiloach tree" so the citation's Shiloach-Even author order reads as intentional. Morse ORCID not added (author's choice). Repository: merged `v4-work` branch deleted; `v4.35.0-rc2` tag kept, its release already retitled as not a paper artifact. Pre-flight: `main.bbl` is in the ZIP; the bundle has no `MCS-arxiv-draft/` directory (allowlist is main.tex, references.bib, main.bbl); CI on `0d0ddff` is green. Posting deferred by the author until Palomar v3 registers.
 
 ## 16. Official policy sources
 
