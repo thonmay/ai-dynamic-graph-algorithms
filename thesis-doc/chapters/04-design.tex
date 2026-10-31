@@ -1,13 +1,9 @@
 \chapter{Solution Design}
 \label{ch:design}
 
-This chapter is the software design of the discovery platform, written to be
-implementable: a reader who has not seen the code should be able to build the
-system from it alone. It is a design, not an implementation: the mechanism level
-is given here, and the code-level walk-through is deferred to
-Chapter~\ref{ch:implementation}. Where the design refines the registered topic,
-the refinement is stated explicitly and traced to the requirements in
-Chapter~\ref{ch:requirements}.
+This chapter gives the design at the level of mechanisms, detailed enough to
+build the system from; the code-level walk-through is
+Chapter~\ref{ch:implementation}.
 
 \section{Architectural drivers and overview}
 \label{sec:design-architecture}
@@ -19,12 +15,9 @@ engine) and an observation plane (the user interface) that does not import the
 engine. C2 (the verification engine) forces a hard trust boundary enforced by the
 operating system rather than by convention (\texttt{NFR-SEC-01}). C3
 (cooperative agents with dynamic generation) forces a pluggable agent layer and
-an event stream from which specialist state can be derived. Reliability
-(\texttt{NFR-REL-01}) forces checkpointing and a replayable event log, and
-reproducibility (\texttt{NFR-REPR-01}) forces the engine to own its randomness
-and reseed it per generation; the loopback-only deployment
-(\texttt{NFR-SEC-03}, \texttt{NFR-PORT-01}) means the system is for one
-researcher on one machine.
+an event stream from which specialist state can be derived. Reliability and
+reproducibility (\texttt{NFR-REL-01}, \texttt{NFR-REPR-01}) force checkpointing,
+a replayable event log and engine-owned, per-generation-reseeded randomness.
 
 Figure~\ref{fig:components} gives the component view.\footnote{The TikZ source of the figures in this chapter was written with AI assistance (Claude Opus 5.5, Qwen3.8-27B) and checked against the code; see Section~\ref{sec:ai-use}.} Each arrow points from the component that
 \emph{requires} an interface to the one that \emph{provides} it, and the label
@@ -47,12 +40,9 @@ the external LLM provider.
   \label{fig:components}
 \end{figure}
 
-The interfaces in Figure~\ref{fig:components} are the load-bearing decisions.
-REST + WebSocket is the only channel between the browser and the server. The
-\texttt{events.jsonl} / \texttt{control.jsonl} pair is the interface between the
-engine and everything else, and is a publish-subscribe boundary: the UI, the CLI,
-and the specialist replay all observe the same run without importing the engine
-(Section~\ref{sec:design-concurrency}).
+The \texttt{events.jsonl} / \texttt{control.jsonl} pair is the load-bearing
+interface: a publish-subscribe boundary through which the UI, the CLI and the
+specialist replay observe the same run without importing the engine.
 
 \section{Domain model and business rules}
 \label{sec:design-domain}
@@ -107,14 +97,12 @@ with one relabelling, the final grade at $n \le 5$ with two), sharing one
 
 \subsection{Candidate state machine}
 
-The candidate is a single state machine, used identically by the engine, the
-checkpoint, the event log, and the UI. Figure~\ref{fig:states} shows it. A
-candidate is written by an agent in state \texttt{NEW}; the verifier moves it to
-\texttt{TESTING}; and it leaves \texttt{TESTING} to exactly one of three terminal
-verdicts, \texttt{PASS}, \texttt{FAIL}, or \texttt{CRASH}. Selection may then
-move any of the three to \texttt{DISCARDED}. Every transition not drawn raises
-\texttt{TransitionError}, enforced by \texttt{Candidate.transition} against the
-table in \texttt{candidate.py}.
+The candidate is one state machine shared by the engine, the checkpoint, the
+event log and the UI (Figure~\ref{fig:states}): \texttt{NEW} when written,
+\texttt{TESTING} under the verifier, then exactly one of \texttt{PASS},
+\texttt{FAIL} or \texttt{CRASH}, and possibly \texttt{DISCARDED} by selection.
+Any other transition raises \texttt{TransitionError} in
+\texttt{Candidate.transition}.
 
 \begin{figure}[H]
   \centering
@@ -124,9 +112,6 @@ table in \texttt{candidate.py}.
   to \texttt{CRASH}. Any transition not shown is rejected.}
   \label{fig:states}
 \end{figure}
-
-The rule is unambiguous and is the one the code enforces: \textbf{a timeout is
-\texttt{FAIL} with a timeout flag, and a crash is \texttt{CRASH}}.
 
 \subsection{Business rules}
 
@@ -146,21 +131,16 @@ population exceeds its size, the cull keeps the elite and then fills the
 remaining slots with passing candidates and failing candidates deduplicated by
 failure signature.
 
-\textbf{Stop conditions and plateau.} A run stops on success (a candidate
-reaches fitness $1.0$ within the bound), on the generation or model-call budget
-being exhausted, or after a configurable number of consecutive all-failed
-generations. A plateau does not stop the run; it is declared at a generation
-boundary when, over the last \texttt{plateau\_window} generations, the population
-best improved neither its fitness nor its work ratio by \texttt{plateau\_epsilon}
-(relative), and it only triggers specialist generation
-(Section~\ref{sec:design-agents}).
+\textbf{Stop conditions and plateau.} A run stops on success, on the generation
+or model-call budget, or after consecutive all-failed generations. A plateau,
+declared when the best fitness and work ratio have not improved by
+\texttt{plateau\_epsilon} over \texttt{plateau\_window} generations, does not
+stop the run; it only triggers specialist generation.
 
 \subsection{Design patterns}
 
-Table~\ref{tab:patterns} lists the patterns the design actually uses, where each
-lives, and why it was chosen, in the sense of \citet{gamma1994design}. They are
-the mechanism by which the two abstractions in Figure~\ref{fig:class} keep the
-core stable while problems and providers are added.
+Table~\ref{tab:patterns} lists the patterns of \citet{gamma1994design} the
+design uses, where each lives and why.
 
 \begin{table}[H]
   \centering
@@ -187,11 +167,9 @@ core stable while problems and providers are added.
 \section{Verification engine design}
 \label{sec:design-verifier}
 
-The verification engine is the trusted core of contribution C2. It decides, for
-a candidate algorithm, whether it maintains its problem's invariant after every
-edge operation in a bounded test universe, and measures how much work it does
-relative to recomputing from scratch. The test universe is defined once in
-Section~\ref{sec:universe} and is not repeated here.
+The verification engine, the trusted core of C2, decides whether a candidate
+maintains its problem's invariant after every operation of the universe of
+Section~\ref{sec:universe}, and measures its work against recomputing.
 
 \subsection{Correctness by certificate, not by equality}
 
@@ -237,17 +215,9 @@ reachability set and the maximum cardinality search definition
 
 \subsection{The two-tier grade and the work ratio}
 
-The engine grades a candidate on two tiers (Refinement R3). The \emph{search
-grade} runs during the evolution on every candidate, on a small bound
-(\texttt{search\_n\_max}, 4); it takes seconds per candidate. The \emph{final
-grade} runs on the best passing candidates on the full bound ($n \le 5$); it
-takes minutes. The two tiers cover different graphs and update sequences, so a
-candidate that passes the search grade can still fail the final grade, the gap
-the tiering exists to close. A result is reported as bounded exhaustive
-verification, that is no counterexample within the stated bound, and is never
-called a proof.
-
-The efficiency metric is the \textbf{work ratio}, the candidate's measured time
+The search grade ($n \le 4$, seconds) runs on every candidate and the final grade
+($n \le 5$, minutes) on the best ones (Refinement R3); a search-grade pass can
+still fail the final grade, which is the gap the tiering closes. The efficiency metric is the \textbf{work ratio}, the candidate's measured time
 divided by the offline baseline's measured time on the same operation, both
 measured in the sandbox with the same clock and the same adaptive repeat
 amplification, so the ratio cancels the environment. It is measured wall time,
@@ -258,26 +228,18 @@ its work ratio is below $1$.
 
 \subsection{Chunking, parallel merge, and hang localisation}
 
-The test universe is split into chunks of base graphs, each executed in its own
-sandbox subprocess with its own wall-clock timeout, so a correct candidate
-finishes within the timeout while one that loops forever on a case fails fast.
-The chunks are evaluated in parallel in a process pool and merged in chunk order,
-so the parallel result is identical to the serial one; the process-versus-thread
-choice is the concurrency decision in Section~\ref{sec:design-concurrency}. When
-a chunk times out, the engine localises the hang by re-running it one base graph,
-then one sequence, at a time, so the reflector receives a concrete failing case
-rather than a bare timeout.
+The universe is split into chunks, each run in its own sandbox subprocess with a
+wall-clock timeout, evaluated in a process pool and merged in chunk order so the
+parallel result equals the serial one. A timed-out chunk is re-run one graph and
+one sequence at a time, so the reflector receives a concrete failing case.
 
 \section{Cooperative agents and the evolutionary loop}
 \label{sec:design-agents}
 
-The evolutionary loop is the core application logic of contribution C3. It is a
-cooperative multi-agent search in which the agents propose and repair code and
-the trusted verifier grades it, in the spirit of large-scale model search
-\citep{funsearch2023,alphaevolve2025} applied to program repair
-\citep{legoues2012genprog}. The loop is driven by the \texttt{Orchestrator} and
-is shown, for one generation, in Figure~\ref{fig:sequence}; the code-level
-realisation is in Chapter~\ref{ch:implementation}.
+The evolutionary loop of C3 is a cooperative search in which agents propose and
+repair code and the trusted verifier grades it, in the spirit of large-scale model
+search \citep{funsearch2023,alphaevolve2025} applied to program repair
+\citep{legoues2012genprog}. Figure~\ref{fig:sequence} shows one generation.
 
 \begin{figure}[H]
   \centering
@@ -299,26 +261,19 @@ There are four roles, all implemented as calls to a \texttt{Backend} through the
 a failing candidate and its reflection; the \emph{reflector} writes a structured
 reflection for a failing candidate; and the \emph{specialist} is a generator with
 an extra focus section, spawned on a plateau. The orchestrator routes every
-artefact between the agents, keeping the verifier out of their reach. The repair
-prompt is the distinguishing feature of the system, because it converts a bounded
-counterexample into a targeted edit rather than a blind rewrite. The operators,
-the selection order, the cull, and the budgets are the business rules in
-Section~\ref{sec:design-domain}.
-
-The reflection is structured, not free text: the reflector writes a Markdown file
-under \texttt{reflections/} with the failure description, the root cause, and the
-repair hints, the verbal-reinforcement mechanism of \citet{reflexion2023} applied
-to code and the input the repairer receives.
+artefact between the agents and keeps the verifier out of their reach. The
+reflection is structured (failure description, root cause, repair hints), the
+verbal-reinforcement mechanism of \citet{reflexion2023} applied to code, so the
+repairer turns a bounded counterexample into a targeted edit rather than a blind
+rewrite.
 
 \subsection{Dynamic agent generation}
 
-Contribution C3's dynamic-agent variant adds specialists. On a plateau (the rule
-in Section~\ref{sec:design-domain}), the system spawns a specialist: the
-generator role with a focus written from the dominant signature of the window.
-At most \texttt{agent\_budget} specialists are active at once, and the whole
-specialist state is derived from the event log (the \texttt{agent\_spawned} and
-\texttt{agent\_retired} events), so a resumed run continues with the same
-specialists.
+On a plateau the system spawns a specialist, the generator role with a focus
+written from the dominant signature of the window; at most
+\texttt{agent\_budget} are active, and their state is derived from the
+\texttt{agent\_spawned} and \texttt{agent\_retired} events, so a resumed run
+keeps them.
 
 \section{Concurrency and synchronisation design}
 \label{sec:design-concurrency}
@@ -407,60 +362,39 @@ waits for the parent to read.
 
 \subsection{Races designed out}
 
-Several races are designed out rather than guarded: the \emph{first-connect}
-race (the UI connects before the engine has created the run directory) is handled
-by the server writing the run's configuration before it replies to a launch; the
-\emph{duplicate command} race by the exactly-once rule above; the \emph{reconnect}
-race by resuming from the last received sequence number; and the \emph{pause} is a
-blocking pause. Each is handled in code in Chapter~\ref{ch:implementation}.
+The \emph{first-connect} race is designed out by writing the run's configuration
+before the launch reply, the \emph{duplicate command} race by the exactly-once
+acknowledgement in the event log, and the \emph{reconnect} race by resuming from
+the last received sequence number.
 
 \section{Sandbox and isolation design}
 \label{sec:design-sandbox}
 
-The sandbox is the enforcement of the trust boundary. Its threat model is
-untrusted generated code: a candidate is Python written by an LLM, and it must be
-able to do nothing but compute on the adjacency matrices it is given. A restricted
-\texttt{subprocess} environment is not a security boundary (the environment
-mapping controls environment variables only), so the design uses an
-operating-system isolation mechanism, and the boundary is enforced by the kernel.
+The sandbox enforces the trust boundary against untrusted generated code, which
+must be able to do nothing but compute on the matrices it is given. A restricted
+\texttt{subprocess} environment is not a security boundary, so the boundary is
+enforced by the kernel.
 
-\subsection{Isolation by processes and namespaces}
+\subsection{Isolation and filesystem view}
 
-Each candidate chunk runs in its own process, placed in new Linux namespaces
-\citep{manNamespaces,silberschatz2018os,tanenbaum2015modern}. The jail is built
-with \texttt{unshare} using unprivileged user namespaces only (no root, no extra
-packages): a new user namespace (mapped to root inside), a new network namespace
-with the interface down, a new mount namespace, a new PID namespace, and a new
-IPC namespace. A second user namespace is then created, mapped back to the real
-user id. The process runs with an isolated interpreter and a scrubbed
-environment.
-
-\subsection{Filesystem view}
-
-Inside the mount namespace the host tree is bound at a private root, and the
-directories that hold user data, shared storage, temporary files, system logs,
-and host daemon sockets are hidden behind empty read-only temporary filesystems;
-only the interpreter's import paths are bound back, the whole tree is made
-read-only, and the process pivots its root into it with a fresh private temporary
-directory, the only writable location. The candidate source is sent in the input,
-not as a path, so the run directory, verifier source, test graphs, and oracle are
-absent from the candidate's filesystem.
+Each chunk runs in its own process in new Linux namespaces
+\citep{manNamespaces,silberschatz2018os,tanenbaum2015modern}, built with
+\texttt{unshare} from unprivileged user namespaces only: user (root inside),
+network (interface down), mount, PID and IPC, then a second user namespace mapped
+back to the real user, with an isolated interpreter and a scrubbed environment.
+In the mount namespace the host tree is bound at a private root, user data,
+shared storage, temporary files, logs and daemon sockets are hidden behind empty
+read-only tmpfs mounts, only the interpreter's paths are bound back, the tree is
+made read-only, and the process pivots into it with a private \texttt{/tmp}. The
+candidate source arrives in the input, so the run directory, verifier, test graphs
+and oracle are absent from its filesystem.
 
 \subsection{Resource limits}
 
-The jail stops a candidate reading or writing the host; resource limits stop it
-exhausting the host. These are set by the runner before candidate code runs, as
-hard limits the candidate cannot raise (equal to the soft limits, except the
-CPU limit, whose hard value is one second above the soft one so that the
-signal described below can be delivered first). They bound
-the address space, the CPU time, the per-file size, the open-file-descriptor
-count, the core dump, and the process count (four tasks in the runner's user
-namespace, so a fork bomb dies quickly and parallel runners do not share the
-budget). The exact values and the \texttt{RLIMIT\_*} constants are in
-Chapter~\ref{ch:implementation}.
-
-
-The address-space limit is on virtual memory, not on the resident set, and the
+Resource limits stop a candidate exhausting the host: hard limits the runner sets
+before candidate code runs, on address space, CPU time (hard one second above
+soft, so the signal below arrives first), file size, descriptors, core dumps and
+processes (Section~\ref{sec:impl-sandbox} gives the values). The address-space limit is on virtual memory, not on the resident set, and the
 distinction is why it is the right knob. \texttt{RLIMIT\_AS} bounds the virtual
 address space a process may map, while the resident set is the subset of pages
 that paging actually keeps in RAM; a process can map far more virtual memory than
@@ -505,14 +439,9 @@ reaped and its threads joined before \texttt{\_run\_capped} returns, which
 \section{Data and persistence design}
 \label{sec:design-persistence}
 
-All state is persisted to the local filesystem as files under a per-run
-directory; there is no database. This is a deliberate choice for a
-single-writer, single-host research tool, and it is what makes the run
-human-inspectable and replayable.
-
-\subsection{The run directory as the data model}
-
-The run directory is the data model. A \emph{run} (named by a unique run id that
+All state is files under a per-run directory, which keeps a run inspectable by
+hand and replayable; ADR-06 (Appendix~\ref{app:decisions}) records why there is
+no database. The run directory is the data model. A \emph{run} (named by a unique run id that
 namespaces every file so parallel runs never collide) has one
 \emph{configuration} and many \emph{generation snapshots}; a generation has many
 \emph{candidates}; a candidate has zero or one \emph{reflection} and zero or more
@@ -529,42 +458,18 @@ either the old complete file or the new complete file, never a torn one. The
 engine discards any incomplete file beyond it and restores the specialist state by
 replaying the event log.
 
-\subsection{The event schema}
-
-The event log is the interface the rest of the system reads, so its vocabulary is
-part of the design. Table~\ref{tab:events} (Appendix~\ref{app:tables}) lists the
-event types, when each is emitted, and its key payload fields; the fields are the \texttt{RunEvent} union in
-\texttt{ui/src/types.ts} together with the final-grade and run-end events emitted
-by the orchestrator. Every event also carries \texttt{seq} (the monotonic
-sequence number) and \texttt{ts} (the timestamp).
-
-
-\subsection{Why files and no database}
-
-The data model is small and hierarchical (runs to generations to candidates), so
-there is no query benefit from a relational store, and a researcher needs to
-inspect state by hand, which files are human-readable for. The single-writer rule
-makes files safe here, and the append-only event log gives the durability and
-replay that a database would otherwise provide (ADR-06 in
-Appendix~\ref{app:decisions}).
+The event vocabulary is part of the design: Table~\ref{tab:events}
+(Appendix~\ref{app:tables}) lists each type, when it is emitted and its payload
+(the \texttt{RunEvent} union of \texttt{ui/src/types.ts}); every event carries
+a monotonic \texttt{seq} and a timestamp.
 
 \section{User interface design}
 \label{sec:design-ui}
 
-The user interface is the realisation of contribution C1: an interactive
-platform that launches, monitors, replays, and steers a run. It is a single-page
-web application that talks to the UI server over REST and a WebSocket, and it is
-designed around the event stream, so the live view and the replay view are the
-same code. It has three top-level screens, navigated by hash routes: the
-\emph{Runs} screen (the landing page), the \emph{New Run} screen (a launch form),
-and the \emph{Run} screen (the main view, with a live/replay toggle and the
-monitoring and steering panels). Their layout is shown once, in
+The interface of C1 is a single-page application over REST and a WebSocket with
+three hash-routed screens (Runs, New Run, Run), shown in
 Chapter~\ref{ch:user-documentation} (Figures~\ref{fig:ud-runs} and
-\ref{fig:ud-live}), and is not repeated here.
-
-\subsection{The event-sourced state model}
-
-The central UI decision is that the interface state is a pure reducer over the
+\ref{fig:ud-live}). The central UI decision is that the interface state is a pure reducer over the
 event stream: one function, \texttt{applyEvents} in \texttt{ui/src/state.ts},
 folds a list of events into the run state, and both the live view and the replay
 view call it. This is what makes the registered replay completion signal honest:
@@ -572,8 +477,6 @@ replaying generation $k$ is the same reducer applied to fewer events, not a
 second rendering path that could disagree with the live view. The run status is
 derived, not stored, and the Steer panel offers a research hint and setters for
 the model-call budget and the population size.
-
-\subsection{Access control and accessibility}
 
 The server binds to the loopback address by default, and every API request and
 WebSocket requires the access token; non-local browser origins are refused, and
@@ -587,18 +490,11 @@ with assistive technology, which the automated suite does not assert
 \section{Design decisions and trade-offs}
 \label{sec:design-decisions}
 
-The principal decisions are recorded as architecture decision records in
-Appendix~\ref{app:decisions}. In one sentence each:
-ADR-01 grades a candidate by a per-problem certificate rather than by raw
-equality with one offline reference tree; ADR-02 builds the directed test
-universe from nauty isomorphism classes and the undirected one from every
-labelled graph; ADR-03 uses a two-tier grade, a cheap search bound during the run
-and a full bound on the finalists; ADR-04 runs the verifier workers as processes
-rather than threads; ADR-05 jails the sandbox with unprivileged Linux namespaces
-rather than a restricted subprocess or a container; ADR-06 persists the run as
-event-sourced files rather than a database; ADR-07 exposes the same verifier to
-an external coding-agent harness as a baseline alongside the built-in agents;
-ADR-08 renders the UI with one pure reducer shared by live and replay; and
-ADR-09 spawns plateau-triggered specialist agents whose state is derived from the
-event log. The next chapter walks through the implementation of each at the code
-level, and the testing chapter reports the evidence that the design holds.
+The nine principal decisions are recorded as architecture decision records in
+Appendix~\ref{app:decisions}, each with its rejected alternative: certificates
+rather than raw equality (ADR-01), nauty classes for directed and all labelled
+graphs for undirected problems (ADR-02), the two-tier grade (ADR-03), worker
+processes rather than threads (ADR-04), a namespace jail rather than a subprocess
+or container (ADR-05), event-sourced files rather than a database (ADR-06), the
+coding-agent harness beside the built-in agents (ADR-07), one pure UI reducer for
+live and replay (ADR-08), and event-derived plateau specialists (ADR-09).
