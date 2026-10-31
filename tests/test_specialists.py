@@ -69,9 +69,12 @@ def test_gain_is_credited_and_correctness_signature():
 
 
 def test_mock_run_spawns_and_retires_a_specialist(tmp_path):
+    # The mock candidates' work ratio is measured wall-clock time, so on a loaded
+    # host it can drift by more than 1% between generations and count as progress.
+    # plateau_epsilon=1.0 makes the plateau depend on fitness only (deterministic).
     config = RunConfig(problem="dynamic_bfs", provider="mock", population_size=2,
                        max_generations=8, elitism_k=1, early_stop_on_success=False,
-                       dynamic_agents=True, plateau_window=2, agent_budget=1,
+                       dynamic_agents=True, plateau_window=2, plateau_epsilon=1.0, agent_budget=1,
                        specialist_generations=2,
                        bound=Bound(n_max=3, n_random=0, seq_len_max=2, seq_count=1, seed=1),
                        search_n_max=2, search_seq_count=1, final_grade=False,
