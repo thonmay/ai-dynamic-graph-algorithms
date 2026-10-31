@@ -16,13 +16,16 @@
 - Exam-topic scorer output (supervisor's skill): `/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch/examtopic/` (re-run after the chapters are written).
 - Supervisor guides (downloaded): study guide, past questions, committee profiles in `/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch/guide/`.
 
-## Status (2026-10-26, commit 8b6b656)
-- [x] All chapters written (Ch1-Ch7, Appendices A reproducibility, B FR catalogue + use-case narratives, C design decision record, D checklist); 156 pp PDF, body pp 6-100 (95 pp), 55 bib entries all cited, 0 undefined refs, no overfull box > 3.5 pt.
-- [x] Two bsc-thesis 30-point audits applied; latest provisional 21-27/30 (21 awarded, 3 lost, 6 pending demo). Exam topics 8/19/17 all "Strong now" (7/2/0, 13/1/0, 14/3/12).
-- [x] Committed evidence: self-test logs BFS/DFS/LBFS (+ DFS relabels 2), DFS certificate cross-check (274,942), Yang random-update check (1.44 M), chunk memory (618 MB DFS).
-- [x] AI disclosure (commit 42c5667): Section 5.3 overview table, point-of-use footnotes on generated figures, filled ELTE declaration `thesis-doc/ai-declaration.docx` (official template; models only, no harness/provider names, per user). Supervisor explicitly permitted AI use; logs available on request.
-- [x] Template guidance off (`\showtemplateguidancefalse`); 157 pp, 0 undefined refs.
-- [ ] User: print, sign and date the declaration; add it to the submission zip as a separate file.
-- [ ] Third bsc-thesis audit on the final build.
-- Length: user chose to keep 95 pp body.
-- [ ] Demo (C7.x) with the supervisor on revision 7895107.
+## Status (2026-10-31, after the supervisor's checkpoint 4 and 5 audits of 2026-10-30)
+- Audits: `Thonmay_Islam_BSc_Checkpoint_4_Implementation_Audit_2026-10-30.md`, `..._Checkpoint_5_Final_Thesis_Audit_2026-10-30.md` (repo root, untracked). Both "Insufficient" on evidence/compliance gates, not on content.
+- Session: January 2027 (Neptun upload deadline 1 Dec 2026); cover year 2027. Topics to register, in order: 8 OOM, 19 Concurrent, 17 OS (supervisor recalled 11; student chose 8/19/17). Private coverage map: `.enlcode/exam-topic-coverage.md`.
+- [x] C14 length: Ch1-7 = 78 substantive pp + divider (printed 6-84); detailed tables moved to Appendix D; faculty max 80.
+- [x] C14 claims: zero-false-negative bounded to the seeded corpus/universe/histories everywhere; eval3 raw 7/9 + 2 regrades explicit.
+- [x] C13: AI header comment in every source file (from the recorded edit history; AST/bundle identical, commit e39d4ab); 5.3 table and declaration page refs updated. Supervisor explicitly permitted AI use.
+- [x] C10/C12: `scripts/execution_record.sh`; record in `campaign/execution_record/` (e527d08, 31/31 OK, redacted). Found and fixed one flaky test (e527d08).
+- [x] Code-verified corrections (engine threads, control.jsonl writers, process-group vs --kill-child, class/sequence diagrams), object + package diagrams, OS/concurrency subtopics.
+- [ ] USER: print, sign and date `thesis-doc/ai-declaration.docx` by hand, scan to PDF, put it in the submission zip (slot in the manifest).
+- [ ] USER: rewrite in your own words (supervisor rule: research-heavy text must be the student's own). AI-drafted passages to rewrite: Ch1 Sec 1.1 Motivation and problem (all four paragraphs) and the Sec 1.3 contribution bullets; Ch6 Sec 6.8 interpretation paragraphs (the prose after Tables 6.3, 6.4, 6.5 and Sec 6.8.5 Threats to validity); Ch7 all sections (7.1-7.5). Keep every number and citation; after rewriting, update the "Thesis text drafting" row of Table 5.2 and the declaration to say which parts were rewritten by you.
+- [ ] USER: register the three topics in Neptun; book the supervisor's single Turnitin check (about one week before upload); upload one file `THONMAY_FFR8A9_THESIS.zip` by 1 Dec 2026.
+- [ ] USER: student-led debugging session with the supervisor (CP4-C10; he will run the program himself).
+- Repo access: GregoryMorse is a collaborator with write permission on the private repo.
