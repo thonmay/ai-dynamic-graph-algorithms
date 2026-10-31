@@ -113,11 +113,25 @@ self-test logs, \texttt{ui\_check} screenshots \\
 \end{tabular}
 \end{table}
 
-The engine is a flat package with the dependencies flowing in one direction:
+Figure~\ref{fig:packages} shows the package structure as the import statements
+define it. Inside the core package the dependencies flow in one direction:
 the orchestrator imports the verifier, sandbox, population, event log,
-checkpoint, provider and specialists, and none of those imports the orchestrator.
-The agent layer is a subpackage; the problem definitions live in a single
-module. The interface is a separate npm project under \texttt{ui/}; its build
+checkpoint, provider and specialists, and only the CLI imports the orchestrator.
+Between packages the picture is less clean: the core and the agent subpackage
+depend on each other, because the agents' example runner reuses the verifier
+and sandbox, and the API and mock backends import the pack loader and the CLI
+helpers lazily. The self-test corpus is a leaf that imports nothing from the
+core. The problem definitions live in a single module.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\textwidth]{figures/packages.pdf}
+  \caption{Package diagram, derived from the import statements. Dashed arrows
+  are dependencies from client to supplier; the user interface uses the core
+  only over HTTP and WebSocket, never by import.}
+  \label{fig:packages}
+\end{figure}
+ The interface is a separate npm project under \texttt{ui/}; its build
 output is committed under \texttt{src/evoalgo/ui\_dist} so the Python package
 serves it without a Node toolchain at run time.
 
@@ -338,8 +352,9 @@ expressed as an override of a single named code block, so each fault is a clean
 diff against the known-good and carries a documented minimal counterexample at
 $n \le 5$. The self-test drives the real verifier over every isomorphism-class
 representative up to $n = 5$ (optionally with relabelled copies) and asserts that
-every reference and control is accepted and every real fault is rejected, the
-zero-false-negatives completion signal (the testing chapter reports the counts).
+every reference and control is accepted and every seeded fault is rejected, the
+zero-false-negatives completion signal measured on that corpus (the testing
+chapter reports the counts).
 
 \section{Sandbox implementation}
 \label{sec:impl-sandbox}
@@ -425,7 +440,7 @@ handler is killed one second later and reported as killed.
 with \texttt{\_run\_capped}, a \texttt{subprocess.run} with bounded memory.
 The subprocess is started in its own session
 (\texttt{start\_new\_session=True}), so it leads a process group that the
-parent can kill wholesale with \texttt{os.killpg(pid, SIGKILL)} \citep{herlihy2012art}.
+parent can kill wholesale with \texttt{os.killpg(pid, SIGKILL)} \citep{kerrisk2010tlpi}.
 Three daemon threads run concurrently with the parent's wait: a \emph{feed}
 thread that writes the JSON input to the runner's stdin, and two \emph{drain}
 threads, one per output pipe, that read with a cap. Listing~\ref{lst:run-capped}
@@ -654,7 +669,7 @@ and the token refresh &
 \texttt{test\_ericai\_refresh\_writes\_fresh\_token} \\
 \texttt{os.replace} (atomic) & \texttt{checkpoint.commit}, engine.json &
 crash-safe generation and liveness writes &
-\texttt{test\_stop\_mid\_generation\_commits\_what\_was\_produced} \\
+\texttt{test\_resume\_counts\_calls\_of\_a\_crashed\_generation} (recovery) \\
 Append-only \texttt{fsync} log & \texttt{events.\_append\_line} & durable,
 replayable event stream & \texttt{test\_partial\_and\_malformed\_lines\_are\_skipped} \\
 Ordered merge & \texttt{verifier.\_merge\_parallel} & parallel result identical
@@ -675,10 +690,21 @@ CPU-bound Python in threads, so threading the invariant checks would not speed
 them up. \texttt{ProcessPoolExecutor} gives real parallelism across the workers,
 and the ordered merge makes the parallel result identical to the serial one
 without a lock on the running totals. The GIL itself is not a concern in the
-engine: it is single-threaded, and the only threads it creates are the three
-short-lived drain and feed threads in \texttt{\_run\_capped}, which communicate
-with the parent only through the subprocess pipes and two result dictionaries
-written by a single thread each. The interpreter switches the GIL every 5
+engine: its logic runs on one thread, the pool's manager thread only moves work
+items, and the three short-lived drain and feed threads of \texttt{\_run\_capped}
+run in the worker processes (one set per chunk). Each of those threads keeps its
+read buffer on its own stack and shares only the heap objects \texttt{proc},
+\texttt{out} and \texttt{err}; each result dictionary has exactly one writer, and
+the parent reads it only after \texttt{join}, which is what makes the writes
+visible to it. The pool also needs no explicit monitor: \texttt{concurrent.futures.wait}
+with \texttt{FIRST\_COMPLETED} blocks on each \texttt{Future}'s internal
+condition variable, which the worker's completion notifies. Scheduling is
+layered: chunks are dispatched first-come, first-served onto at most
+\texttt{min(8, cpu)} workers, the kernel time-shares those processes, and the
+per-chunk wall-clock timeout bounds how long one chunk can hold a worker, so a
+hanging candidate cannot cause a convoy behind it. \texttt{\_THREAD\_ENV} pins
+the numeric libraries to one thread per runner, so eight runners do not
+oversubscribe the cores and pay for context switches. The interpreter switches the GIL every 5
 milliseconds by default, but the server's \texttt{asyncio} tasks switch only at
 \texttt{await} points, so \texttt{\_tail} and \texttt{\_commands} never run
 concurrently inside the event loop and need no lock; \texttt{Future} and
@@ -703,7 +729,11 @@ The following are known shortcomings, each stated as it is in the code at commit
 plus \texttt{os.replace}) and then writes the \texttt{COMMITTED} marker with a
 plain \texttt{write\_text}, which is not atomic; a crash between the two can
 leave a complete generation file that the marker does not point at, and
-\texttt{discard\_incomplete} would drop it.
+\texttt{discard\_incomplete} would drop it. Neither write is followed by an
+\texttt{fsync}, unlike the event log: \texttt{os.replace} makes the rename atomic
+in the file system, but after a power loss the kernel page cache may not yet have
+written the new content to the device, so the rename can survive while the data
+does not. A process crash is safe; a host crash is not guaranteed to be.
 
 
 \paragraph{Timing integrity is best-effort.} The runner binds \texttt{json},
@@ -723,10 +753,13 @@ reproducibility is claimed only for the verifier and the selection.
 \texttt{DynamicSCC}, \texttt{Reachability} and \texttt{DynamicMCS} have checkers
 but no fault corpus, so the zero-false-negatives claim does not extend to them.
 
-\paragraph{A lazy reverse dependency in the mock backend.}
-\texttt{agents/mock.py} imports the candidate generators from
-\texttt{evoalgo.cli} (lazily), so the agent layer has a reverse dependency on
-the CLI.
+\paragraph{The core and the agent package depend on each other.}
+The core imports the agent layer (the provider, the server, the harness), and the
+agent layer imports back: \texttt{agents/examples.py} reuses the verifier and the
+sandbox at module level, and \texttt{agents/api.py} and \texttt{agents/mock.py}
+import the pack loader and the CLI's candidate generators lazily
+(Figure~\ref{fig:packages}). Moving the shared pieces into a lower package would
+remove the cycle.
 
 \paragraph{No CI for the test suites.} The only GitHub Actions workflow is the
 Lean one (\texttt{lean.yml}); the pytest and Vitest suites are run by hand, so

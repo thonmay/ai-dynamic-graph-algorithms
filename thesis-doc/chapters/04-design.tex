@@ -63,9 +63,10 @@ boundaries of Sections~\ref{sec:design-agents} and \ref{sec:design-sandbox}.
 \section{Domain model and business rules}
 \label{sec:design-domain}
 
-The domain is described by one static model and two dynamic models, each
+The domain is described by two static models and two dynamic models, each
 answering a different question: the class diagram (Figure~\ref{fig:class})
-states which classes exist and how they are related; the candidate state
+states which classes exist and how they are related; the object diagram
+(Figure~\ref{fig:objects}) shows one concrete configuration of them; the candidate state
 machine (Figure~\ref{fig:states}) states which transitions a candidate may
 undergo; and the generation sequence diagram (Figure~\ref{fig:sequence}) states
 the order in which the engine acts over one generation.
@@ -82,6 +83,24 @@ written to the checkpoint and the event log before it is dropped from the live
 population. And the two abstractions, \emph{ProblemDefinition} and
 \emph{Backend}, are what keep this static structure unchanged when a problem or
 a provider is added.
+
+Figure~\ref{fig:objects} instantiates the class model for one recorded state:
+the committed generation 8 of the eval1 orchestrator run on dynamic BFS, seed 1,
+with every attribute value taken from \texttt{generation\_0008.json} and the run
+configuration. It shows what the class diagram only permits: two \emph{Verifier}
+objects of the same class with different bounds (the search grade at $n \le 4$
+with one relabelling, the final grade at $n \le 5$ with two), sharing one
+\emph{ProblemDefinition} object, and four surviving candidates whose
+\texttt{parent} links record a lineage of three generations.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{figures/object-snapshot.pdf}
+  \caption{Object diagram of the committed generation 8 of the recorded run
+  \texttt{eval1\_orchestrator\_dynamic\_bfs\_s1}. Solid lines are links between
+  objects; dashed lines are the \texttt{parent\_ids} lineage.}
+  \label{fig:objects}
+\end{figure}
 
 \begin{sidewaysfigure}
   \centering
@@ -275,8 +294,9 @@ realisation is in Chapter~\ref{ch:implementation}.
   \centering
   \includegraphics[width=\textwidth]{figures/generation-sequence.pdf}
   \caption{Sequence diagram of one generation: the orchestrator emits
-  \texttt{gen\_start}, fills the offspring slots (checking the control channel,
-  generating or repairing), verifies each candidate, reflects on failures, adds
+  \texttt{gen\_start}, fills the offspring slots (selecting a parent per slot, checking the control channel, generating or
+  repairing), verifies every new candidate, then reflects on the failed ones
+  through the \texttt{Reflector} (with a control point before each call), adds
   and culls the population, and emits \texttt{gen\_committed}; on a plateau it
   emits \texttt{agent\_spawned}.}
   \label{fig:sequence}
@@ -332,7 +352,9 @@ paths between them.
 
 \subsection{Process, thread, and task model}
 
-The engine is a single Python process and is itself single-threaded. The verifier
+The engine is a single Python process whose own logic runs on one thread; the
+process pool adds a manager thread that moves work items and results between the
+engine and the workers. The verifier
 fans out to a pool of worker \emph{processes} because the per-chunk work is
 CPU-bound Python that the interpreter's global lock would serialise in threads
 (Section~\ref{sec:impl-concurrency}). The sandbox runs one jailed
@@ -342,30 +364,44 @@ process that, for each connected WebSocket, runs a tail task and a command task.
 
 \subsection{Shared resources and their synchronisation}
 
-The shared resources are files, and each has a single-writer, multiple-reader
+The shared resources are files. Most have a single-writer, multiple-reader
 protocol, which makes the design safe without locks in most cases.
 \texttt{events.jsonl} is the canonical instance: a \emph{readers-writers}
 solution in which the single writer is the engine and the readers are the server
 tail, the resume accounting, and the specialist replay. \texttt{control.jsonl}
-is the reverse (written by the server and CLI, read by the engine). The two
+is the reverse: one reader (the engine) and several writers (the CLI and one
+command task per open WebSocket). It needs no lock because every command is one
+short line appended with \texttt{O\_APPEND} in a single \texttt{write}, which a
+local file system applies atomically. The two
 resources that genuinely need a lock are the harness workspace and the model
 token file, each guarded by an exclusive file lock.
 
 
 The readers poll the file rather than waiting on a monitor or a condition
-variable, and that is the right choice for this boundary. The writer and the
-readers are separate processes that communicate only through files, so they share
-no memory and there is no shared object a monitor could guard: a monitor
+variable, and that is the right choice for this boundary. The server tail and the CLI are separate processes from the writer and
+communicate with it only through files, so they share no memory and there is no shared object a monitor could guard: a monitor
 coordinates threads that share memory \citep{hoare1974monitors}, and a condition
 variable would need a shared variable to signal on, which across a process
-boundary is exactly the file. Polling the file by byte offset is therefore the
+boundary is exactly the file. (The resume accounting and the specialist replay
+read the log inside the writing engine, but only between generations, when it
+is not being appended.) Polling the file by byte offset is therefore the
 simplest correct mechanism, and its cost is a fixed poll interval, not a missed
 wakeup. The bounded worker window of the parallel verifier is where starvation
 could in principle arise (a chunk that is never scheduled while others keep
 taking the free slots), but it cannot: chunks are submitted strictly in order,
 so every chunk is scheduled after at most \texttt{workers} earlier ones. Nor can
 the window deadlock: a worker holds no resource that another worker waits for,
-so Coffman's conditions do not hold.
+so Coffman's conditions do not hold. The two hazards differ in kind \citep{herlihy2012art}: starvation
+is a runnable task that is passed over indefinitely, while deadlock is a set of
+tasks each blocked on another. The pipe case below is a deadlock, because the
+parent and the runner both block, and neither stays runnable.
+
+Communication between the processes is \emph{message passing}, never shared
+memory, over three buffered channels: the runner returns one JSON result message
+on its saved standard output, a pool worker returns its pickled partial result
+through the executor, and the server and the engine exchange control commands and
+events as JSON lines in files. None of them needs a shared object, which is why
+the sandbox can give each candidate its own address space and IPC namespace.
 
 \subsection{Producer-consumer chains and the pipe deadlock}
 
@@ -442,7 +478,10 @@ that paging actually keeps in RAM; a process can map far more virtual memory tha
 it touches, and the mapped-but-untouched pages cost no RAM. Bounding the address
 space therefore stops a candidate from reserving a terabyte of virtual memory and
 then touching only a little of it, which a resident-memory limit would not catch
-until the pages were faulted in \citep{silberschatz2018os}. The limit is generous
+until the pages were faulted in \citep{silberschatz2018os}. Demand paging is
+also why the runner applies the limits only after importing NumPy: the import
+maps much more virtual memory than it touches, so a limit set before it would
+measure the library rather than the candidate. The limit is generous
 relative to what a real chunk uses: the measured peak resident set of a dynamic
 DFS chunk is 618 MB (\texttt{campaign/chunk\_memory.log}), well under the four
 gigabyte ceiling, so the limit bounds abuse without constraining a correct
@@ -450,12 +489,29 @@ candidate.
 
 \subsection{Signals, process groups, and IPC}
 
-The runner starts the candidate in its own process group, so when the timeout
-fires or the output overflows, the parent kills the whole group, not just the
-direct child; this is what stops a forked grandchild from keeping the pipes open
-after the runner is killed. The CPU signal handler writes a marker to the error
+Inside the jail, the PID namespace and \texttt{unshare -{}-kill-child} end every
+process the candidate forked when the runner dies, so no grandchild can keep the
+pipes open. The runner is also started in its own process group, and the parent
+kills the whole group on a timeout or an output overflow; that matters only
+when the jail is disabled for debugging, where the group kill is what stops a
+forked grandchild from holding the pipes. The CPU signal handler writes a marker to the error
 stream and exits, so the parent can tell a CPU-limit kill from a wall-clock
-timeout.
+timeout. The IPC namespace closes a quieter channel: System V shared-memory segments
+are kernel objects that outlive the process that created them, so without it a
+candidate's \texttt{shmget} would leave a segment in the host's namespace after
+the run. In its own IPC namespace the segment disappears with the jail.
+
+Operating-system errors are handled where they arise rather than turned into
+generic failures: \texttt{ProcessLookupError} and \texttt{PermissionError} from
+\texttt{killpg} mean the group is already gone, \texttt{BrokenPipeError} on the
+feed means the runner died before reading its input, and inside the runner the
+limits surface as \texttt{EAGAIN} on \texttt{fork}, \texttt{EFBIG} on a write
+past the file limit and \texttt{MemoryError} past the address-space limit, each
+reported in the candidate's verdict. Every acquired resource has a release path
+that runs on all exits: file and pool handles are context managers, the
+workspace lock is released in a \texttt{finally}, and the runner is killed,
+reaped and its threads joined before \texttt{\_run\_capped} returns, which
+\texttt{test\_sandbox\_leaves\_no\_temp\_files} checks.
 
 \section{Data and persistence design}
 \label{sec:design-persistence}
