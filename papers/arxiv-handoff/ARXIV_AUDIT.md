@@ -1,7 +1,7 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r17.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r18.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
@@ -31,7 +31,7 @@ Warnings, classified:
 - [x] License choice: CC BY 4.0 (author-confirmed 2026-10-04).
 - [x] Artifact pin: `mcs-arxiv-v10` (`0d0ddff`) tagged, pushed and published as a GitHub Release; Software Heritage revision ID resolves.
 - [x] AI reasoning mode per model (author-confirmed 2026-10-19).
-- [x] Author contacts: emails in the title footnotes; first author marked BSc student (author-confirmed 2026-10-19). First author ORCID given; second author's ORCID not added (author's choice).
+- [x] Author contacts: emails in the title footnotes; first author marked BSc student (author-confirmed 2026-10-19). Both ORCIDs given (second author's supplied 2026-11-11; public record name Gregory Morse, checksum valid).
 
 ## 5. Canonical TeX metadata validation
 
@@ -85,12 +85,12 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59235 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59309 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 15 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 15 pages, 49155 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 15 pages, 48781 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `1283dd5a5025a1946c8a16a27c760225eb3133e90d5d99228ef0272d435f1890`.
-- `archive-built.pdf` SHA-256: `050aa2038442778245b60693166f7165fcc85b8621f5b2df3deee93265c2ab17`.
+- ZIP SHA-256: `426e027b2967808c8f9a5f72d0b2852d51deb8b1134abeffb6430152de37aa7e`.
+- `archive-built.pdf` SHA-256: `03ddd201aca4c8fcc1aad00350cf35be70f8995bfa310e25eb52c42761bcd28e`.
 
 ## 12. Rendered-PDF audit
 
@@ -98,7 +98,7 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
-- Authors: Md Thoriqul Islam Thonmay (first; ORCID 0009-0009-8317-6645, public record name matches, checksum valid), Gregory Morse (no ORCID given). Both ELTE, Department of Programming Languages and Compilers. Author order unchanged. Submitter is the first author.
+- Authors: Md Thoriqul Islam Thonmay (first; ORCID 0009-0009-8317-6645, public record name matches, checksum valid), Gregory Morse (ORCID 0000-0002-0231-6557, public record name matches, checksum valid). Both ELTE, Department of Programming Languages and Compilers. Author order unchanged. Submitter is the first author.
 - AI disclosure: visible unnumbered section; provider + exact model ID + thinking mode + role for all four models, plus who produced the internal review rounds, `stab.c` and the $2P_3$ witness (second author, Claude Opus 5.5) and the probe and prefix-hypothesis scripts (first author, same model); "No AI system is an author"; authors accept full responsibility. Divergence check (metadata line vs visible text) passes: the metadata field copies the visible paragraph verbatim.
 - Rights: arXiv license CC BY 4.0 (author-confirmed); repository Apache-2.0; third-party deps (Lean 4, Mathlib) under their own licenses.
 
@@ -136,6 +136,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 17. (2026-11-11, Palomar v3 registered) v3 registered 2026-11-10 from `ab521f2` under the pre-rename repository name (Section 10). Paper: the abstract drops the "registry holds an earlier, every-vertex form" hedge and says the results are re-checked by independent kernel checkers and registered; Sec. 8 cites version 3 (footnote URLs `version=3` / `-v3.json`, both HTTP 200), states that v3 carries exactly the paper's statements and that its `nanoda`/`con-ron` re-checks cover them, notes the registry's former repository name, and describes v2 (every-vertex bounds) and v1 as superseded; the reproducibility paragraph cites v3; the metadata External-artifacts line is rewritten to match; date October → November 2026. Artifact README (`thonmay/mcs-lean` master) updated to v3; the pinned tag `mcs-arxiv-v10` is unchanged. Subagent review of the diff checked every Palomar claim against the v3 JSON and git (Challenge/Solution SHA-256 match the registry record; `ab521f2..0d0ddff` touches only the axiom audit, its script and the README); its one prose fix (status clause attached to the README) and one nit applied. Rebuild r14: 0 blockers, the same 4 classified warnings, 15 pages; pages 1, 9 and 10 re-rendered and checked visually.
 
 18. (2026-11-11, final multi-perspective review) Four parallel reviews: supervisor sign-off with the arxiv-submission-auditor protocol (verdict READY; every round-3 and round-4 item covered), a cold research-referee read, a Lean-claim fidelity check against `0d0ddff` (all 74 `\leanname` tokens resolve; 41 comparator names and the section split match; 47 axiom reports), and a page-by-page typesetting review (polished). Fixed: contribution 1 stated the tracking hypothesis two-sidedly, which the disjoint mixed pair refutes; it is now one-directional, as in Theorem 1. The MCS perfect-elimination citation now credits Tarjan-Yannakakis for MCS and Rose-Tarjan-Lueker for LexBFS. The probe theorem states $O((n+m)\log n)$ for computing the smallest-index canonical ordering (linear time is for arbitrary ties), and the full-update remark now says a break costs up to recomputation plus rebuilding the trees. The locality theorems say "canonical in $G'$" (the Lean conclusion is `IsMCSNext`), not "legal". `FlipOf` is described as agreeing off $\{u,v\}$; `insertUpdate` keeps the ordering up to the first break; `update_from_prefix` is stated with its hypotheses. The online corollary no longer calls the canonical update a realization of the common ordering. "Every positive statement" is narrowed to numbered results. `leanchecker` covers the 20 source modules. The README pointer refers to master. The incomparability count reads "each family has 40 orderings not in the other". The appendix gains `IsCommonPrefix` and the Lean statement of `exists_common_ordering_prefix` (verbatim; listing gains `\notin`/`\exists` mappings). A verification subagent then checked every edit against `Challenge.lean`; its three follow-ups were applied. The Humanizer was run on the rewritten Palomar paragraph; its output dropped technical precision, so only its sentence split was adopted by hand. Rebuild r17: 0 blockers, same 4 classified warnings, 15 pages, 0 overfull, 0 missing characters.
+
+19. (2026-11-11) Second author's ORCID added to his title footnote at his request. Rebuild and auditor run r18: 0 blockers, the same 4 classified warnings, metadata file matches the canonical block, shipping build from the ZIP alone rc=0 on all runs (citations resolve from the second run), 15 pages, 0 overfull, 1 underfull (Theorem 14 header), fonts embedded.
 
 ## 16. Official policy sources
 
