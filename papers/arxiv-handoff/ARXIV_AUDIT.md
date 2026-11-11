@@ -1,7 +1,7 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r18.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r20.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
@@ -16,7 +16,7 @@ Warnings, classified:
 - `ABSTRACT_TRANSFORM_VERIFY`: metadata abstract is the ASCII expansion of the visible one ($G\triangle F$ -> "the modified graph", `P_4`, `+1`); same claims.
 - `ARTIFACT_LIVE_VERIFY`: live ledger in Section 10 (unauthenticated checks, 2026-10-19).
 - `NOVELTY_AUDIT_REQUIRED`: "first" claims are hedged ("to our knowledge", survey stated in Section 8 of the paper); ledger in Section 7 of this file.
-- `PDF_UNDERFULL_BOX`: one, Theorem 14 header (long Lean-name list); cosmetic.
+- `PDF_UNDERFULL_BOX`: four, all checked on the rendered pages and none visibly loose: the Theorem 7 and Theorem 15 headers (long Lean-name lists), the Palomar footnote URL, and the axioms paragraph; cosmetic.
 
 ## 3. Requirement provenance
 
@@ -38,7 +38,7 @@ Warnings, classified:
 One raw `\iffalse` / `\fi` region (`ARXIV-METADATA-BEGIN` … `ARXIV-METADATA-END`) sits immediately before `\begin{document}`. Compile-tested; 14 fields. `ARXIV_METADATA.txt` is derived from it byte-for-byte by stripping the markers.
 
 - Abstract is **not** copy-paste-safe (contains `\emph`, `$P_4$`), so the region uses the expanded single-line `Abstract:` form. Scientific identity with the visible abstract confirmed (only macro/format expansion differs): `emph{}` → plain; `$P_4$` → `P_4`; `Lean~4` → `Lean 4`.
-- Comments page count reconciled from the extracted final ZIP (15 pages, 1 table).
+- Comments page count reconciled from the extracted final ZIP (14 pages, 1 table).
 
 ## 6. Category / classification decision
 
@@ -85,16 +85,16 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59309 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
-- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 15 pages, 0 overfull, 1 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 15 pages, 48781 selectable-text chars, 32/32 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59450 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 14 pages, 0 overfull, 4 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 48902 selectable-text chars, 17/17 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `426e027b2967808c8f9a5f72d0b2852d51deb8b1134abeffb6430152de37aa7e`.
-- `archive-built.pdf` SHA-256: `03ddd201aca4c8fcc1aad00350cf35be70f8995bfa310e25eb52c42761bcd28e`.
+- ZIP SHA-256: `248179e6f1416ddec1efbdd0d90ed973a7aa3a0f4434ca200c534d41907eac27`.
+- `archive-built.pdf` SHA-256: `a3459d509496bc7424c4489ee357394126eaa8ce1bb2dfcaf5f964f62ba25739`.
 
 ## 12. Rendered-PDF audit
 
-15 pages, letter, selectable text, fonts embedded (`pdffonts` 32/32 `emb yes`). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. One underfull hbox (source lines 575–579, the Theorem 14 header with its long Lean-name list, badness 3428): **cosmetic**.
+14 pages, letter, selectable text, fonts embedded (`pdffonts` 17/17 `emb yes`; newtx Times text and math). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. Four underfull hboxes (Theorem 7 and Theorem 15 headers with long Lean-name lists, the Palomar footnote URL, the axioms paragraph), each inspected on the rendered page: **cosmetic**.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
@@ -138,6 +138,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 18. (2026-11-11, final multi-perspective review) Four parallel reviews: supervisor sign-off with the arxiv-submission-auditor protocol (verdict READY; every round-3 and round-4 item covered), a cold research-referee read, a Lean-claim fidelity check against `0d0ddff` (all 74 `\leanname` tokens resolve; 41 comparator names and the section split match; 47 axiom reports), and a page-by-page typesetting review (polished). Fixed: contribution 1 stated the tracking hypothesis two-sidedly, which the disjoint mixed pair refutes; it is now one-directional, as in Theorem 1. The MCS perfect-elimination citation now credits Tarjan-Yannakakis for MCS and Rose-Tarjan-Lueker for LexBFS. The probe theorem states $O((n+m)\log n)$ for computing the smallest-index canonical ordering (linear time is for arbitrary ties), and the full-update remark now says a break costs up to recomputation plus rebuilding the trees. The locality theorems say "canonical in $G'$" (the Lean conclusion is `IsMCSNext`), not "legal". `FlipOf` is described as agreeing off $\{u,v\}$; `insertUpdate` keeps the ordering up to the first break; `update_from_prefix` is stated with its hypotheses. The online corollary no longer calls the canonical update a realization of the common ordering. "Every positive statement" is narrowed to numbered results. `leanchecker` covers the 20 source modules. The README pointer refers to master. The incomparability count reads "each family has 40 orderings not in the other". The appendix gains `IsCommonPrefix` and the Lean statement of `exists_common_ordering_prefix` (verbatim; listing gains `\notin`/`\exists` mappings). A verification subagent then checked every edit against `Challenge.lean`; its three follow-ups were applied. The Humanizer was run on the rewritten Palomar paragraph; its output dropped technical precision, so only its sentence split was adopted by hand. Rebuild r17: 0 blockers, same 4 classified warnings, 15 pages, 0 overfull, 0 missing characters.
 
 19. (2026-11-11) Second author's ORCID added to his title footnote at his request. Rebuild and auditor run r18: 0 blockers, the same 4 classified warnings, metadata file matches the canonical block, shipping build from the ZIP alone rc=0 on all runs (citations resolve from the second run), 15 pages, 0 overfull, 1 underfull (Theorem 14 header), fonts embedded.
+
+20. (2026-11-11, supervisor feedback) His `v3-update.diff` (diff of `1bcc9a6` against his `mcs_arxiv_submission.tar.gz`) was checked hunk by hunk: every change (abstract and metadata v3 wording, External-artifacts line, Sec. 8 footnote and paragraph, reproducibility paragraph, "the Even--Shiloach tree") is already in this version, which also carries the later final-review fixes and his ORCID, so his tarball was not applied over it; his `main.bbl` is byte-identical to ours. His font concern (Prism auto-loads lmodern; a plain build such as arXiv's gets Computer Modern) is addressed by naming the font in the preamble: `newtxtext` + `newtxmath` (Times), chosen over `lmodern` because Latin Modern has the same stroke weight as Computer Modern (+3% ink on page 3 versus +38% for newtx). `amssymb` dropped (newtxmath provides its symbols). One overfull line from the narrower font (the $2P_3$ edge list) fixed with `\allowbreak`, and a lone line before the Theorem 15 list removed. Page count 15 -> 14 (Comments updated). Page-by-page review of all 14 pages: clean; all math and listing glyphs render. Rebuild and auditor run r20: 0 blockers, the same 4 classified warnings, metadata matches.
 
 ## 16. Official policy sources
 
