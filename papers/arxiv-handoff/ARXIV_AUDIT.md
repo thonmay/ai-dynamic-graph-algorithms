@@ -1,7 +1,7 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r20.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r21.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
@@ -31,7 +31,7 @@ Warnings, classified:
 - [x] License choice: CC BY 4.0 (author-confirmed 2026-10-04).
 - [x] Artifact pin: `mcs-arxiv-v10` (`0d0ddff`) tagged, pushed and published as a GitHub Release; Software Heritage revision ID resolves.
 - [x] AI reasoning mode per model (author-confirmed 2026-10-19).
-- [x] Author contacts: emails in the title footnotes; first author marked BSc student (author-confirmed 2026-10-19). Both ORCIDs given (second author's supplied 2026-11-11; public record name Gregory Morse, checksum valid).
+- [x] Author contacts: emails in the title footnotes; first author's "BSc student" label (added 2026-10-19 on referee item 24, optional) removed at the author's request 2026-11-11. Both ORCIDs given (second author's supplied 2026-11-11; public record name Gregory Morse, checksum valid).
 
 ## 5. Canonical TeX metadata validation
 
@@ -85,12 +85,12 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59450 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59437 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 14 pages, 0 overfull, 4 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 48902 selectable-text chars, 17/17 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 51208 selectable-text chars, 17/17 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `248179e6f1416ddec1efbdd0d90ed973a7aa3a0f4434ca200c534d41907eac27`.
-- `archive-built.pdf` SHA-256: `a3459d509496bc7424c4489ee357394126eaa8ce1bb2dfcaf5f964f62ba25739`.
+- ZIP SHA-256: `a3264f130456de6b3e6c21a6fc6f79c6d04a6a66df14bf06ea83d187ce01648d`.
+- `archive-built.pdf` SHA-256: `a35e9e5523eb33675853653560e50318db0b3c61b4d36ea16847926b42bf4753`.
 
 ## 12. Rendered-PDF audit
 
