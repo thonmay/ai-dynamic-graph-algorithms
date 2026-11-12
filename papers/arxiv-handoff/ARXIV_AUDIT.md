@@ -1,7 +1,7 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r22.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r23.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
@@ -16,7 +16,7 @@ Warnings, classified:
 - `ABSTRACT_TRANSFORM_VERIFY`: metadata abstract is the ASCII expansion of the visible one ($G\triangle F$ -> "the modified graph", `P_4`, `+1`); same claims.
 - `ARTIFACT_LIVE_VERIFY`: live ledger in Section 10 (unauthenticated checks, 2026-10-19).
 - `NOVELTY_AUDIT_REQUIRED`: "first" claims are hedged ("to our knowledge", survey stated in Section 8 of the paper); ledger in Section 7 of this file.
-- `PDF_UNDERFULL_BOX`: four, all checked on the rendered pages and none visibly loose: the Theorem 7 and Theorem 15 headers (long Lean-name lists), the Palomar footnote URL, and the axioms paragraph; cosmetic.
+- `PDF_UNDERFULL_BOX`: three, all checked on the rendered pages and none visibly loose: the Theorem 7 and Theorem 15 headers (long Lean-name lists) and the axioms paragraph; cosmetic.
 
 ## 3. Requirement provenance
 
@@ -85,16 +85,16 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59439 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
-- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 14 pages, 0 overfull, 4 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 51209 selectable-text chars, 17/17 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59430 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 14 pages, 0 overfull, 3 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 51190 selectable-text chars, 17/17 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `0e3c99226f1603b4a4f2907704c103cce63b900f085a53a66d24dcb8a23d5fa5`.
-- `archive-built.pdf` SHA-256: `c1e7f9a93b04e03681c22adf24df748ef7cd4ff24781683308f8c03aba92fdef`.
+- ZIP SHA-256: `8e7d7af2099a7c2f149b281663cc5ba4a14af347e5644708df3e0c1ac4193e73`.
+- `archive-built.pdf` SHA-256: `2dfab562339f073a9e9c1a606feeacd486e41505ec8a8241e6b6a9211af136f0`.
 
 ## 12. Rendered-PDF audit
 
-14 pages, letter, selectable text, fonts embedded (`pdffonts` 17/17 `emb yes`; newtx Times text and math). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. Four underfull hboxes (Theorem 7 and Theorem 15 headers with long Lean-name lists, the Palomar footnote URL, the axioms paragraph), each inspected on the rendered page: **cosmetic**.
+14 pages, letter, selectable text, fonts embedded (`pdffonts` 17/17 `emb yes`; newtx Times text and math). Title, authors, affiliations, abstract, acknowledgements/CI, artifact URL, references all render. No line numbers, highlights, watermarks, or referee material. Three underfull hboxes (Theorem 7 and Theorem 15 headers with long Lean-name lists, the axioms paragraph), each inspected on the rendered page: **cosmetic**.
 
 ## 13. Authorship, affiliation, AI disclosure, rights
 
@@ -142,6 +142,8 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 20. (2026-11-11, supervisor feedback) His `v3-update.diff` (diff of `1bcc9a6` against his `mcs_arxiv_submission.tar.gz`) was checked hunk by hunk: every change (abstract and metadata v3 wording, External-artifacts line, Sec. 8 footnote and paragraph, reproducibility paragraph, "the Even--Shiloach tree") is already in this version, which also carries the later final-review fixes and his ORCID, so his tarball was not applied over it; his `main.bbl` is byte-identical to ours. His font concern (Prism auto-loads lmodern; a plain build such as arXiv's gets Computer Modern) is addressed by naming the font in the preamble: `newtxtext` + `newtxmath` (Times), chosen over `lmodern` because Latin Modern has the same stroke weight as Computer Modern (+3% ink on page 3 versus +38% for newtx). `amssymb` dropped (newtxmath provides its symbols). One overfull line from the narrower font (the $2P_3$ edge list) fixed with `\allowbreak`, and a lone line before the Theorem 15 list removed. Page count 15 -> 14 (Comments updated). Page-by-page review of all 14 pages: clean; all math and listing glyphs render. Rebuild and auditor run r20: 0 blockers, the same 4 classified warnings, metadata matches.
 
 21. (2026-11-11) First author's "BSc student" label removed (author's choice). The author line now separates the two names with `\qquad` instead of `\and`, so the names, both affiliation lines and the date share one centre (measured from the PDF text layer: author block centred at 308.2 pt against a 306 pt page centre; affiliation and date lines at 306.0 pt). Final checks: rebuild and auditor run r22 give 0 blockers, the same 4 classified warnings, 14 pages, 0 overfull, matching metadata. A consistency subagent confirmed the metadata block is byte-identical, the AI line matches the visible paragraph, the ZIP members are byte-identical, the 16 cite keys match the 16 bbl keys, both ORCIDs are valid, and all 7 URLs return HTTP 200. A visual subagent reviewed all 14 pages and found them clean. Its build of the ZIP under TeX Live 2026 also gave 14 pages, 0 errors and 0 overfull (5 cosmetic underfull boxes).
+
+22. (2026-11-11) Palomar footnote reflowed at the author's request: the entry URL and the record URL each sit on their own line (`\newline`, label "record:"), removing the stretched gap after "Entry:" and the stranded "machine-readable record:". Both lines fit inside the text width (PDF text layer: right edges 485.9 pt and 458.9 pt against 540 pt). That underfull box is gone. Rebuild and auditor run r23: 0 blockers, the same 4 classified warnings, 14 pages, 0 overfull, 3 underfull.
 
 ## 16. Official policy sources
 
