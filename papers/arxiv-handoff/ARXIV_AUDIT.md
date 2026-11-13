@@ -1,7 +1,7 @@
 # ARXIV_AUDIT.md — pre-submission audit
 
 Manuscript: *How rigid is maximum cardinality search? Stability and locality of MCS orderings under edge updates, verified in Lean*
-Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r24.json`).
+Audit tool: `arxiv-submission-auditor` (`scripts/audit_tex.py`), last run 2026-11-11 (`arxiv-r3/r25.json`).
 Auditor runtime: aiserver, Python 3.11.14, TeX Live 2021 (`pdfTeX 3.141592653-2.6-1.40.22`), poppler present.
 
 ## 1. Final status
@@ -85,12 +85,12 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 ## 11. Final ZIP allowlist, manifest, and two-path build
 
 - Allowlist (one path per line): `main.tex`, `references.bib`, `main.bbl`.
-- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59450 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
+- ZIP members (verified, `allowlist_matches: true`): `main.tex` (59460 B), `references.bib` (8278 B), `main.bbl` (5557 B). No build debris, no PDF, no code, no Lean sources, no audits.
 - Full-source build (aiserver, TeX Live 2021): LaTeX → BibTeX → LaTeX ×2, exit 0, 14 pages, 0 overfull, 3 underfull.
-- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 51200 selectable-text chars, 17/17 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
+- Shipping build (extracted ZIP, no BibTeX/Biber): all rc=0, 14 pages, 51205 selectable-text chars, 17/17 fonts embedded, 0 undefined citations in the final run, 0 overfull, 1 underfull.
 - `.bbl` byte-identical: `matches_shipped_bbl: true`.
-- ZIP SHA-256: `de1355e4ce1d0e2ed8c83627c03fb6f9749a56699274e17343f1e4b3170aaf7c`.
-- `archive-built.pdf` SHA-256: `1808b6b447cca82e2bbe629335461720b61fe24b57335b1f4040dbe928b322f0`.
+- ZIP SHA-256: `f77572ab932a9de4a8a28d02613835a1d6383b1376eb2fc8a0a72f6a3fea95c4`.
+- `archive-built.pdf` SHA-256: `2cb68b96c7631d1f08b99c080c4306335ab1d8d327edebcd2f253e392d7eaec7`.
 
 ## 12. Rendered-PDF audit
 
@@ -145,7 +145,9 @@ Zero missing keys, zero duplicate keys, zero uncited keys.
 
 22. (2026-11-11) Palomar footnote reflowed at the author's request: the entry URL and the record URL each sit on their own line (`\newline`, label "record:"), removing the stretched gap after "Entry:" and the stranded "machine-readable record:". Both lines fit inside the text width (PDF text layer: right edges 485.9 pt and 458.9 pt against 540 pt). That underfull box is gone. Rebuild and auditor run r23: 0 blockers, the same 4 classified warnings, 14 pages, 0 overfull, 3 underfull.
 
-23. (2026-11-12) First author's contact email changed to `mdthoriqulislam384@gmail.com` (his arXiv account email; the ELTE address may lapse). The ELTE affiliation is kept, because it is where the authors work and arXiv's affiliation field asks for it. The second author's email is unchanged until he confirms. Rebuild and auditor run r24: 0 blockers, the same 4 classified warnings, 14 pages, 0 overfull, title block still centred.
+23. (2026-11-12) First author's contact email changed to `mdthoriqulislam384@gmail.com` (his arXiv account email; the ELTE address may lapse). The ELTE affiliation is kept, because it is where the authors work and arXiv's affiliation field asks for it. Rebuild and auditor run r24: 0 blockers, the same 4 classified warnings, 14 pages, 0 overfull, title block still centred.
+
+24. (2026-11-12) Second author's contact email changed to `gregory.morse@live.com` at the first author's request (the ELTE address lapses on graduation). No `inf.elte.hu` address remains in the paper. Rebuild and auditor run r25: 0 blockers, the same 4 classified warnings, 14 pages, 0 overfull, title block centred.
 
 ## 16. Official policy sources
 
