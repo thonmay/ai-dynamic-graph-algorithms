@@ -29,6 +29,8 @@
 - Ch2 is exactly 20 pp (minimum): any rewrite must not shorten it.
 - [ ] USER: print, sign and date `thesis-doc/ai-declaration.docx` by hand, scan to PDF, put it in the submission zip (slot in the manifest).
 - [ ] USER: rewrite in your own words (supervisor rule: research-heavy text must be the student's own). AI-drafted passages to rewrite: Ch1 Sec 1.1 Motivation and problem (all four paragraphs) and the Sec 1.3 contribution bullets; Ch6 Sec 6.8 interpretation paragraphs (the prose after Tables 6.3, 6.4, 6.5 and Sec 6.8.5 Threats to validity); Ch7 all sections (7.1-7.5). Keep every number and citation; after rewriting, update the "Thesis text drafting" row of Table 5.2 and the declaration to say which parts were rewritten by you.
-- [ ] USER: register the three topics in Neptun; book the supervisor's single Turnitin check (about one week before upload); upload one file `THONMAY_FFR8A9_THESIS.zip` by 1 Dec 2026.
+- [x] Final-exam registration with topics 8/19/17 submitted 2026-10-31 (`docs/final-exam-topics.pdf`, contains personal data: keep out of the submission zip).
+- Turnitin (supervisor, 2026-11): AI-writing detection is now in the report; students may self-check in the supervisor's Turnitin class, 3 submissions per 24 h; supervisor grades on content, the committee may weigh the AI score differently. Check with him that the class does not store submissions in the repository (else the Neptun upload may match the draft).
+- [ ] USER: self-check in Turnitin, rewrite flagged and research passages in own words, re-check; upload one file `THONMAY_FFR8A9_THESIS.zip` by 1 Dec 2026.
 - [ ] USER: student-led debugging session with the supervisor (CP4-C10; he will run the program himself).
 - Repo access: GregoryMorse is a collaborator with write permission on the private repo.
