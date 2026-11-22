@@ -270,8 +270,8 @@ def load_pack(path: Path | str) -> Pack:
         # ProblemDefinition from oracle.py is not generically possible: the
         # verifier/sandbox pipeline also needs extract_result, baseline_work,
         # offline_source, and failing_context, which are problem-specific.
-        # TODO: support custom oracle packs (wrap the oracle in a
-        # ProblemDefinition subclass with generic extract/failing_context).
+        # Future work: wrap the oracle in a ProblemDefinition subclass with
+        # generic extract/failing_context.
         raise NotImplementedError(
             "custom oracle packs: planned "
             f"(pack '{data['name']}' declares checker: oracle with a valid oracle.py)"

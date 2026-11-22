@@ -209,7 +209,8 @@ step 54_ui_stream_and_ended_control 0 "$VPY" "$WORK/ws.py" "$PORT" "$TOKEN"
 kill $UPID 2>/dev/null; wait $UPID 2>/dev/null; UPID=
 redact < "$WORK/ui.out" > "$OUT/55_ui_server.log"
 
-LEAKS=$(grep -rlniE "ericsson|ericai|enlcode|/proj/|/afs/|/app/|$ME|$HOST" "$OUT" 2>/dev/null)
+# Extra site-specific words to treat as leaks: EXECREC_LEAK_WORDS="word1|word2".
+LEAKS=$(grep -rlniE "/proj/|/afs/|/app/|$ME|$HOST${DOMAIN:+|$DOMAIN}${EXECREC_LEAK_WORDS:+|$EXECREC_LEAK_WORDS}" "$OUT" 2>/dev/null)
 NFAIL=$(printf '%s\n' "${STEPS[@]}" | grep -c "| FAIL |")
 {
     echo "# Execution record"

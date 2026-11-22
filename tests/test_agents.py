@@ -6,15 +6,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace as NS
-
-import pytest
 
 from evoalgo.agents.api import ApiBackend
 from evoalgo.agents.base import Task, make_backend
 from evoalgo.agents.examples import PUBLIC_N_MAX, run_examples
-from evoalgo.agents.harness import EnlcodeBackend
+from evoalgo.agents.harness import OpencodeBackend
 from evoalgo.agents.tools import Toolbox, schemas
 from evoalgo.cli import _generate_known_bad_candidate, _generate_known_good_candidate
 from evoalgo.config import Bound, RunConfig
@@ -117,7 +114,7 @@ class ScriptedClient:
 
 
 def api_config(**kw):
-    return RunConfig(problem="dynamic_bfs", provider="api", api_base_url="ericai", model="m", **kw)
+    return RunConfig(problem="dynamic_bfs", provider="api", api_base_url="openrouter", model="m", **kw)
 
 
 def test_api_loop_writes_checks_and_fixes(tmp_path):
@@ -184,14 +181,14 @@ def test_config_validation_for_api():
     assert not RunConfig(problem="dynamic_bfs", provider="mock").validate()
     assert any("provider" in e for e in RunConfig(problem="dynamic_bfs", provider="x").validate())
     d = api_config(agent_max_steps=7).to_dict()
-    assert d["api_base_url"] == "ericai" and d["agent_max_steps"] == 7 and "bound" in d
+    assert d["api_base_url"] == "openrouter" and d["agent_max_steps"] == 7 and "bound" in d
 
 
-def test_enlcode_command_and_parse(tmp_path):
-    cfg = RunConfig(problem="dynamic_bfs", provider="enlcode", model="ericai/x", harness_bin="/bin/enl")
-    b = EnlcodeBackend(cfg, tmp_path)
+def test_opencode_command_and_parse(tmp_path):
+    cfg = RunConfig(problem="dynamic_bfs", provider="opencode", model="openrouter/x", harness_bin="/bin/oc")
+    b = OpencodeBackend(cfg, tmp_path)
     cmd = b.command(task(tmp_path, role="repair"), "PROMPT")
-    assert cmd[:2] == ["/bin/enl", "run"] and ["--agent", "algorithm-repairer"] == cmd[cmd.index("--agent"):cmd.index("--agent") + 2]
+    assert cmd[:2] == ["/bin/oc", "run"] and ["--agent", "algorithm-repairer"] == cmd[cmd.index("--agent"):cmd.index("--agent") + 2]
     assert cmd[-1] == "PROMPT" and "-m" in cmd
     out = "\n".join(json.dumps(e) for e in [
         {"type": "text", "part": {"text": "first"}},
@@ -274,46 +271,6 @@ def test_final_grade_tries_next_passing(tmp_path, monkeypatch):
     assert summary["final_grade"]["state"] == "PASS"
 
 
-def _jwt(seconds_left: float) -> str:
-    import base64
-    import time as _t
-    body = base64.urlsafe_b64encode(json.dumps({"exp": _t.time() + seconds_left}).encode()).decode().rstrip("=")
-    return f"h.{body}.s"
-
-
-def test_ericai_refresh_writes_fresh_token(tmp_path, monkeypatch):
-    from evoalgo.agents import api
-    token_file = tmp_path / ".ericai_token_env"
-    token_file.write_text(f"export ERICAI_ACCESS_TOKEN={_jwt(60)}\n")
-    fresh = _jwt(5400)
-    cli = tmp_path / "ericai"
-    cli.write_text(f"#!/bin/sh\necho {fresh}\n")
-    cli.chmod(0o755)
-    monkeypatch.setattr(api, "ERICAI_TOKEN_FILE", token_file)
-    monkeypatch.setattr(api, "ERICAI_CLI", cli)
-    assert api.refresh_ericai_token() is True
-    assert api._read_key("ERICAI_ACCESS_TOKEN") == fresh
-    assert oct(token_file.stat().st_mode & 0o777) == "0o600"
-    # A fresh token is not refreshed again unless forced.
-    cli.write_text("#!/bin/sh\nexit 1\n")
-    assert api.refresh_ericai_token() is True
-    assert api.refresh_ericai_token(force=True) is False
-    assert api._read_key("ERICAI_ACCESS_TOKEN") == fresh  # failed refresh keeps the old file
-
-
-def test_ericai_refresh_rejects_bad_output(tmp_path, monkeypatch):
-    from evoalgo.agents import api
-    token_file = tmp_path / ".ericai_token_env"
-    token_file.write_text(f"export ERICAI_ACCESS_TOKEN={_jwt(60)}\n")
-    cli = tmp_path / "ericai"
-    cli.write_text("#!/bin/sh\necho please log in in a browser\n")
-    cli.chmod(0o755)
-    monkeypatch.setattr(api, "ERICAI_TOKEN_FILE", token_file)
-    monkeypatch.setattr(api, "ERICAI_CLI", cli)
-    assert api.refresh_ericai_token() is False
-    assert api._jwt_seconds_left(api._read_key("ERICAI_ACCESS_TOKEN")) < 120
-
-
 def test_no_reflection_ablation(tmp_path):
     cfg = RunConfig(problem="dynamic_bfs", provider="mock", population_size=2, max_generations=2,
                     elitism_k=1, early_stop_on_success=False, mock_script=["bad", "bad", "good", "good"],
@@ -394,9 +351,8 @@ def test_api_error_text_drops_response_body():
 def test_harness_env_is_allow_listed(monkeypatch):
     from evoalgo.agents.harness import harness_env
     monkeypatch.setenv("GERRIT_PASSWORD", "x")
-    monkeypatch.setenv("ERICAI_ACCESS_TOKEN", "x")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    env = harness_env("enlcode", TMPDIR="/scratch")
-    assert "GERRIT_PASSWORD" not in env and "ERICAI_ACCESS_TOKEN" not in env
-    assert "ANTHROPIC_API_KEY" not in env and env["TMPDIR"] == "/scratch" and "HOME" in env
-    assert "ANTHROPIC_API_KEY" in harness_env("claude")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+    monkeypatch.setenv("OPENCODE_CONFIG", "/cfg")
+    env = harness_env("opencode", TMPDIR="/scratch")
+    assert "GERRIT_PASSWORD" not in env and "OPENROUTER_API_KEY" not in env
+    assert env["OPENCODE_CONFIG"] == "/cfg" and env["TMPDIR"] == "/scratch" and "HOME" in env

@@ -9,9 +9,9 @@ Config schema (config.yaml):
   pack: null                    # optional problem-pack name or path; when set,
                                 #   the problem (checker) comes from the pack
                                 #   and overrides `problem`
-  provider: enlcode             # agent backend: api | enlcode | mock
+  provider: opencode            # agent backend: api | opencode | mock
   model: null                   # model id (null = provider default)
-  api_base_url: null            # api: ericai | openrouter | openai | URL
+  api_base_url: null            # api: openrouter | openai | URL
   api_key_env: null             # api: NAME of the env var holding the key
   agent_max_steps: 12           # api: model turns per role call
   generator_agent: algorithm-generator
@@ -61,7 +61,7 @@ VALID_PROBLEMS = {
     "dynamic_scc", "dynamic_lbfs", "reachability",
 }
 
-VALID_PROVIDERS = {"api", "enlcode", "mock"}
+VALID_PROVIDERS = {"api", "opencode", "mock"}
 MAX_GOAL_CHARS = 2000
 
 
@@ -82,10 +82,10 @@ class RunConfig:
     # call together with the pack brief. Live hints are separate.
     research_goal: str | None = None
     # Agent backend: "api" (built-in tool loop over an OpenAI-compatible
-    # endpoint), "enlcode" (agent harness) or "mock" (scripted, offline).
-    provider: str = "enlcode"
+    # endpoint), "opencode" (agent harness) or "mock" (scripted, offline).
+    provider: str = "opencode"
     model: str | None = None
-    # api backend: endpoint alias (ericai | openrouter | openai) or URL, the
+    # api backend: endpoint alias (openrouter | openai) or URL, the
     # NAME of the environment variable holding the key, optional CA bundle.
     api_base_url: str | None = None
     api_key_env: str | None = None
@@ -99,7 +99,7 @@ class RunConfig:
     # on vLLM spend the whole token budget thinking and never call a tool.
     agent_thinking: bool = False
     api_extra_body: dict[str, Any] | None = None  # passed through to the endpoint
-    harness_bin: str | None = None     # enlcode/opencode binary override
+    harness_bin: str | None = None     # opencode binary override
     mock_script: list[str] | None = None
     generator_agent: str = "algorithm-generator"
     repairer_agent: str = "algorithm-repairer"
@@ -178,7 +178,7 @@ class RunConfig:
             errors.append(f"research_goal must be at most {MAX_GOAL_CHARS} characters")
         if self.provider == "api":
             if not self.api_base_url:
-                errors.append("provider 'api' needs api_base_url (ericai, openrouter, openai or a URL)")
+                errors.append("provider 'api' needs api_base_url (openrouter, openai or a URL)")
             if not self.model:
                 errors.append("provider 'api' needs a model id")
         if not (2 <= self.search_n_max <= 8):

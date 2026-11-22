@@ -10,8 +10,6 @@ passing candidates into one "duplicate" signature, and the timed-out-FAIL
 edge case (fitness 1.0 but not passing).
 """
 
-import pytest
-
 from evoalgo.candidate import Candidate, CandidateState
 from evoalgo.population import Population, _rank_key
 

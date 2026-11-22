@@ -38,7 +38,9 @@ def runs(tmp_path, monkeypatch):
     shutil.copytree(SRC_RUN / "prompt_logs", run / "prompt_logs")
     backfill(run)
     (tmp_path / "bare").mkdir()
-    shutil.copy(SRC_RUN / "config.yaml", tmp_path / "bare" / "config.yaml")
+    # The recorded run predates the harness rename to opencode.
+    for cfg in (run / "config.yaml", tmp_path / "bare" / "config.yaml"):
+        cfg.write_text((SRC_RUN / "config.yaml").read_text().replace("provider: enlcode", "provider: opencode"))
     monkeypatch.setattr(server, "POLL_SECONDS", 0.01)
     return tmp_path
 
@@ -256,9 +258,8 @@ def test_agent_options_never_leak_keys(client, monkeypatch):
     assert r.status_code == 200
     assert "sk-secret-value" not in r.text
     ep = {e["id"]: e for e in r.json()["endpoints"]}
-    assert set(ep) == {"ericai", "openrouter", "openai"}
+    assert set(ep) == {"openrouter", "openai"}
     assert ep["openrouter"]["key_set"] is True
-    assert ep["ericai"]["model"]
 
 
 def test_launch_with_api_endpoint(client, runs, monkeypatch):
@@ -271,10 +272,10 @@ def test_launch_with_api_endpoint(client, runs, monkeypatch):
     assert (cfg.provider, cfg.api_base_url, cfg.api_key_env, cfg.model) == \
         ("api", "openrouter", None, "qwen/qwen3-coder")
     # api without a model, an unknown endpoint, a free URL, or endpoint without api
-    for bad in ({"provider": "api", "endpoint": "ericai"},
+    for bad in ({"provider": "api", "endpoint": "openai"},
                 {"provider": "api", "endpoint": "evil", "model": "m"},
                 {"provider": "api", "endpoint": "https://example.com/v1", "model": "m"},
-                {"provider": "enlcode", "endpoint": "ericai"},
+                {"provider": "opencode", "endpoint": "openai"},
                 {"provider": "mock"}):
         assert client.post("/api/runs", json={"pack": "dynamic_bfs", **bad}).status_code == 422, bad
 

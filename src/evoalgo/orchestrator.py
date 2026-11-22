@@ -220,7 +220,7 @@ class Orchestrator:
     def _maybe_formalize(self, summary: dict[str, Any]) -> None:
         """Optional final step (pack ``lean: {enabled: true}``): ask the Lean
         prover agent to prove the best correct candidate. Experimental: needs
-        the Lean project and an enlcode harness; never fails the run."""
+        the Lean project and an opencode harness; never fails the run."""
         if not (self.pack and self.pack.lean) or self.stop_reason == "user_stop":
             return
         final = summary.get("final_grade")

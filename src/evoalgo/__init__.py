@@ -5,7 +5,7 @@
 
 This package implements the orchestrator, verifier, sandbox, and CLI for an
 evolutionary loop that uses LLM agents (generator/repairer/reflector) to
-discover dynamic graph algorithms. See docs/design.tex for the full design.
+discover dynamic graph algorithms. The design is described in the thesis.
 """
 
 __version__ = "0.1.0"

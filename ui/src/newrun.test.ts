@@ -8,14 +8,14 @@ const pack = { name: 'dynamic_bfs', title: 't', tier: 'calibration', directed: t
   checker: 'dynamic_bfs', update_mode: 'mixed', lean: false, question: 'q', brief: 'b' } as const
 
 const form = { pack: 'dynamic_bfs', goal: '', preset: 'standard', gens: 10, pop: 4, budget: 200,
-  model: 'Qwen/Qwen3.8-27B-FP8', agent: 'ericai' as const, nMax: 5, stopAtFirst: false, dynamicAgents: false, runId: '' }
+  model: 'qwen/qwen3-coder', agent: 'openai' as const, nMax: 5, stopAtFirst: false, dynamicAgents: false, runId: '' }
 
 const agents = {
   endpoints: [
-    { id: 'ericai' as const, label: 'EricAI', key_env: 'ERICAI_ACCESS_TOKEN', key_set: true, model: 'Qwen/Qwen3.8-27B-FP8' },
+    { id: 'openai' as const, label: 'OpenAI', key_env: 'OPENAI_API_KEY', key_set: true, model: null },
     { id: 'openrouter' as const, label: 'OpenRouter', key_env: 'OPENROUTER_API_KEY', key_set: false, model: null },
   ],
-  harness: { id: 'enlcode' as const, available: false },
+  harness: { id: 'opencode' as const, available: false },
 }
 
 describe('reviewIssues', () => {
@@ -45,7 +45,7 @@ describe('reviewIssues', () => {
       .toEqual(['Choose a model for the API endpoint'])
     expect(reviewIssues({ ...form, agent: 'openrouter' }, pack, agents).blocking)
       .toEqual(['Key not set: export OPENROUTER_API_KEY before starting evoalgo ui'])
-    expect(reviewIssues({ ...form, agent: 'enlcode', model: '' }, pack, agents).blocking)
-      .toEqual(['enlcode not found on this machine'])
+    expect(reviewIssues({ ...form, agent: 'opencode', model: '' }, pack, agents).blocking)
+      .toEqual(['opencode not found on this machine'])
   })
 })

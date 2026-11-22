@@ -7,7 +7,7 @@ The model only ever returns text or tool calls; this loop executes the calls
 through ``Toolbox`` (path-confined, see tools.py), feeds the results back and
 stops when the model answers without a tool call or a limit is hit.
 
-Works with EricAI, OpenRouter, OpenAI, vLLM, llama.cpp or Ollama: anything
+Works with OpenRouter, OpenAI, vLLM, llama.cpp or Ollama: anything
 that speaks ``/chat/completions`` with ``tools``. Connection settings come from
 the run config (``api_base_url``, ``api_key_env``, ``api_ca_cert``,
 ``model``); the key itself is read from the environment, never stored.
@@ -28,51 +28,19 @@ from .tools import Toolbox, schemas
 
 logger = logging.getLogger(__name__)
 
-# Known endpoints, so a config can say ``api_base_url: ericai``.
 TRUNCATED_NUDGE = ("Your last reply hit the output limit before any tool call. "
                    "Do not explain at length: call write_candidate (or write_reflection) now.")
 
+# Known endpoints, so a config can say ``api_base_url: openrouter``.
 ENDPOINTS = {
-    "ericai": ("https://ray.sero.gic.ericsson.se/backendsso/v1", "ERICAI_ACCESS_TOKEN"),
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
 }
 
 
-ERICAI_TOKEN_FILE = Path.home() / ".ericai_token_env"
-
-
 def _read_key(key_env: str) -> str | None:
-    """The API key from the environment.
-
-    EricAI tokens are short-lived and refreshed in ~/.ericai_token_env
-    (``export ERICAI_ACCESS_TOKEN=...``); that file is re-read on every call
-    so a long run survives a refresh. The value is never logged.
-    """
-    if key_env == "ERICAI_ACCESS_TOKEN" and ERICAI_TOKEN_FILE.is_file():
-        value = _token_from_file()
-        if value:
-            return value
+    """The API key from the environment; the value is never logged."""
     return os.environ.get(key_env) or None
-
-
-def _token_from_file() -> str | None:
-    try:
-        text = ERICAI_TOKEN_FILE.read_text()
-    except OSError:
-        return None
-    for line in text.splitlines():
-        line = line.strip().removeprefix("export ").strip()
-        if line.startswith("ERICAI_ACCESS_TOKEN="):
-            value = line.split("=", 1)[1].strip().strip("'\"")
-            if value:
-                return value
-    return None
-
-
-# Renew an EricAI token this long before it expires (tokens last ~90 min).
-ERICAI_REFRESH_MARGIN_SECONDS = 600
-ERICAI_CLI = Path.home() / "ericai-venv" / "bin" / "ericai"
 
 
 def _safe_error(e: Exception) -> str:
@@ -89,73 +57,6 @@ def _safe_error(e: Exception) -> str:
     body = getattr(e, "body", None)
     code = body.get("code") or body.get("type") if isinstance(body, dict) else None
     return f"{type(e).__name__} (HTTP {status}{f', {code}' if isinstance(code, str) else ''})"
-
-
-def _jwt_seconds_left(token: str) -> float | None:
-    """Seconds until a JWT's ``exp``, or None if it is not a readable JWT."""
-    import base64
-    parts = token.split(".")
-    if len(parts) != 3:
-        return None
-    try:
-        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
-        return float(claims["exp"]) - time.time()
-    except (ValueError, KeyError, TypeError, OverflowError):
-        return None
-
-
-def refresh_ericai_token(force: bool = False) -> bool:
-    """Get a fresh EricAI token through the ericai CLI, without a browser.
-
-    Writes ~/.ericai_token_env (mode 600) under a file lock, so parallel runs
-    refresh once between them. Returns True if the file now holds a token
-    with more than the refresh margin left. Never logs the token.
-    """
-    import fcntl
-    import subprocess
-    if not ERICAI_CLI.is_file():
-        return False
-    lock = ERICAI_TOKEN_FILE.with_name(ERICAI_TOKEN_FILE.name + ".lock")
-    with open(lock, "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        current = _token_from_file()
-        left = _jwt_seconds_left(current) if current else None
-        if not force and left is not None and left > ERICAI_REFRESH_MARGIN_SECONDS:
-            return True  # another process refreshed while we waited
-        try:
-            # The CLI finds its SSO auth record relative to the home directory.
-            proc = subprocess.run(
-                [str(ERICAI_CLI), "--ericsson-access-token", "--ericsson-force-new-access-token",
-                 "--fail-on-interactive-login"],
-                cwd=str(Path.home()), capture_output=True, text=True, timeout=120)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            logger.warning("EricAI token refresh failed: %s", type(e).__name__)
-            return False
-        lines = proc.stdout.strip().splitlines()
-        token = lines[-1].strip() if lines else ""
-        new_left = _jwt_seconds_left(token)
-        if proc.returncode != 0 or new_left is None or new_left <= ERICAI_REFRESH_MARGIN_SECONDS:
-            logger.warning("EricAI token refresh failed (exit %s); run `ericai "
-                           "--ericsson-access-token` interactively once", proc.returncode)
-            return False
-        tmp = ERICAI_TOKEN_FILE.with_name(ERICAI_TOKEN_FILE.name + ".tmp")
-        tmp.unlink(missing_ok=True)  # O_EXCL: never reuse a file someone else created
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.fchmod(fd, 0o600)  # independent of the umask
-        with os.fdopen(fd, "w") as f:
-            f.write(f"export ERICAI_ACCESS_TOKEN={token}\n")
-        os.replace(tmp, ERICAI_TOKEN_FILE)
-        logger.info("EricAI token refreshed (%d min left)", new_left // 60)
-        return True
-
-
-def _ericai_ca_cert() -> str | None:
-    if os.environ.get("ERICAI_CA_CERT"):
-        return os.environ["ERICAI_CA_CERT"]
-    for p in sorted(Path.home().glob("ericai-venv/lib/python3*/site-packages/ericai/"
-                                     "ray.sero.gic.ericsson.se.pemfile")):
-        return str(p)
-    return None
 
 
 class ApiBackend:
@@ -176,7 +77,7 @@ class ApiBackend:
     # -- connection ---------------------------------------------------------
 
     def _connect(self) -> Any:
-        """A client with the current key; rebuilt when the key changes (token refresh)."""
+        """A client with the current key; rebuilt when the key changes."""
         if self._injected is not None:
             return self._injected
         import httpx
@@ -187,23 +88,13 @@ class ApiBackend:
             base, default_env = ENDPOINTS[base]
             key_env = key_env or default_env
         if not base:
-            raise RuntimeError("api_base_url is not set (e.g. 'ericai', 'openrouter' or a URL)")
+            raise RuntimeError("api_base_url is not set (e.g. 'openrouter' or a URL)")
         key = _read_key(key_env) if key_env else None
-        if key_env == "ERICAI_ACCESS_TOKEN":
-            left = _jwt_seconds_left(key) if key else None
-            if (key is None or (left is not None and left < ERICAI_REFRESH_MARGIN_SECONDS)) \
-                    and refresh_ericai_token():
-                key = _read_key(key_env)
         if not key:
             raise RuntimeError(f"API key not found: export {key_env or 'the key variable'}")
         if self._client is not None and key == self._key:
             return self._client
-        verify: Any = True
-        ca = self.config.api_ca_cert or ("ericai" if "ray.sero.gic.ericsson.se" in base else None)
-        if ca == "ericai":
-            ca = _ericai_ca_cert()
-        if ca:
-            verify = ca
+        verify: Any = self.config.api_ca_cert or True
         self._key = key
         self._client = OpenAI(
             base_url=base, api_key=key, max_retries=3,
@@ -233,7 +124,7 @@ class ApiBackend:
                     result.error = f"time limit ({self.max_seconds}s) reached"
                     break
                 if step > 1:
-                    client = self._connect()  # pick up a refreshed key
+                    client = self._connect()  # pick up a changed key
                 remaining = self.max_steps - step
                 if remaining == 1 and not task.output_path.is_file():
                     messages.append({"role": "user", "content":
@@ -278,21 +169,11 @@ class ApiBackend:
         return result
 
     def _complete(self, client: Any, messages: list[dict[str, Any]], role: str) -> Any:
-        """One chat turn; on 401 with EricAI, force one token refresh and retry."""
-        kwargs = dict(model=self.model, messages=messages, tools=schemas(role),
-                      tool_choice="auto", temperature=self.temperature,
-                      max_tokens=self.config.agent_max_tokens, **self._extra())
-        try:
-            return client.chat.completions.create(**kwargs)
-        except Exception as e:
-            if (getattr(e, "status_code", None) != 401 or self._injected is not None
-                    or self._key_env() != "ERICAI_ACCESS_TOKEN" or not refresh_ericai_token(force=True)):
-                raise
-            return self._connect().chat.completions.create(**kwargs)
-
-    def _key_env(self) -> str | None:
-        base, key_env = self.config.api_base_url, self.config.api_key_env
-        return key_env or (ENDPOINTS[base][1] if base in ENDPOINTS else None)
+        """One chat turn."""
+        return client.chat.completions.create(
+            model=self.model, messages=messages, tools=schemas(role),
+            tool_choice="auto", temperature=self.temperature,
+            max_tokens=self.config.agent_max_tokens, **self._extra())
 
     def _extra(self) -> dict[str, Any]:
         """Per-request extras: reasoning off by default for tool-loop turns."""

@@ -38,7 +38,6 @@ import subprocess
 import shutil
 import sys
 import textwrap
-import traceback
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +47,7 @@ import numpy as np
 #
 # Candidate code is LLM-written and runs as the user, so an environment scrub
 # alone is not enough: it could read /proc/<ppid>/environ (the verifier holds
-# the user's API keys), ~/.ericai_token_env or ~/.netrc, open sockets, or
+# the user's API keys), token files such as ~/.netrc, open sockets, or
 # patch the verifier. The jail uses unprivileged user namespaces only (no
 # root, no extra packages):
 #

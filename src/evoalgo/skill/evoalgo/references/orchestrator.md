@@ -7,8 +7,7 @@ the automated search rather than you doing the loop.
 ## Start
 
 Ask the user which endpoint and model to use if they have not said. Keys are
-read from environment variables (`ERICAI_ACCESS_TOKEN`, `OPENROUTER_API_KEY`,
-`OPENAI_API_KEY`); never print or write a key.
+read from environment variables (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`); never print or write a key.
 
 Write a config file next to the runs folder, for example `runs/my_bfs.yaml`:
 
@@ -17,7 +16,7 @@ pack: dynamic_bfs
 problem: dynamic_bfs
 research_goal: Reach full correctness first, then avoid a full recompute after insertions.
 provider: api
-api_base_url: openrouter   # ericai | openrouter | openai
+api_base_url: openrouter   # openrouter | openai | URL
 model: qwen/qwen3-coder
 population_size: 4
 max_generations: 8

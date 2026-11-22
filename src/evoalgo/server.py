@@ -43,11 +43,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import MAX_GOAL_CHARS, RunConfig
-from .packs import Pack, PackError, find_packs, pack_info, resolve_pack  # noqa: F401
-from .events import (  # noqa: F401  (engine_state, run_state re-exported)
-    ENGINE_FILE,
+from .packs import PackError, find_packs, pack_info, resolve_pack
+from .events import (
     engine_state,
-    run_state,
     summarize,
     EVENTS_FILE,
     pending_commands,
@@ -121,8 +119,8 @@ class LaunchRequest(BaseModel):
     # Named endpoints only: a free URL plus a free key-variable name would let
     # anyone who reaches this unauthenticated port send a token elsewhere.
     # Custom URLs stay available through config YAML.
-    provider: Literal["api", "enlcode"] | None = None
-    endpoint: Literal["ericai", "openrouter", "openai"] | None = None
+    provider: Literal["api", "opencode"] | None = None
+    endpoint: Literal["openrouter", "openai"] | None = None
     n_max: int | None = Field(None, ge=2, le=8)
     early_stop_on_success: bool | None = None
     dynamic_agents: bool | None = None
@@ -133,9 +131,7 @@ PACK_DEFAULTS = {"max_generations": 10, "population_size": 4, "model_call_budget
                  "elitism_k": 1, "early_stop_on_success": False}
 
 
-ENDPOINT_LABELS = {"ericai": "EricAI", "openrouter": "OpenRouter", "openai": "OpenAI"}
-# A model known to work with the tool loop on each endpoint (None: user picks).
-SUGGESTED_MODELS = {"ericai": "Qwen/Qwen3.8-27B-FP8", "openrouter": None, "openai": None}
+ENDPOINT_LABELS = {"openrouter": "OpenRouter", "openai": "OpenAI"}
 
 
 def agent_options() -> dict[str, Any]:
@@ -144,13 +140,13 @@ def agent_options() -> dict[str, Any]:
     Only says whether a key is present; never returns it.
     """
     from .agents.api import ENDPOINTS, _read_key
-    from .agents.harness import EnlcodeBackend
+    from .agents.harness import OpencodeBackend
     endpoints = [{"id": name, "label": ENDPOINT_LABELS[name], "key_env": env,
-                  "key_set": bool(_read_key(env)), "model": SUGGESTED_MODELS[name]}
+                  "key_set": bool(_read_key(env)), "model": None}
                  for name, (_url, env) in ENDPOINTS.items() if name in ENDPOINT_LABELS]
-    harness = EnlcodeBackend.find_bin(None)
+    harness = shutil.which(OpencodeBackend.find_bin(None))
     return {"endpoints": endpoints,
-            "harness": {"id": "enlcode", "available": bool(harness and os.access(harness, os.X_OK))}}
+            "harness": {"id": "opencode", "available": bool(harness and os.access(harness, os.X_OK))}}
 
 
 def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,

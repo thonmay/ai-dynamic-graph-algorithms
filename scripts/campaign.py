@@ -20,7 +20,7 @@ Modes:
   orchestrator   evoalgo's multi-agent loop (generate, reflect, repair)
   no_reflection  same with the reflection role off; repair is then never
                  used either, since repair works from reflections
-  harness        one coding agent (enlcode) uses the evoalgo skill
+  harness        one coding agent (opencode) uses the evoalgo skill
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -44,6 +45,9 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 EVOALGO = REPO / ".venv" / "bin" / "evoalgo"
+# Temp files of every child (sandbox runner scripts, example checks); a plan
+# may set `scratch:` instead.
+DEFAULT_SCRATCH = os.environ.get("EVOALGO_SCRATCH", tempfile.gettempdir())
 sys.path.insert(0, str(REPO / "src"))
 
 from evoalgo.agents.harness import harness_env  # noqa: E402
@@ -52,7 +56,7 @@ from evoalgo.workspace import snapshot_intact  # noqa: E402
 
 HARNESS_PROMPT = (
     "Use the evoalgo skill: find a correct dynamic algorithm for pack {pack}. "
-    "Create the workspace with run id {run_id}, --harness enlcode, --max-checks {max_checks} "
+    "Create the workspace with run id {run_id}, --harness opencode, --max-checks {max_checks} "
     "and --goal \"{goal}\". "
     "Do at most {max_checks} checks, then run the final check and finish."
 )
@@ -168,15 +172,13 @@ def run_cell(plan: dict, cell: dict, dry: bool) -> dict:
     path = run_dir(cell)
     if path.exists() and is_done(path) and not _retry_harness(plan, cell, path):
         return {**cell, "status": "skipped (done)"}
-    # Temp files of every child (sandbox runner scripts, example checks) go to
-    # the project scratch area, not /tmp.
-    scratch = Path(plan.get("scratch", "/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch")) / cell["run_id"]
+    scratch = Path(plan.get("scratch", DEFAULT_SCRATCH)) / cell["run_id"]
     scratch.mkdir(parents=True, exist_ok=True)
     # Allow-listed environment (no unrelated keys/passwords for the agent);
     # the orchestrator modes also need the key variable of their endpoint.
-    env = harness_env("enlcode", PATH=f"{REPO / '.venv' / 'bin'}:{os.environ.get('PATH', '')}",
+    env = harness_env("opencode", PATH=f"{REPO / '.venv' / 'bin'}:{os.environ.get('PATH', '')}",
                       TMPDIR=str(scratch))
-    key_vars = {"ERICAI_ACCESS_TOKEN", "OPENROUTER_API_KEY", "OPENAI_API_KEY",
+    key_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY",
                 (plan.get("orchestrator") or {}).get("api_key_env")}
     for name in key_vars:
         if cell["mode"] in ORCHESTRATOR_MODES and name and name in os.environ:
@@ -254,7 +256,7 @@ def _active_minutes(events: list[dict], until: str | None = None) -> float | Non
 
 
 def _harness_usage(streams: list[Path]) -> dict:
-    """Token use from enlcode's event stream, counted like OpenAI usage:
+    """Token use from opencode's event stream, counted like OpenAI usage:
     prompt = input + cache reads + cache writes, completion = output + reasoning."""
     u = {"turns": 0, "prompt_tokens": 0, "completion_tokens": 0}
     for stream in streams:
@@ -362,7 +364,7 @@ def cmd_reference(args) -> int:
     plan = load_plan(args.plan)
     ref_path = plan["out"] / "reference.json"
     refs = json.loads(ref_path.read_text()) if ref_path.is_file() else {}
-    scratch = Path(plan.get("scratch", "/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch")) / "reference"
+    scratch = Path(plan.get("scratch", DEFAULT_SCRATCH)) / "reference"
     scratch.mkdir(parents=True, exist_ok=True)
     for pack in plan["problems"]:
         if pack in refs:

@@ -23,6 +23,17 @@ from typing import Any
 import numpy as np
 
 
+def _extract_ordering(state: Any) -> list[int] | None:
+    """A vertex ordering from a candidate's state (MCS and LBFS)."""
+    if isinstance(state, dict):
+        order = state.get("ordering", state.get("order"))
+        if order is not None:
+            return [int(x) for x in order]
+    if isinstance(state, (list, tuple)):
+        return [int(x) for x in state]
+    return None
+
+
 class ProblemDefinition(ABC):
     """Base class for problem definitions."""
 
@@ -572,7 +583,7 @@ def offline_compute(graph, root):
         work is O(m) amortized and the whole check is O(n+m) once adjacency
         lists are cached.
         """
-        ordering = self._extract_ordering(state)
+        ordering = _extract_ordering(state)
         if ordering is None:
             return False
         n = graph.shape[0]
@@ -632,15 +643,6 @@ def offline_compute(graph, root):
     def baseline_work(self, graph: np.ndarray) -> int:
         n = graph.shape[0]
         return n * n  # O(n^2) for MCS
-
-    def _extract_ordering(self, state: Any) -> list[int] | None:
-        if isinstance(state, dict):
-            order = state.get("ordering", state.get("order"))
-            if order is not None:
-                return [int(x) for x in order]
-        if isinstance(state, (list, tuple)):
-            return [int(x) for x in state]
-        return None
 
 
 class DynamicSCC(ProblemDefinition):
@@ -966,7 +968,7 @@ def offline_compute(graph, root):
         certificate is the (LB) 4-point property, checked in O(n^3) after an
         O(n^3) precompute of the earliest separating vertex per pair.
         """
-        ordering = self._extract_ordering(state)
+        ordering = _extract_ordering(state)
         if ordering is None:
             return False
         n = graph.shape[0]
@@ -1009,7 +1011,7 @@ def offline_compute(graph, root):
         return n * n  # O(n^2) partition-refinement LexBFS
 
     def failing_context(self, state: Any, graph: np.ndarray, root: int | None) -> dict:
-        ordering = self._extract_ordering(state)
+        ordering = _extract_ordering(state)
         expected = self.offline_compute(graph, root)
         ctx = {
             "problem": self.name,
@@ -1027,15 +1029,6 @@ def offline_compute(graph, root):
             if violation is not None:
                 ctx["violation"] = violation
         return ctx
-
-    def _extract_ordering(self, state: Any) -> list[int] | None:
-        if isinstance(state, dict):
-            order = state.get("ordering", state.get("order"))
-            if order is not None:
-                return [int(x) for x in order]
-        if isinstance(state, (list, tuple)):
-            return [int(x) for x in state]
-        return None
 
     def _lb_violation(self, ordering: list[int], graph: np.ndarray, n: int):
         """Return None if `ordering` satisfies (LB), else the first violation.

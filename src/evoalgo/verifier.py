@@ -32,7 +32,7 @@ from .graph_generator import (
     generate_operation_sequences,
 )
 from .problem_definitions import ProblemDefinition
-from .sandbox import Sandbox, SandboxResult
+from .sandbox import Sandbox
 
 # Default number of base graphs per sandbox subprocess. A chunk must finish
 # within the per-chunk timeout for a correct candidate, while a candidate that

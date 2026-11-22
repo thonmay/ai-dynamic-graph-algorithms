@@ -33,12 +33,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .agents.harness import harness_env
+from .agents.harness import OpencodeBackend, harness_env
 from .config import RunConfig
 
 logger = logging.getLogger(__name__)
 
-LEAN_PROJECT_DEFAULT = "/proj/MPS/MPS_DEV_REPO/ethomdt/thesis-lean"
+# The repository's own Lean project; LEAN_PROJECT points elsewhere.
+LEAN_PROJECT_DEFAULT = str(Path(__file__).resolve().parents[2] / "lean")
 BANNED = re.compile(r"\b(?:axiom|sorry|admit|unsafe)\b")
 SORRY_WARNING = re.compile(r"declaration uses `sorry`")
 
@@ -173,28 +174,28 @@ def _build_stage_task(
 
 
 def _dispatch_agent(
-    enlcode: str,
+    opencode: str,
     run_dir: Path,
     task: str,
     model: str | None,
     timeout: int = 900,
 ) -> tuple[int, str, str | None]:
-    """Dispatch one enlcode agent invocation.
+    """Dispatch one opencode agent invocation.
 
     Returns (returncode, output, error_message).
     """
-    cmd = [enlcode, "run", "--agent", "lean-prover", "--dir", str(run_dir)]
+    cmd = [opencode, "run", "--agent", "lean-prover", "--dir", str(run_dir)]
     if model:
         cmd.extend(["-m", model])
     cmd.append(task)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              env=harness_env("enlcode"))
+                              env=harness_env("opencode"))
         return proc.returncode, proc.stdout + "\n" + proc.stderr, None
     except FileNotFoundError:
-        return -1, "", f"enlcode binary not found at {enlcode}"
+        return -1, "", f"opencode binary not found at {opencode}"
     except subprocess.TimeoutExpired:
-        return -1, "", f"enlcode agent timed out after {timeout}s"
+        return -1, "", f"opencode agent timed out after {timeout}s"
     except Exception as e:  # noqa: BLE001 - record any dispatch failure
         return -1, "", f"agent dispatch failed: {e}"
 
@@ -353,7 +354,7 @@ def run_formalize(
     run_dir: Path,
     candidate_id: str,
     model: str | None = None,
-    enlcode_path: str | None = None,
+    opencode_path: str | None = None,
     fresh: bool = False,
     stage_timeout: int = 900,
     hints_path: str | None = None,
@@ -417,9 +418,7 @@ def run_formalize(
         and not _scan_for_banned(module_path)
     )
 
-    enlcode = enlcode_path or os.environ.get(
-        "ENLCODE_PATH", str(Path.home() / ".enlcode" / "enlcode")
-    )
+    opencode = OpencodeBackend.find_bin(opencode_path)
     resolved_model = model or config.model
 
     candidate_digest = hashlib_sha256(candidate_path.read_bytes())[:16]
@@ -508,7 +507,7 @@ def run_formalize(
             banned_before = len(_scan_for_banned(module_path)) if module_path.exists() else 0
             t0 = time.time()
             returncode, report, agent_exc = _dispatch_agent(
-                enlcode, run_dir, task, resolved_model, timeout=stage_timeout
+                opencode, run_dir, task, resolved_model, timeout=stage_timeout
             )
             elapsed = time.time() - t0
             total_elapsed += elapsed

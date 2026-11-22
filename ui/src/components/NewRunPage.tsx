@@ -34,8 +34,8 @@ interface Form {
   pop: number
   budget: number
   model: string
-  /** An endpoint id (agent loop runs here, model over that API) or 'enlcode' (local harness). */
-  agent: EndpointId | 'enlcode'
+  /** An endpoint id (agent loop runs here, model over that API) or 'opencode' (local harness). */
+  agent: EndpointId | 'opencode'
   nMax: number
   stopAtFirst: boolean
   dynamicAgents: boolean
@@ -52,18 +52,18 @@ function remembered(): Partial<Form> {
   }
 }
 
-const AGENT_IDS: Form['agent'][] = ['ericai', 'openrouter', 'openai', 'enlcode']
+const AGENT_IDS: Form['agent'][] = ['openrouter', 'openai', 'opencode']
 
 function initialForm(prefill: Partial<Form>): Form {
   const std = PRESETS[1]
   const mem = remembered()
   const f: Form = {
     pack: '', goal: '', preset: mem.preset ?? std.id, gens: mem.gens ?? std.gens, pop: mem.pop ?? std.pop,
-    budget: mem.budget ?? std.budget, model: mem.model ?? '', agent: mem.agent ?? 'ericai', nMax: 5, stopAtFirst: false, dynamicAgents: false, runId: '',
+    budget: mem.budget ?? std.budget, model: mem.model ?? '', agent: mem.agent ?? 'openrouter', nMax: 5, stopAtFirst: false, dynamicAgents: false, runId: '',
     ...(mem.pack ? { pack: mem.pack } : {}), ...prefill,
   }
   // A stale localStorage value, or a run from mock / a custom URL, has no menu entry.
-  if (!AGENT_IDS.includes(f.agent)) f.agent = 'ericai'
+  if (!AGENT_IDS.includes(f.agent)) f.agent = 'openrouter'
   return f
 }
 
@@ -80,8 +80,8 @@ function useFromRun(): { prefill: Partial<Form> | null; source: string | null } 
           // Runs from before packs existed only have `problem`; packs share its name.
           pack: c.pack ?? c.problem ?? '', goal: c.research_goal ?? '', gens: c.max_generations, pop: c.population_size,
           budget: c.model_call_budget, model: c.model ?? '', nMax: c.bound?.n_max ?? 5,
-          agent: c.provider === 'api' && ['ericai', 'openrouter', 'openai'].includes(c.api_base_url)
-            ? c.api_base_url : c.provider === 'enlcode' ? 'enlcode' : 'ericai',
+          agent: c.provider === 'api' && ['openrouter', 'openai'].includes(c.api_base_url)
+            ? c.api_base_url : c.provider === 'opencode' ? 'opencode' : 'openrouter',
           stopAtFirst: !!c.early_stop_on_success, dynamicAgents: !!c.dynamic_agents, preset: 'custom',
         })
       })
@@ -104,12 +104,12 @@ export function reviewIssues(f: Form, pack: PackInfo | undefined,
   if (!inRange(f.budget, 1, 100000)) blocking.push('Call budget must be 1 to 100000')
   if (!inRange(f.nMax, 2, 8)) blocking.push('Verifier n max must be 2 to 8')
   if (f.runId.trim() && !RUN_ID.test(f.runId.trim())) blocking.push('Run id: letters, digits, . _ - only')
-  if (f.agent !== 'enlcode') {
+  if (f.agent !== 'opencode') {
     const ep = agents?.endpoints.find((e) => e.id === f.agent)
     if (!f.model.trim()) blocking.push('Choose a model for the API endpoint')
     if (ep && !ep.key_set) blocking.push(`Key not set: export ${ep.key_env} before starting evoalgo ui`)
   } else if (agents && !agents.harness.available) {
-    blocking.push('enlcode not found on this machine')
+    blocking.push('opencode not found on this machine')
   }
   if (!f.goal.trim()) notes.push('No goal set')
   // One generate call per slot, plus reflection on failures: a rough floor.
@@ -179,7 +179,7 @@ export function NewRunPage() {
     const body: LaunchBody = {
       pack: pack.name, research_goal: form.goal.trim() || undefined, max_generations: form.gens,
       population_size: form.pop, model_call_budget: form.budget, model: form.model.trim() || undefined,
-      ...(form.agent === 'enlcode' ? { provider: 'enlcode' } : { provider: 'api', endpoint: form.agent }),
+      ...(form.agent === 'opencode' ? { provider: 'opencode' } : { provider: 'api', endpoint: form.agent }),
       n_max: form.nMax, early_stop_on_success: form.stopAtFirst, dynamic_agents: form.dynamicAgents,
       run_id: form.runId.trim() || undefined,
     }
@@ -295,14 +295,14 @@ export function NewRunPage() {
                 <div className="grid3 agents-row">
                   <label className="field"><span>Agents</span>
                     <select value={form.agent} onChange={(e) => chooseAgent(e.target.value as Form['agent'])}>
-                      {(agents?.endpoints ?? [{ id: 'ericai', label: 'EricAI', key_set: true }]).map((e) => (
+                      {(agents?.endpoints ?? [{ id: 'openrouter', label: 'OpenRouter', key_set: true }]).map((e) => (
                         <option key={e.id} value={e.id}>{e.label} API{e.key_set ? '' : ' (no key)'}</option>
                       ))}
-                      <option value="enlcode">enlcode harness{agents && !agents.harness.available ? ' (not found)' : ''}</option>
+                      <option value="opencode">opencode harness{agents && !agents.harness.available ? ' (not found)' : ''}</option>
                     </select></label>
                   <label className="field span2"><span>Model</span>
                     <input value={form.model} spellCheck={false}
-                           placeholder={form.agent === 'enlcode' ? 'harness default' : endpoint?.model ?? 'model id'}
+                           placeholder={form.agent === 'opencode' ? 'harness default' : endpoint?.model ?? 'model id'}
                            onChange={(e) => set({ model: e.target.value })} /></label>
                 </div>
                 <details className="adv">
@@ -355,7 +355,7 @@ export function NewRunPage() {
                 <div className="rv-row" onClick={() => setStep(3)}>
                   <span className="rv-k">Agents</span>
                   <span className="rv-v"><span className="mono">{form.model.trim() || 'harness default'}</span>
-                    <span className="muted"> · {form.agent === 'enlcode' ? 'enlcode harness' : `${endpoint?.label ?? form.agent} API`}</span></span>
+                    <span className="muted"> · {form.agent === 'opencode' ? 'opencode harness' : `${endpoint?.label ?? form.agent} API`}</span></span>
                   <span className="rv-edit">Edit</span>
                 </div>
                 {(issues.blocking.length > 0 || issues.notes.some((n) => n !== 'No goal set')) && (

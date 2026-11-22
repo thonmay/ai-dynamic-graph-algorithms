@@ -69,7 +69,6 @@ representative (to catch label-dependent bugs such as id tie-breaks).
 - nauty 2.7r4, `geng` + `directg`, run on aiserver 2026-10-16.
 - Counts cross-checked against OEIS A000273 (directed) and A353996 (rooted),
   and against an independent brute-force canonical-form enumeration
-  (`/tmp/enlcode/digraphs/brute_force.py`) and a Burnside orbit
-  cross-check (`/tmp/enlcode/digraphs/verify_rooted.py`).
+  and a Burnside orbit cross-check (scratch scripts, not kept).
 - License: nauty is Apache-2.0; the generated graph data are public
   mathematical objects (no license restriction on the data itself).

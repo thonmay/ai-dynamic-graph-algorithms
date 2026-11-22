@@ -421,7 +421,7 @@ def skill_source() -> Path:
 
 def skill_targets(scope: str, project: Path | None = None) -> list[Path]:
     """Folders the three harnesses read (verified for Claude Code 2.1.303,
-    Codex 0.163.0, opencode/enlcode): `.agents/skills` (Codex, opencode)
+    Codex 0.163.0, opencode): `.agents/skills` (Codex, opencode)
     and `.claude/skills` (Claude Code, opencode)."""
     base = (project or Path.cwd()).resolve() if scope == "project" else Path.home()
     return [base / ".agents" / "skills", base / ".claude" / "skills"]

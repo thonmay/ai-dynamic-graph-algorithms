@@ -11,11 +11,9 @@ timeout maps to FAIL with a timeout flag. Crash maps to CRASH.
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, field, asdict, fields as dc_fields
 from enum import Enum
-from pathlib import Path
 from typing import Any
 
 

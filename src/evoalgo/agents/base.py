@@ -22,9 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-ROLES = ("generate", "repair", "reflect")
-
-
 @dataclass
 class Task:
     """One role call. ``context`` holds the role-specific inputs."""
@@ -93,9 +90,9 @@ def make_backend(config: Any, run_dir: Path) -> Backend:
     if kind == "api":
         from .api import ApiBackend
         return ApiBackend(config, run_dir)
-    if kind == "enlcode":
-        from .harness import EnlcodeBackend
-        return EnlcodeBackend(config, run_dir)
+    if kind == "opencode":
+        from .harness import OpencodeBackend
+        return OpencodeBackend(config, run_dir)
     if kind == "mock":
         from .mock import MockBackend
         return MockBackend(config, run_dir)

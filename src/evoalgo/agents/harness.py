@@ -1,17 +1,11 @@
 # AI-assisted code: generated and revised with Claude Opus 5.5
 # under the author's direction; reviewed and tested by the author
 # (see the thesis section "Use of AI tools").
-"""Harness backends: an existing coding agent does the call with its own tools.
+"""Harness backend: an existing coding agent does the call with its own tools.
 
 The harness is told the same role prompt and task text as the api backend,
-plus the output path, and must leave the file on disk. Supported:
-
-  enlcode / opencode   ``<bin> run [--agent A] --format json --dir RUN [-m MODEL] TASK``
-  claude               ``claude -p --output-format json --permission-mode acceptEdits``
-  codex                ``codex exec --json --sandbox workspace-write``
-
-Only the enlcode path is exercised in this project; the others follow the
-vendors' documented headless modes and are kept deliberately thin.
+plus the output path, and must leave the file on disk. The supported harness
+is opencode: ``<bin> run [--agent A] --format json --dir RUN [-m MODEL] TASK``.
 """
 
 from __future__ import annotations
@@ -41,12 +35,8 @@ BASE_ENV = ("HOME", "USER", "LOGNAME", "PATH", "SHELL", "TERM", "LANG", "TZ", "T
 BASE_ENV_PREFIXES = ("LC_", "XDG_")
 # Per harness: (names, prefixes) it needs for its own model access.
 HARNESS_ENV = {
-    # enlcode/opencode read the EricAI token from its file, not the environment.
-    "enlcode": (("ENLCODE_PATH", "ENLCODE_HOME", "ERICAI_TOKEN_FILE", "ERICAI_CA_CERT",
-                 "ERICAI_CA_CERT_PATH", "ERICAI_BASE_URL", "ERICAI_AUTHRECORD"), ("OPENCODE_",)),
-    "claude": (("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
-                "ANTHROPIC_MODEL", "CLAUDE_CONFIG_DIR"), ("CLAUDE_CODE_",)),
-    "codex": (("OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"), ("CODEX_",)),
+    # opencode keeps its provider credentials in its own config directory.
+    "opencode": (("OPENCODE_PATH",), ("OPENCODE_",)),
 }
 
 
@@ -101,10 +91,10 @@ class HarnessBackend:
         return result
 
 
-class EnlcodeBackend(HarnessBackend):
-    """enlcode (an opencode fork) or opencode itself: ``harness_bin`` picks the binary."""
+class OpencodeBackend(HarnessBackend):
+    """opencode, driven headlessly; ``harness_bin`` overrides the binary."""
 
-    name = "enlcode"
+    name = "opencode"
 
     def __init__(self, config: Any, run_dir: Path):
         super().__init__(config, run_dir)
@@ -112,8 +102,7 @@ class EnlcodeBackend(HarnessBackend):
 
     @staticmethod
     def find_bin(override: str | None) -> str:
-        return (override or os.environ.get("ENLCODE_PATH")
-                or shutil.which("enlcode") or str(Path.home() / ".enlcode" / "enlcode"))
+        return override or os.environ.get("OPENCODE_PATH") or shutil.which("opencode") or "opencode"
 
     def command(self, task: Task, prompt: str) -> list[str]:
         cmd = [self.bin, "run", "--format", "json", "--dir", str(self.run_dir)]
@@ -142,33 +131,3 @@ class EnlcodeBackend(HarnessBackend):
                 usage["completion_tokens"] += int(tokens.get("output") or 0)
         return (texts[-1].strip() if texts else None), usage
 
-
-class ClaudeBackend(HarnessBackend):
-    name = "claude"
-
-    def command(self, task: Task, prompt: str) -> list[str]:
-        cmd = [self.config.harness_bin or "claude", "-p", "--output-format", "json",
-               "--permission-mode", "acceptEdits", "--allowedTools", "Read,Write,Edit"]
-        if self.config.model:
-            cmd += ["--model", self.config.model]
-        return cmd + [prompt]
-
-    def parse(self, stdout: str) -> tuple[str | None, dict[str, int]]:
-        try:
-            d = json.loads(stdout)
-        except json.JSONDecodeError:
-            return super().parse(stdout)
-        u = d.get("usage") or {}
-        return d.get("result"), {"prompt_tokens": int(u.get("input_tokens") or 0),
-                                 "completion_tokens": int(u.get("output_tokens") or 0)}
-
-
-class CodexBackend(HarnessBackend):
-    name = "codex"
-
-    def command(self, task: Task, prompt: str) -> list[str]:
-        cmd = [self.config.harness_bin or "codex", "exec", "--json", "--sandbox", "workspace-write",
-               "--skip-git-repo-check", "-C", str(self.run_dir)]
-        if self.config.model:
-            cmd += ["-m", self.config.model]
-        return cmd + [prompt]

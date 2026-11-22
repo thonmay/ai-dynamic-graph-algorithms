@@ -2,16 +2,15 @@
 # AI-assisted code: generated and revised with DeepSeek-V4-Flash
 # under the author's direction; reviewed and tested by the author
 # (see the thesis section "Use of AI tools").
-# Keep the thesis role-agent configs in sync between the repo and ~/.enlcode.
+# Install the thesis role agents and their skill for opencode.
 #
-# The repo (./agents, ./skills) holds the versioned copies; ~/.enlcode is what
-# enlcode actually loads (agents are discovered only from ~/.enlcode/agents/,
-# skills from ~/.enlcode/skills/ - verified 2026-09-18; project-local
-# .enlcode/ and .kiro/ are NOT loaded).
+# The repo (./agents, ./skills) holds the versioned copies; opencode loads
+# global agents from ~/.config/opencode/agents/ and skills from
+# ~/.config/opencode/skills/ ($XDG_CONFIG_HOME is honoured).
 #
 # Usage:
-#   ./install-agents.sh            copy repo -> global (fresh-clone setup)
-#   ./install-agents.sh --from-global   copy global -> repo (persist edits made in ~/.enlcode)
+#   ./install-agents.sh                 copy repo -> global (fresh-clone setup)
+#   ./install-agents.sh --from-global   copy global -> repo (persist edits)
 #
 # Idempotent. Refuses to overwrite without confirmation unless --yes is given.
 
@@ -20,10 +19,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENT_SRC="$REPO_ROOT/agents"
 SKILL_SRC="$REPO_ROOT/skills/dynamic-graph-algorithms"
-GLOBAL_AGENTS="$HOME/.enlcode/agents"
-GLOBAL_SKILLS="$HOME/.enlcode/skills"
+GLOBAL="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+GLOBAL_AGENTS="$GLOBAL/agents"
+GLOBAL_SKILLS="$GLOBAL/skills"
 
-declare -a AGENT_NAMES=(algorithm-generator algorithm-repairer algorithm-reflector)
+declare -a AGENT_NAMES=(algorithm-generator algorithm-repairer algorithm-reflector evoalgo-researcher)
 SKILL_NAME="dynamic-graph-algorithms"
 SKILL_MD="SKILL.md"
 
@@ -54,15 +54,13 @@ copy_one() {
 }
 
 if [[ "$FROM_GLOBAL" -eq 1 ]]; then
-  # global -> repo: persist edits made directly in ~/.enlcode
   for name in "${AGENT_NAMES[@]}"; do
-    copy_one "$GLOBAL_AGENTS/$name.json" "$AGENT_SRC/$name.json"
+    copy_one "$GLOBAL_AGENTS/$name.md" "$AGENT_SRC/$name.md"
   done
   copy_one "$GLOBAL_SKILLS/$SKILL_NAME/$SKILL_MD" "$SKILL_SRC/$SKILL_MD"
 else
-  # repo -> global: fresh-clone setup
   for name in "${AGENT_NAMES[@]}"; do
-    copy_one "$AGENT_SRC/$name.json" "$GLOBAL_AGENTS/$name.json"
+    copy_one "$AGENT_SRC/$name.md" "$GLOBAL_AGENTS/$name.md"
   done
   copy_one "$SKILL_SRC/$SKILL_MD" "$GLOBAL_SKILLS/$SKILL_NAME/$SKILL_MD"
 fi

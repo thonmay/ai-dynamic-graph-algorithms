@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     p_start = subparsers.add_parser("start", help="begin the evolutionary loop")
     p_start.add_argument("config", help="path to config.yaml")
     p_start.add_argument("--run-id", default=None, help="run identifier (auto-generated if omitted)")
-    p_start.add_argument("--model", default=None, help="override model id (e.g. ericai/zai-org/GLM-5.2-FP8)")
+    p_start.add_argument("--model", default=None, help="override model id (e.g. openrouter/qwen/qwen3-coder)")
 
     # run status
     p_status = subparsers.add_parser("status", help="show current run status")
@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     p_formalize.add_argument("--run", required=True, help="run directory")
     p_formalize.add_argument("--candidate", required=True, help="candidate id, e.g. gen001_c01")
     p_formalize.add_argument("--model", default=None, help="override model id")
-    p_formalize.add_argument("--enlcode-path", default=None, help="override enlcode binary path")
+    p_formalize.add_argument("--opencode-path", default=None, help="override opencode binary path")
     p_formalize.add_argument("--fresh", action="store_true",
                              help="ignore any existing module and redo all stages from scratch")
     p_formalize.add_argument("--stage-timeout", type=int, default=2400,
@@ -214,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.run),
             args.candidate,
             model=args.model,
-            enlcode_path=args.enlcode_path,
+            opencode_path=args.opencode_path,
             fresh=args.fresh,
             stage_timeout=args.stage_timeout,
             hints_path=args.hints,
