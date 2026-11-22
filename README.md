@@ -6,12 +6,9 @@ A research platform combining LLM-driven evolutionary code repair with exhaustiv
 isomorphism-aware verification to assist algorithm designers in developing correct
 and efficient dynamic graph algorithms on directed graphs.
 
-## Thesis Documents
+## Thesis
 
-- [`docs/topic-proposal.txt`](docs/topic-proposal.txt) - Topic proposal and problem statement
-- [`docs/planning-spec-short.tex`](docs/planning-spec-short.tex) - Software Requirements Specification (LaTeX source)
-- [`docs/design.tex`](docs/design.tex) - Software Design Document (LaTeX source)
-- [`docs/design.pdf`](docs/design.pdf) - Compiled Design Document
+The thesis (LaTeX source and the built PDF) is in [`thesis-doc/`](thesis-doc/).
 
 ## Lean Formalization
 

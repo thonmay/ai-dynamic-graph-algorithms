@@ -7,7 +7,7 @@ Gregory Reynolds Morse). Status, decisions and the chapter plan are in
 
 ## Repo rules
 - Commit and push to `main` (GitHub `thonmay/ai-dynamic-graph-algorithms`) without asking; stage files explicitly.
-- Never commit: `papers/`, `docs/`, `logs/`, `review_*`, `review-manuscript.txt`, `round2_checks.zip`, `stab.c`, `supervisor-review.txt`, stray `runs/` dirs, and the pending deletions of `docs/mcs-thesis.html` and `scripts/pdf2md_mineru.py`.
+- Never commit: the paths listed in `.gitignore` (personal notes, `docs/`, `papers/`, `logs/`, supervisor skills, third-party Lean skills), `review_*`, `review-manuscript.txt`, `round2_checks.zip`, `stab.c`, `supervisor-review.txt`, stray `runs/` dirs.
 - Scratch goes in `/proj/MPS/MPS_DEV_REPO/ethomdt/evoalgo-scratch/`, never `/tmp` or `/home`; clean up after each task.
 - The code is frozen except for fixes; the remaining work is the thesis documentation.
 
