@@ -41,7 +41,6 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 
 # -- jail ---------------------------------------------------------------------
 #
@@ -641,67 +640,4 @@ class Sandbox:
                 error=f"Unknown status: {result.get('status')}",
             )
 
-    def execute(
-        self,
-        module_path: Path | str,
-        graph: np.ndarray,
-        operations: list[dict[str, Any]],
-        offline_src: str | None = None,
-        root: int | None = None,
-    ) -> SandboxResult:
-        """Run a candidate module on a single graph with a sequence of operations.
 
-        Legacy single-test interface. Returns a SandboxResult with
-        all_results containing a single graph with a single sequence.
-        """
-        test_cases = [{
-            "graph": graph.tolist() if isinstance(graph, np.ndarray) else graph,
-            "sequences": [operations],
-        }]
-        batch_result = self.execute_batch(module_path, test_cases, offline_src, root)
-        # Flatten: all_results[0][0] is the single sequence result
-        if batch_result.is_ok and batch_result.all_results:
-            seq_result = batch_result.all_results[0][0] if batch_result.all_results[0] else None
-            if seq_result:
-                return _LegacySandboxResult(
-                    status=seq_result.get("status", "crash"),
-                    results=seq_result.get("results"),
-                    timings=seq_result.get("timings"),
-                    offline_timings=seq_result.get("offline_timings"),
-                    error=seq_result.get("error"),
-                    traceback_str=seq_result.get("traceback"),
-                )
-        return _LegacySandboxResult(
-            status=batch_result.status,
-            error=batch_result.error,
-            traceback_str=batch_result.traceback_str,
-        )
-
-    def execute_single(
-        self,
-        module_path: Path | str,
-        graph: np.ndarray,
-    ) -> SandboxResult:
-        """Execute just init() on a graph and return the initial state."""
-        return self.execute(module_path, graph, [])
-
-
-class _LegacySandboxResult(SandboxResult):
-    """Backward-compatible result for the single-test execute() method.
-
-    Inherits is_ok/is_crash/is_timeout from SandboxResult.
-    """
-
-    def __init__(
-        self,
-        status: str,
-        results: list[dict] | None = None,
-        timings: list[int] | None = None,
-        offline_timings: list[int] | None = None,
-        error: str | None = None,
-        traceback_str: str | None = None,
-    ):
-        super().__init__(status=status, error=error, traceback_str=traceback_str)
-        self.results = results
-        self.timings = timings
-        self.offline_timings = offline_timings

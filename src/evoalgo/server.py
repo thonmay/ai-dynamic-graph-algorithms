@@ -42,7 +42,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .config import MAX_GOAL_CHARS, RunConfig
+from .config import MAX_GOAL_CHARS, ConfigError, RunConfig
 from .packs import PackError, find_packs, pack_info, resolve_pack
 from .events import (
     engine_state,
@@ -198,7 +198,10 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
     def get_run(run_id: str) -> dict[str, Any]:
         run_dir = run_dir_for(run_id)
         summary = summarize(run_dir)
-        summary["config"] = RunConfig.load(run_dir / "config.yaml").to_dict()
+        try:
+            summary["config"] = RunConfig.load(run_dir / "config.yaml").to_dict()
+        except ConfigError as e:
+            raise HTTPException(422, str(e))
         summary["pending"] = pending_commands(run_dir)
         return summary
 
@@ -239,14 +242,17 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
                 raise HTTPException(404, "unknown pack")
             try:
                 pack = resolve_pack(req.pack, packs_root)
-            except (PackError, NotImplementedError) as e:
-                raise HTTPException(404 if isinstance(e, PackError) else 422, str(e))
+            except PackError as e:
+                raise HTTPException(404, str(e))
             config = RunConfig(pack=pack.name, problem=pack.checker, **PACK_DEFAULTS)
         else:
             template = config_files().get(req.config)
             if template is None:
                 raise HTTPException(404, "unknown config")
-            config = RunConfig.load(template)
+            try:
+                config = RunConfig.load(template)
+            except ConfigError as e:
+                raise HTTPException(422, str(e))
         for field in ("max_generations", "population_size", "model_call_budget", "model",
                       "early_stop_on_success", "dynamic_agents"):
             value = getattr(req, field)

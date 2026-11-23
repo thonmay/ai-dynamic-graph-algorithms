@@ -1,7 +1,7 @@
 # AI-assisted code: generated and revised with GLM-5.2, DeepSeek-V4-Flash, Qwen3.8-27B and Claude Opus 5.5
 # under the author's direction; reviewed and tested by the author
 # (see the thesis section "Use of AI tools").
-"""Verifier and Evaluator: test candidates against invariants.
+"""Verifier: test candidates against invariants.
 
 The Verifier runs each candidate through the bounded test universe:
   1. For each base graph in the test set
@@ -10,8 +10,8 @@ The Verifier runs each candidate through the bounded test universe:
   4. After each operation, check the invariant against the oracle
   5. Record pass/fail, failing case, work counts
 
-The Evaluator computes fitness (fraction of sequences passing) and
-work_ratio (candidate_work / offline_work).
+Fitness is the fraction of sequences passing; work_ratio is
+candidate_work / offline_work.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import concurrent.futures
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -121,7 +121,6 @@ class VerifyResult:
     tests_total: int = 0
     error_message: str | None = None
     failing_case: dict[str, Any] | None = None
-    per_step_states: list[dict] = field(default_factory=list)
 
 
 class Verifier:
@@ -488,20 +487,6 @@ class Verifier:
                     stopped = self._merge_partial(result, partial, acc)
                     next_merge += 1
                 fill()
-
-
-class Evaluator:
-    """Computes fitness and work_ratio from verification results."""
-
-    @staticmethod
-    def score(result: VerifyResult) -> tuple[float, float | None, bool]:
-        """Return (fitness, work_ratio, is_efficiency_improvement)."""
-        is_improvement = (
-            result.fitness == 1.0
-            and result.work_ratio is not None
-            and result.work_ratio < 1.0
-        )
-        return result.fitness, result.work_ratio, is_improvement
 
 
 # ---------------------------------------------------------------------------

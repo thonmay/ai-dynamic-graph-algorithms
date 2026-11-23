@@ -65,6 +65,10 @@ VALID_PROVIDERS = {"api", "opencode", "mock"}
 MAX_GOAL_CHARS = 2000
 
 
+class ConfigError(ValueError):
+    """A config file that cannot be read or parsed."""
+
+
 @dataclass
 class Bound:
     n_max: int = 5
@@ -139,8 +143,12 @@ class RunConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunConfig:
+        if not isinstance(data, dict):
+            raise ConfigError(f"config must be a mapping of keys to values, got {type(data).__name__}")
         data = dict(data)
-        bound_data = data.pop("bound", {})
+        bound_data = data.pop("bound", None) or {}
+        if not isinstance(bound_data, dict):
+            raise ConfigError("config key 'bound' must be a mapping")
         known_bound = {f.name for f in fields(Bound)}
         bound = Bound(**{k: v for k, v in bound_data.items() if k in known_bound})
         known = {f.name for f in fields(cls)}
@@ -156,7 +164,27 @@ class RunConfig:
         d["bound"] = {f.name: getattr(self.bound, f.name) for f in fields(Bound)}
         return d
 
+    def _type_errors(self) -> list[str]:
+        """Numeric and boolean fields must hold a value of their declared type."""
+        kinds = {"bool": "true or false", "int": "an integer", "float": "a number"}
+        errors = []
+        for obj, prefix in ((self, ""), (self.bound, "bound.")):
+            for f in fields(obj):
+                base = f.type.removesuffix(" | None")
+                value = getattr(obj, f.name)
+                if base not in kinds or value is None and base != f.type:
+                    continue
+                ok = isinstance(value, bool) if base == "bool" else (
+                    isinstance(value, int if base == "int" else (int, float))
+                    and not isinstance(value, bool))
+                if not ok:
+                    errors.append(f"{prefix}{f.name} must be {kinds[base]}, got {value!r}")
+        return errors
+
     def validate(self) -> list[str]:
+        type_errors = self._type_errors()
+        if type_errors:  # the range checks below assume the right types
+            return type_errors
         errors: list[str] = []
         if self.pack:
             # A problem pack takes over: resolve it and adopt its checker as
@@ -165,8 +193,6 @@ class RunConfig:
             try:
                 pack = resolve_pack(self.pack)
             except PackError as e:
-                errors.append(str(e))
-            except NotImplementedError as e:
                 errors.append(str(e))
             else:
                 self.problem = pack.checker
@@ -242,11 +268,24 @@ class RunConfig:
 
     @classmethod
     def load(cls, path: Path | str) -> RunConfig:
+        """Load a config file; raises ConfigError with a readable message."""
         path = Path(path)
-        text = path.read_text()
-        if yaml is None:
-            import json
-            data = json.loads(text)
-        else:
-            data = yaml.safe_load(text)
-        return cls.from_dict(data)
+        try:
+            text = path.read_text()
+        except OSError as e:
+            raise ConfigError(f"cannot read config {path}: {e.strerror or e}") from None
+        try:
+            if yaml is None:
+                import json
+                data = json.loads(text)
+            else:
+                data = yaml.safe_load(text)
+        except Exception as e:  # yaml.YAMLError or json.JSONDecodeError
+            mark = getattr(e, "problem_mark", None)
+            where = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
+            reason = getattr(e, "problem", None) or str(e).splitlines()[0]
+            raise ConfigError(f"config {path} is not valid YAML: {reason}{where}") from None
+        try:
+            return cls.from_dict(data)
+        except ConfigError as e:
+            raise ConfigError(f"config {path}: {e}") from None

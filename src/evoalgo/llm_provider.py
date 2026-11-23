@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .agents import make_backend
-from .agents.base import CallResult, Task
+from .agents.base import Task
 from .config import RunConfig
 
 logger = logging.getLogger(__name__)
@@ -38,9 +38,9 @@ class LLMProvider:
         (self.run_dir / "prompt_logs").mkdir(parents=True, exist_ok=True)
         self.backend = backend
         self.call_count = 0
-        self.last_result: CallResult | None = None
         # Researcher hint set through the control channel; added to every task.
         self.hint: str | None = None
+        self.last_error: str | None = None  # of the latest failed call
 
     def _backend(self) -> Any:
         if self.backend is None:
@@ -100,8 +100,8 @@ class LLMProvider:
         logger.info("Agent call #%d: %s %s via %s", self.call_count, task.role, task.candidate_id,
                     self.config.provider)
         result = self._backend().run(task)
-        self.last_result = result
         if result.error:
+            self.last_error = result.error
             logger.warning("%s %s: %s", task.role, task.candidate_id, result.error)
         return (result.summary or "done") if result.ok else None
 

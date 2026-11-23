@@ -9,7 +9,7 @@ import json
 from types import SimpleNamespace as NS
 
 from evoalgo.agents.api import ApiBackend
-from evoalgo.agents.base import Task, make_backend
+from evoalgo.agents.base import CallResult, Task, make_backend
 from evoalgo.agents.examples import PUBLIC_N_MAX, run_examples
 from evoalgo.agents.harness import OpencodeBackend
 from evoalgo.agents.tools import Toolbox, schemas
@@ -222,6 +222,21 @@ def test_mock_run_end_to_end(tmp_path):
     search_total = next(e["tests_total"] for e in events
                         if e["type"] == "candidate_verified" and e["id"] == final["id"])
     assert final["tests_total"] > search_total
+
+
+def test_unusable_backend_stops_after_seeding(tmp_path):
+    class Broken:
+        def run(self, task):
+            return CallResult(ok=False, error="harness binary not found: /x/opencode")
+    cfg = RunConfig(problem="dynamic_bfs", provider="mock", population_size=2, max_generations=5,
+                    elitism_k=1, bound=Bound(n_max=3, n_random=0, seq_len_max=2, seq_count=1, seed=1),
+                    search_n_max=2, search_seq_count=1, workdir=str(tmp_path))
+    orch = Orchestrator(cfg, run_id="b")
+    orch.provider.backend = Broken()
+    summary = orch.run()
+    assert summary["stop_reason"] == "agent_unavailable" and summary["generation"] == 1
+    assert summary["model_calls"] == 2
+    assert "binary not found" in summary["agent_error"]
 
 
 # A plain BFS that skips vertex 2 entirely: right for n <= 2, wrong for n = 3.

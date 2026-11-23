@@ -408,8 +408,6 @@ def offline_compute(graph, root):
         discover: dict[int, int],
         finish: dict[int, int] | None,
     ) -> bool:
-        n = graph.shape[0]
-
         # Root must have no parent and must be discovered
         if parent.get(root) is not None:
             return False

@@ -25,11 +25,6 @@ class CandidateState(str, Enum):
     CRASH = "CRASH"
     DISCARDED = "DISCARDED"
 
-    @property
-    def is_terminal(self) -> bool:
-        return self in (CandidateState.PASS, CandidateState.FAIL,
-                        CandidateState.CRASH, CandidateState.DISCARDED)
-
 
 # Valid transitions: (from_state, to_state)
 _TRANSITIONS = {

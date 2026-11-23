@@ -111,18 +111,23 @@ class Checkpoint:
         committed_path = self.run_dir / "COMMITTED"
         if not committed_path.exists():
             return None
-        gen_num = int(committed_path.read_text().strip())
-        return self.load_generation(gen_num)
+        return self.load_generation(self.latest_generation_number())
 
     def latest_generation_number(self) -> int:
         """Return the last committed generation number, or 0 if none."""
         committed_path = self.run_dir / "COMMITTED"
         if not committed_path.exists():
             return 0
-        return int(committed_path.read_text().strip())
+        text = committed_path.read_text().strip()
+        if not text.isdigit():
+            raise ValueError(f"corrupt COMMITTED marker: {text[:40]!r}")
+        return int(text)
 
     def _load_and_verify(self, path: Path) -> dict[str, Any]:
-        data = json.loads(path.read_text())
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{path.name} is not valid JSON: {e}") from None
 
         # Check schema version
         sv = data.get("schema_version", 0)

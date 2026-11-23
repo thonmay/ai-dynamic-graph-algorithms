@@ -13,6 +13,7 @@ const VERB: Record<string, string> = {
 const REASON: Record<string, string> = {
   max_generations: 'generation limit', success: 'correct candidate found', user_stop: 'stopped by you',
   model_call_budget_exhausted: 'call budget used', consecutive_all_failed: 'no progress',
+  agent_unavailable: 'agent backend failed',
 }
 
 function Copy({ text }: { text: string }) {

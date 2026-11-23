@@ -24,7 +24,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .config import RunConfig, Bound, VALID_PROBLEMS
+from .config import ConfigError, RunConfig, Bound, VALID_PROBLEMS
 from .orchestrator import Orchestrator
 
 
@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     p_verify = subparsers.add_parser("verify", help="run verifier self-test (FR-VER-08)")
     p_verify.add_argument("--problem", choices=sorted(VALID_PROBLEMS), default="dynamic_bfs")
     p_verify.add_argument("--n-max", type=int, default=None,
-                          help="max graph size for self-test (default 5 for BFS/DFS/LBFS)")
+                          help="max graph size for self-test (default 5)")
     p_verify.add_argument("--relabels", type=int, default=0,
                           help="deterministic relabels per nauty class (default 0; "
                                "use 2 for the full documented universe; undirected "
@@ -182,7 +182,14 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
+    try:
+        return _dispatch(parser, args)
+    except (ConfigError, RunReadError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
 
+
+def _dispatch(parser, args) -> int:
     if args.command == "configure":
         return cmd_configure(args)
     elif args.command == "start":
@@ -271,14 +278,15 @@ def cmd_start(args) -> int:
     orch = Orchestrator(config=config, run_id=args.run_id)
     summary = orch.run()
 
-    print(f"\nRun complete: {summary['run_id']}")
+    done = "stopped" if summary["stop_reason"] == "agent_unavailable" else "complete"
+    print(f"\nRun {done}: {summary['run_id']}")
     print(f"  Stop reason: {summary['stop_reason']}")
     print(f"  Generations: {summary['generation']}")
     print(f"  Best fitness: {summary['best_fitness']:.2f}")
     if summary.get("best_candidate_id"):
         print(f"  Best candidate: {summary['best_candidate_id']}")
     print(f"  Model calls: {summary['model_calls']}")
-    return 0
+    return _agent_status(summary)
 
 
 def cmd_control(args) -> int:
@@ -402,6 +410,34 @@ def cmd_workspace(args) -> int:
         return 2
 
 
+class RunReadError(Exception):
+    """A run directory whose generation checkpoints cannot be read."""
+
+
+def _committed_generation(run_dir: Path) -> int:
+    """The last committed generation number; RunReadError if none or corrupt."""
+    try:
+        text = (run_dir / "COMMITTED").read_text().strip()
+    except FileNotFoundError:
+        raise RunReadError("No committed generations found.") from None
+    except OSError as e:
+        raise RunReadError(f"cannot read {run_dir / 'COMMITTED'}: {e.strerror}") from None
+    if not text.isdigit():
+        raise RunReadError(f"corrupt marker {run_dir / 'COMMITTED'}: {text[:40]!r}")
+    return int(text)
+
+
+def _read_generation(run_dir: Path, gen: int) -> dict | None:
+    """One generation checkpoint as a dict, None if absent; RunReadError if corrupt."""
+    path = run_dir / f"generation_{gen:04d}.json"
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        raise RunReadError(f"corrupt checkpoint {path}: {e}") from None
+
+
 def cmd_status(args) -> int:
     run_dir = Path(args.run_dir)
     if getattr(args, "json", False):
@@ -411,18 +447,10 @@ def cmd_status(args) -> int:
             return 1
         print(json.dumps(_run_summary(run_dir, summarize), indent=1, default=str))
         return 0
-    committed = run_dir / "COMMITTED"
-    if not committed.exists():
-        print("No committed generations found.")
-        return 1
-
-    gen_num = int(committed.read_text().strip())
-    gen_file = run_dir / f"generation_{gen_num:04d}.json"
-    if not gen_file.exists():
-        print(f"Generation file missing: {gen_file}")
-        return 1
-
-    data = json.loads(gen_file.read_text())
+    gen_num = _committed_generation(run_dir)
+    data = _read_generation(run_dir, gen_num)
+    if data is None:
+        raise RunReadError(f"Generation file missing: {run_dir / f'generation_{gen_num:04d}.json'}")
     candidates = data.get("candidates", [])
     best = max((c.get("fitness", 0) for c in candidates), default=0)
     passing = sum(1 for c in candidates if c.get("state") == "PASS")
@@ -471,8 +499,14 @@ def cmd_resume(args) -> int:
               "with `evoalgo check`")
         return 1
     config = RunConfig.load(config_path)
-    run_id = run_dir.name
-    orch = Orchestrator(config=config, run_id=run_id)
+    # Resume this directory, wherever it is: the saved workdir may be relative
+    # to the cwd of the original start.
+    config.workdir = str(run_dir.resolve().parent)
+    orch = Orchestrator(config=config, run_id=run_dir.name)
+    try:
+        orch.checkpoint.load_latest()
+    except (OSError, ValueError) as e:
+        raise RunReadError(f"cannot resume {run_dir}: {e}") from None
 
     # Discard any incomplete generations
     removed = orch.checkpoint.discard_incomplete()
@@ -480,31 +514,31 @@ def cmd_resume(args) -> int:
         print(f"Discarded incomplete generations: {removed}")
 
     summary = orch.run()
-    print(f"\nRun resumed and completed: {summary['run_id']}")
+    done = "stopped" if summary["stop_reason"] == "agent_unavailable" else "completed"
+    print(f"\nRun resumed and {done}: {summary['run_id']}")
     print(f"  Stop reason: {summary['stop_reason']}")
     print(f"  Generations: {summary['generation']}")
     print(f"  Best fitness: {summary['best_fitness']:.2f}")
-    return 0
+    return _agent_status(summary)
+
+
+def _agent_status(summary: dict) -> int:
+    if summary.get("stop_reason") != "agent_unavailable":
+        return 0
+    print(f"error: the agent backend produced no candidate: {summary.get('agent_error')}",
+          file=sys.stderr)
+    return 1
 
 
 def cmd_export(args) -> int:
     run_dir = Path(args.run_dir)
     results_dir = run_dir / "results"
 
-    # Find the latest generation
-    committed = run_dir / "COMMITTED"
-    if not committed.exists():
-        print("No committed generations found.")
-        return 1
-
-    gen_num = int(committed.read_text().strip())
-
-    # Collect all generation data
+    gen_num = _committed_generation(run_dir)
     all_candidates = []
     for g in range(1, gen_num + 1):
-        gen_file = run_dir / f"generation_{g:04d}.json"
-        if gen_file.exists():
-            data = json.loads(gen_file.read_text())
+        data = _read_generation(run_dir, g)
+        if data is not None:
             for c in data.get("candidates", []):
                 c["generation"] = g
                 all_candidates.append(c)
@@ -591,18 +625,12 @@ def cmd_history(args) -> int:
     for run_dir in runs:
         if not run_dir.is_dir():
             continue
-        committed = run_dir / "COMMITTED"
         try:
-            if not committed.exists():
-                continue
-            gen_num = int(committed.read_text().strip())
-            gen_file = run_dir / f"generation_{gen_num:04d}.json"
-            if not gen_file.exists():
-                continue
-            data = json.loads(gen_file.read_text())
-        except (OSError, ValueError):
-            # Skip unreadable or malformed run dirs (e.g. a non-run dir under
-            # the workdir that happens to contain a COMMITTED file).
+            gen_num = _committed_generation(run_dir)
+            data = _read_generation(run_dir, gen_num)
+        except RunReadError:
+            continue  # not a run, or unreadable: history lists the rest
+        if data is None:
             continue
         candidates = data.get("candidates", [])
         best = max((c.get("fitness", 0) for c in candidates), default=0)
@@ -616,31 +644,22 @@ def cmd_history(args) -> int:
 
 
 def cmd_verify(args) -> int:
-    """Run the verifier self-test (FR-VER-08).
+    """Run the verifier self-test (FR-VER-08) for a problem with a fault corpus.
 
-    For the problems with a fault corpus (``dynamic_bfs``, ``dynamic_dfs``,
-    ``dynamic_lbfs``) this runs the full exhaustive self-test:
-      - the known-good reference (validate-or-rebuild) must PASS,
-      - every seeded real fault must be REJECTED (FAIL or CRASH),
-      - every equivalent control (a valid variant) must be ACCEPTED (PASS).
-    and prints a compact summary table plus the zero-false-negative verdict.
-    Exit code 0 only if all of the above hold.
-
-    For other problems it falls back to the legacy smoke test (one known-good
-    that must PASS and one known-bad that must be rejected).
+    The known-good reference and every equivalent control must PASS, and every
+    seeded fault must be rejected (FAIL or CRASH). Exit code 0 only if all hold.
     """
     from .problem_definitions import get_problem
+    from .selftest.references import CORPUS_PROBLEMS
 
-    # Default n_max: 5 for the corpus problems (the documented bound), 4
-    # otherwise.
-    from .selftest.references import CORPUS_PROBLEMS as corpus_problems
-    n_max = args.n_max if args.n_max is not None else (5 if args.problem in corpus_problems else 4)
-
+    if args.problem not in CORPUS_PROBLEMS:
+        print(f"no fault corpus for {args.problem}; the self-test covers "
+              f"{', '.join(CORPUS_PROBLEMS)}", file=sys.stderr)
+        return 2
     problem = get_problem(args.problem)
     with tempfile.TemporaryDirectory(prefix="evoalgo_verify_") as tmp:
-        if args.problem in corpus_problems:
-            return _cmd_verify_corpus(problem, n_max, args, tmpdir=Path(tmp))
-        return _cmd_verify_smoke(problem, n_max, args, tmpdir=Path(tmp))
+        n_max = 5 if args.n_max is None else args.n_max
+        return _cmd_verify_corpus(problem, n_max, args, tmpdir=Path(tmp))
 
 
 def _make_selftest_verifier(problem, n_max: int, args) -> Verifier:
@@ -756,35 +775,6 @@ def _cmd_verify_corpus(problem, n_max: int, args, tmpdir: Path) -> int:
     all_ok = zero_fn and known_good_ok and controls_ok
     print("\n  Verifier self-test: " + ("ALL PASS" if all_ok else "FAILED"))
     return 0 if all_ok else 1
-
-
-def _cmd_verify_smoke(problem, n_max: int, args, tmpdir: Path) -> int:
-    """Legacy smoke test for problems without a fault corpus."""
-    print(f"Verifier self-test (smoke) for problem: {problem.name}")
-    print(f"  n_max={n_max}")
-
-    verifier = _make_selftest_verifier(problem, n_max, args)
-
-    results: list[tuple[str, bool, str]] = []
-    good_code = _generate_known_good_candidate(problem.name)
-    good_state, good_fit, _ = _run_candidate(verifier, good_code, "known_good", tmpdir)
-    results.append(("known-good", good_state == "PASS", good_state))
-    print(f"  known-good: state={good_state} fitness={good_fit:.2f}")
-
-    bad_code = _generate_known_bad_candidate(problem.name)
-    bad_state, bad_fit, _ = _run_candidate(verifier, bad_code, "known_bad", tmpdir)
-    results.append(("known-bad", bad_state in ("FAIL", "CRASH"), bad_state))
-    print(f"  known-bad:  state={bad_state} fitness={bad_fit:.2f}")
-
-    print("\n  Results:")
-    all_pass = True
-    for name, passed, state in results:
-        print(f"    {name}: {'PASS' if passed else 'FAIL'} (state={state})")
-        if not passed:
-            all_pass = False
-
-    print("\n  Verifier self-test: " + ("ALL PASS" if all_pass else "FAILED"))
-    return 0 if all_pass else 1
 
 
 def _generate_known_good_candidate(problem_name: str) -> str:

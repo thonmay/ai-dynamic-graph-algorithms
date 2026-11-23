@@ -7,26 +7,17 @@ A problem pack is a folder (by convention under ``problems/<name>/``) that
 describes one research problem for the evolutionary loop:
 
 - ``problem.yaml`` (required) - machine-readable spec: which built-in checker
-  verifies the candidate (or a custom oracle), graph mode flags, difficulty
+  verifies the candidate, graph mode flags, difficulty
   tier, objective, and allowed update modes.
 - ``brief.md`` (required) - plain-language research question and hints for the
   agents. Included verbatim in the problem prompt under a RESEARCH BRIEF
   heading, so the tooling itself stays generic.
-- ``oracle.py`` (optional) - required when ``checker: oracle``. Must define
-  ``offline_compute(graph, root)`` and ``check(state, graph, root) -> bool``.
-- ``known_good.py`` (optional) - a reference candidate for self-tests.
-- ``faults/`` (optional) - known-bad mutations for self-tests.
 
-The pack is the unit of portability: a researcher adds a folder to describe a
-new problem without touching the engine. Built-in checkers are the keys of
-``problem_definitions.PROBLEMS``; ``checker: oracle`` defers verification to
-the pack's own oracle module.
+The checker is one of the built-in ``problem_definitions.PROBLEMS``.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -79,23 +70,6 @@ class Pack:
     brief: str
     path: Path
 
-    @property
-    def is_oracle(self) -> bool:
-        return self.checker == "oracle"
-
-    def problem_for(self):
-        """Return a ProblemDefinition for built-in checkers.
-
-        Raises NotImplementedError for ``checker: oracle`` packs (see
-        ``load_pack``): the verifier/sandbox pipeline needs more than the
-        oracle's two functions, so full oracle-pack support is planned.
-        """
-        if self.is_oracle:
-            raise NotImplementedError(
-                f"custom oracle packs: planned (pack '{self.name}' uses checker: oracle)"
-            )
-        return get_problem(self.checker)
-
 
 def _load_problem_yaml(path: Path, errors: list[str]) -> dict[str, Any]:
     if not path.exists():
@@ -143,18 +117,9 @@ def _validate_pack(data: dict[str, Any], path: Path, errors: list[str]) -> None:
 
     checker = data.get("checker")
     if not isinstance(checker, str) or not checker:
-        errors.append("'checker' is required (a built-in checker name, or 'oracle')")
-    elif checker == "oracle":
-        oracle_path = path / "oracle.py"
-        if not oracle_path.exists():
-            errors.append("checker is 'oracle' but oracle.py is missing")
-        else:
-            _validate_oracle(oracle_path, errors)
+        errors.append(f"'checker' is required (one of {sorted(PROBLEMS)})")
     elif checker not in PROBLEMS:
-        errors.append(
-            f"unknown checker {checker!r}; must be one of "
-            f"{sorted(PROBLEMS)} or 'oracle'"
-        )
+        errors.append(f"unknown checker {checker!r}; must be one of {sorted(PROBLEMS)}")
 
     tier = data.get("tier")
     if tier not in VALID_TIERS:
@@ -218,40 +183,10 @@ def _validate_pack(data: dict[str, Any], path: Path, errors: list[str]) -> None:
                 )
 
 
-def _validate_oracle(oracle_path: Path, errors: list[str]) -> None:
-    """Validate the oracle.py interface: offline_compute(graph, root),
-    check(state, graph, root) -> bool."""
-    try:
-        spec = importlib.util.spec_from_file_location("pack_oracle", oracle_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    except Exception as e:
-        errors.append(f"oracle.py failed to import: {e}")
-        return
-    # offline_compute(graph, root) -> 2 params; check(state, graph, root) -> 3.
-    expected_arity = {"offline_compute": 2, "check": 3}
-    for fn_name, arity in expected_arity.items():
-        fn = getattr(module, fn_name, None)
-        if fn is None or not callable(fn):
-            errors.append(f"oracle.py must define a callable {fn_name}(...)")
-            continue
-        try:
-            params = list(inspect.signature(fn).parameters)
-        except (TypeError, ValueError):
-            params = []
-        if len(params) < arity:
-            errors.append(
-                f"oracle.py {fn_name} must take "
-                f"{'(graph, root)' if arity == 2 else '(state, graph, root)'}; "
-                f"got parameters {params}"
-            )
-
-
 def load_pack(path: Path | str) -> Pack:
     """Load and validate one problem pack from ``path`` (a directory).
 
-    Raises PackError listing every problem found, or NotImplementedError for
-    ``checker: oracle`` packs (interface validated; full support planned).
+    Raises PackError listing every problem found.
     """
     path = Path(path)
     errors: list[str] = []
@@ -265,17 +200,6 @@ def load_pack(path: Path | str) -> Pack:
         raise PackError(data.get("name") or path.name, errors)
 
     brief = (path / "brief.md").read_text()
-    if data.get("checker") == "oracle":
-        # The oracle interface is validated above. Building a full
-        # ProblemDefinition from oracle.py is not generically possible: the
-        # verifier/sandbox pipeline also needs extract_result, baseline_work,
-        # offline_source, and failing_context, which are problem-specific.
-        # Future work: wrap the oracle in a ProblemDefinition subclass with
-        # generic extract/failing_context.
-        raise NotImplementedError(
-            "custom oracle packs: planned "
-            f"(pack '{data['name']}' declares checker: oracle with a valid oracle.py)"
-        )
 
     return Pack(
         name=data["name"],
@@ -307,7 +231,7 @@ def find_packs(root: Path | str = DEFAULT_PROBLEMS_ROOT) -> list[Pack]:
             continue
         try:
             packs.append(load_pack(sub))
-        except (PackError, NotImplementedError):
+        except PackError:
             continue
     return packs
 
@@ -315,8 +239,7 @@ def find_packs(root: Path | str = DEFAULT_PROBLEMS_ROOT) -> list[Pack]:
 def resolve_pack(name_or_path: str | Path, root: Path | str = DEFAULT_PROBLEMS_ROOT) -> Pack:
     """Resolve a pack by name (looked up under ``root``) or by path.
 
-    Raises PackError if it cannot be found, or NotImplementedError for
-    oracle packs (see load_pack).
+    Raises PackError if it cannot be found or is invalid.
     """
     p = Path(name_or_path)
     if p.is_dir() and (p / "problem.yaml").exists():

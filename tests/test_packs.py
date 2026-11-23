@@ -12,7 +12,6 @@ honours the pack's update_mode.
 
 from __future__ import annotations
 
-import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -115,7 +114,7 @@ def test_unknown_key_rejected(tmp_path):
     assert any("unknown key" in m and "bogus_key" in m for m in e.value.errors)
 
 
-def test_unknown_checker_without_oracle_rejected(tmp_path):
+def test_unknown_checker_rejected(tmp_path):
     d = _write_pack(tmp_path, checker="not_a_checker")
     with pytest.raises(PackError) as e:
         load_pack(d)
@@ -153,40 +152,6 @@ def test_multiple_errors_listed_together(tmp_path):
     assert any("brief.md" in m for m in e.value.errors)
 
 
-def test_oracle_pack_interface_validated(tmp_path):
-    d = _write_pack(tmp_path, checker="oracle")
-    (d / "oracle.py").write_text(textwrap.dedent("""
-        def offline_compute(graph, root):
-            return list(range(graph.shape[0]))
-
-        def check(state, graph, root):
-            return True
-    """))
-    with pytest.raises(NotImplementedError) as e:
-        load_pack(d)
-    assert "custom oracle packs: planned" in str(e)
-
-
-def test_oracle_pack_bad_interface_rejected(tmp_path):
-    d = _write_pack(tmp_path, checker="oracle")
-    # Missing `check`, and offline_compute has the wrong arity.
-    (d / "oracle.py").write_text(textwrap.dedent("""
-        def offline_compute(graph):
-            return []
-    """))
-    with pytest.raises(PackError) as e:
-        load_pack(d)
-    assert any("check" in m for m in e.value.errors)
-    assert any("offline_compute" in m for m in e.value.errors)
-
-
-def test_oracle_pack_missing_oracle_file_rejected(tmp_path):
-    d = _write_pack(tmp_path, checker="oracle")
-    with pytest.raises(PackError) as e:
-        load_pack(d)
-    assert any("oracle.py is missing" in m for m in e.value.errors)
-
-
 # -- config resolution -------------------------------------------------------
 
 def test_valid_problems_includes_lbfs():
@@ -218,6 +183,46 @@ def test_config_pack_and_problem_round_trip(tmp_path):
     d = cfg.to_dict()
     assert d["pack"] == "dynamic_mcs"
     assert d["problem"] == "dynamic_mcs"
+
+
+def test_bad_config_files_give_one_line_errors(tmp_path, capsys):
+    from evoalgo.cli import main
+    cases = {
+        "missing.yaml": None,
+        "syntax.yaml": "x: [\n",
+        "list.yaml": "- 1\n- 2\n",
+        "bound.yaml": "bound: 5\n",
+        "types.yaml": "population_size: '8'\nbound:\n  n_max: 5.5\n",
+    }
+    expected = {
+        "missing.yaml": "cannot read config",
+        "syntax.yaml": "is not valid YAML",
+        "list.yaml": "must be a mapping",
+        "bound.yaml": "'bound' must be a mapping",
+        "types.yaml": "population_size must be an integer",
+    }
+    for name, text in cases.items():
+        if text is not None:
+            (tmp_path / name).write_text(text)
+        assert main(["start", str(tmp_path / name)]) == 1, name
+        out = capsys.readouterr()
+        assert expected[name] in out.out + out.err, (name, out)
+        assert "Traceback" not in out.out + out.err, name
+
+
+def test_corrupt_run_dir_is_reported_not_raised(tmp_path, capsys):
+    from evoalgo.cli import main
+    run = tmp_path / "r"
+    run.mkdir()
+    RunConfig(problem="dynamic_bfs", provider="mock").save(run / "config.yaml")
+    (run / "COMMITTED").write_text("1")
+    (run / "generation_0001.json").write_text("{not json")
+    for cmd in ("status", "export", "resume"):
+        assert main([cmd, str(run)]) == 1, cmd
+        assert "generation_0001.json" in capsys.readouterr().err, cmd
+    (run / "COMMITTED").write_text("junk")
+    assert main(["status", str(run)]) == 1
+    assert "corrupt marker" in capsys.readouterr().err
 
 
 # -- prompt brief inclusion --------------------------------------------------

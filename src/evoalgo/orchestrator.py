@@ -488,6 +488,12 @@ class Orchestrator:
 
         # Commit generation 1
         self.generation = 1
+        if not new_candidates and not self.stop_reason:
+            # Not one seed produced: the backend is unusable (missing binary
+            # or key, unreachable endpoint), so further generations cannot help.
+            self.stop_reason = "agent_unavailable"
+            logger.error("No agent call produced a candidate: %s",
+                         self.provider.last_error or "no error reported")
         self._check_stop_conditions()
         self._commit_generation()
 
@@ -813,6 +819,7 @@ class Orchestrator:
             "problem": self.config.problem,
             "generation": self.generation,
             "stop_reason": self.stop_reason,
+            "agent_error": self.provider.last_error if self.stop_reason == "agent_unavailable" else None,
             "best_fitness": best.fitness if best else 0.0,
             "best_candidate_id": best.id if best else None,
             "best_work_ratio": best.work_ratio if best else None,
