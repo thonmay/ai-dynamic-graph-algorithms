@@ -1,18 +1,15 @@
 # AI-assisted code: generated and revised with Claude Opus 5.5
 # under the author's direction; reviewed and tested by the author
 # (see the thesis section "Use of AI tools").
-"""Harness workspaces: one coding agent (Claude Code, Codex, opencode) runs the
-search loop itself, autoresearch-style, and evoalgo only grades and records.
+"""Harness workspaces: one coding agent runs the search loop itself and evoalgo
+only grades and records.
 
-``evoalgo init <pack> [dir]`` creates a run folder under ``runs/`` with
-``program.md`` (the agent's instructions), ``candidate.py`` (the one file the
-agent edits) and ``results.tsv``. ``evoalgo check`` grades candidate.py,
-stores a hashed snapshot under ``candidates/``, appends to ``results.tsv`` and writes
-the usual events, so the web UI shows the session like any other run (one
-check = one generation).
-
-The grades are visible to the agent; what counts for evaluation is
-``evoalgo check --final``, our independent re-grade of the kept candidate.
+``evoalgo init <pack> [dir]`` creates a run folder with ``program.md`` (the
+agent's instructions), ``candidate.py`` (the one file it edits) and
+``results.tsv``. ``evoalgo check`` grades candidate.py, stores a hashed
+snapshot, appends to results.tsv and writes the usual events (one check = one
+generation). What counts for evaluation is ``evoalgo check --final``, the
+independent re-grade of the kept candidate.
 """
 
 from __future__ import annotations

@@ -3,23 +3,11 @@
 # (see the thesis section "Use of AI tools").
 """Formalization runner: dispatch the lean-prover agent and verify its output.
 
-Takes a run directory and a candidate that passed bounded verification, invokes
-the lean-prover agent to produce an honest Lean proof of the candidate's
-maintained invariant, then verifies the artifact:
-  - `lake build` succeeds for the new module,
-  - the module contains no `axiom` / `sorry` / `admit` / `unsafe` outside
-    comments (text scan), and
-  - `lean` reports no "declaration uses `sorry`" warning.
-
-The outcome is written to <run_dir>/formalization/<candidate_id>.json so the
-pipeline records whether the bounded empirical claim was upgraded to a
-mathematical claim.
-
-Usage:
-  evoalgo formalize --run <run_dir> --candidate <candidate_id> [--model M]
-
-The candidate must be at <run_dir>/candidates/<candidate_id>.py and must have
-state PASS in the latest committed generation.
+For a candidate that passed bounded verification, the agent writes a Lean proof
+of the maintained invariant. The proof is accepted only if ``lake build``
+succeeds, the module has a theorem and no ``axiom``/``sorry``/``admit``/
+``unsafe`` outside comments, and Lean reports no ``sorry``. The outcome is
+written to <run_dir>/formalization/<candidate_id>.json.
 """
 
 from __future__ import annotations

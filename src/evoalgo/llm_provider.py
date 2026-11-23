@@ -3,16 +3,9 @@
 # (see the thesis section "Use of AI tools").
 """LLM provider: the orchestrator's single entry point to the agent layer.
 
-It builds the problem prompt (problem definition, pack brief, research goal,
-live researcher hint) and hands each role call to the configured backend
-(``evoalgo.agents``):
-
-  generate(problem, parent_code, candidate_filename, generation, workdir)
-  repair(problem, failed_code, reflection, candidate_filename, workdir)
-  reflect(problem, failed_code, failing_case, reflection_filename, workdir)
-
-Each returns the agent's final message, or None when no output file was
-produced. ``call_count`` counts model calls for the run budget.
+Builds the problem prompt (problem definition, pack brief, research goal, live
+researcher hint) and hands each role call (generate, repair, reflect) to the
+configured backend. ``call_count`` counts model calls for the run budget.
 """
 
 from __future__ import annotations

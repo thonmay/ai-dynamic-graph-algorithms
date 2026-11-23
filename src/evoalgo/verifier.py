@@ -3,15 +3,10 @@
 # (see the thesis section "Use of AI tools").
 """Verifier: test candidates against invariants.
 
-The Verifier runs each candidate through the bounded test universe:
-  1. For each base graph in the test set
-  2. Generate operation sequences (insert/delete)
-  3. Execute candidate in sandbox (init + replay operations)
-  4. After each operation, check the invariant against the oracle
-  5. Record pass/fail, failing case, work counts
-
-Fitness is the fraction of sequences passing; work_ratio is
-candidate_work / offline_work.
+Each candidate runs in the sandbox on every base graph of the bounded universe
+and every operation sequence; after each update its state is checked against
+the problem's invariant. Fitness is the fraction of sequences passing;
+work_ratio is candidate_work / offline_work.
 """
 
 from __future__ import annotations
@@ -34,16 +29,9 @@ from .graph_generator import (
 from .problem_definitions import ProblemDefinition
 from .sandbox import Sandbox
 
-# Default number of base graphs per sandbox subprocess. A chunk must finish
-# within the per-chunk timeout for a correct candidate, while a candidate that
-# loops forever on one case hits the timeout and fails fast. 2000 base graphs
-# is ~10-15 s for the slowest correct candidates (recompute-always BFS,
-# validate-or-rebuild DFS) at n<=5, well under a 30-60 s per-chunk timeout.
-#
-# When chunks are evaluated in parallel (workers > 1) the default chunk size is
-# halved (1000) so the work is split across more, smaller chunks: this balances
-# load across workers and keeps each chunk's wall time (and therefore its
-# per-chunk timeout) small, so a candidate that loops forever still fails fast.
+# Base graphs per sandbox subprocess. 2000 takes ~10-15 s for the slowest
+# correct candidates at n <= 5, well under a 30-60 s per-chunk timeout, while an
+# infinite loop fails fast. Parallel runs use smaller chunks to balance load.
 DEFAULT_CHUNK_SIZE = 2000
 DEFAULT_PARALLEL_CHUNK_SIZE = 1000
 
@@ -62,18 +50,12 @@ def _exhaustive_flip_sequences(
     directed: bool,
     include_twins: bool = False,
 ) -> list[list[tuple[str, tuple[int, int]]]]:
-    """Deterministic short update sequences covering the update space.
+    """Deterministic short update sequences: every legal single-edge flip.
 
-    Always returns all legal single-edge flips (each as a length-1 sequence):
-    this is "every possible edge operation" on the base graph. When
-    ``include_twins`` is True it additionally returns a compact set of length-2
-    paths (flip one edge, then flip each other edge).
-
-    The twins are O(n^4) per graph (380 at n=5) and are kept only for the small
-    labeled comparison universe, where they close the coverage hole left by
-    random sequences. For the nauty (non-isomorphic) universe the singles alone
-    already give exhaustive single-edge coverage, and the twins would make the
-    n=5 universe prohibitively expensive, so they default to off.
+    With ``include_twins`` also every length-2 path (flip one edge, then each
+    other edge). Twins are O(n^4) per graph and used only on the small labelled
+    comparison universe; on the nauty universe the singles already cover every
+    single-edge flip.
     """
     pairs = [(u, v) for u in range(n) for v in range(n) if u != v and (directed or u < v)]
     single: list[list[tuple[str, tuple[int, int]]]] = []
@@ -145,8 +127,6 @@ class Verifier:
     ):
         self.problem = problem
         self.sandbox = sandbox
-        # update_mode restricts which edge operations the test sequences use:
-        # "mixed" (default, unchanged behaviour), "insert_only", "delete_only".
         if update_mode not in ("mixed", "insert_only", "delete_only"):
             raise ValueError(
                 f"update_mode must be 'mixed', 'insert_only', or 'delete_only', "
@@ -159,14 +139,8 @@ class Verifier:
         self.seq_count = bound_seq_count
         self.seed = bound_seed
         self.exhaustive_flip_n_max = exhaustive_flip_n_max
-        # Worker count for parallel chunk evaluation. workers=None -> a modest
-        # default (min(8, cpu)); workers=1 reproduces the original serial path
-        # exactly.
+        # workers=1 runs the serial path.
         self.workers = _default_workers() if workers is None else max(1, workers)
-        # Chunk size: an explicit value is honored verbatim. None auto-tunes --
-        # the serial default (2000) for workers=1, or smaller chunks
-        # (DEFAULT_PARALLEL_CHUNK_SIZE) when parallelizing, so load balances
-        # across workers and the per-chunk timeout stays tight.
         if chunk_size is not None:
             self.chunk_size = chunk_size
         elif self.workers > 1:
@@ -238,14 +212,9 @@ class Verifier:
         seqs: list[list[tuple[str, tuple[int, int]]]],
         graph: np.ndarray,
     ) -> list[list[tuple[str, tuple[int, int]]]]:
-        """Restrict sequences to the configured ``update_mode``.
+        """Keep only the ops ``update_mode`` allows, still legal on the evolving graph.
 
-        "mixed" (the default) returns them unchanged. For "insert_only" /
-        "delete_only" each sequence is replayed on a copy of the base graph and
-        only the legal ops of the allowed type are kept, so the result is a
-        sequence that is still legal on the evolving graph. This is what lets a
-        pack declare a semi-dynamic (incremental or decremental-only) problem
-        without touching the sequence generators.
+        This lets a pack declare an incremental or decremental-only problem.
         """
         if self.update_mode == "mixed":
             return seqs
@@ -274,34 +243,17 @@ class Verifier:
         return filtered
 
     def _offline_src(self) -> str:
-        """Return the offline baseline source for the sandbox subprocess.
-
-        Uses the problem's offline_source property which provides a
-        self-contained function named offline_compute(graph, root).
-        """
         return self.problem.offline_source
 
     def verify(self, candidate: Candidate) -> VerifyResult:
         """Run a candidate through the full test universe.
 
-        The test universe is split into chunks of ``chunk_size`` base graphs,
-        each executed in its own sandbox subprocess with its own wall-clock
-        timeout. This keeps a correct candidate's per-chunk run well under the
-        timeout (so the whole n<=5 universe passes), while a candidate that
-        loops forever on one case still hits the per-chunk timeout and fails
-        fast.
-
-        Chunks are evaluated in parallel (``workers`` process pool) when
-        ``workers > 1``. Each worker is trusted code: it runs the sandbox
-        subprocess for its chunk (the candidate stays isolated in its own
-        subprocess, so the trust boundary is unchanged) and checks that
-        chunk's invariants, returning a compact partial result. The parent
-        merges the partials deterministically in chunk order, stopping at the
-        first failing chunk: totals are the sum over all chunks before the
-        first failing chunk plus that chunk's partial, and ``failing_case`` is
-        the first failure. Chunks after a known earlier failure are ignored.
-        ``workers == 1`` runs the exact serial path (one chunk at a time in
-        the parent), so the result is identical to the original implementation.
+        The universe is split into chunks of ``chunk_size`` base graphs, each in its
+        own sandbox subprocess with its own timeout, so a correct candidate finishes
+        each chunk well within it while an infinite loop fails fast. With
+        ``workers > 1`` chunks run in a process pool; the candidate stays in its own
+        subprocess, so the trust boundary is unchanged. Partials are merged in chunk
+        order up to the first failure, so the result equals the serial path.
         """
         candidate.transition(CandidateState.TESTING)
 
@@ -490,10 +442,8 @@ class Verifier:
 
 
 # ---------------------------------------------------------------------------
-# Per-chunk evaluation. Shared by the serial path (run in the parent) and the
-# parallel path (run in a worker process). The logic is the original serial
-# per-chunk loop, refactored so both paths produce byte-identical partial
-# results and therefore an identical merged VerifyResult.
+# Per-chunk evaluation, shared by the serial path (in the parent) and the
+# parallel path (in a worker), so both give identical partial results.
 # ---------------------------------------------------------------------------
 
 def _worker_sandbox(ctx: dict[str, Any]) -> Sandbox:
@@ -655,7 +605,6 @@ def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
             seq_ops = chunk_cases[local_g_idx]["sequences"][seq_idx]
             current_graph = original_graph.copy()
 
-            # Check init state.
             state = _deserialize_state(results[0]["state"])
             if not _invariant_holds(problem, state, current_graph, root):
                 failing_case = _failing_context(problem, state, current_graph, root)
@@ -669,7 +618,6 @@ def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
             if offline_times:
                 offline_work += offline_times[0]
 
-            # Check after each operation.
             found = False
             for step_idx, op in enumerate(seq_ops):
                 op_type = op["type"]

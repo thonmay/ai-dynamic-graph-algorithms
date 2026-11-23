@@ -1,12 +1,7 @@
 # AI-assisted code: generated and revised with GLM-5.2
 # under the author's direction; reviewed and tested by the author
 # (see the thesis section "Use of AI tools").
-"""Dashboard: static HTML generation from run data.
-
-Emits a self-contained HTML file with embedded JSON data and client-side
-JavaScript for: overview, generation replay slider, candidate detail,
-failure reflections, and config view.
-"""
+"""Dashboard: a self-contained static HTML snapshot of a run."""
 
 from __future__ import annotations
 
@@ -34,17 +29,7 @@ class Dashboard:
         generations_data: list[dict[str, Any]],
         run_id: str,
     ) -> Path:
-        """Render a dashboard HTML file for the given generation.
-
-        Args:
-            generation: current generation number
-            config: run config dict
-            generations_data: list of generation state dicts (all committed)
-            run_id: the run identifier
-
-        Returns:
-            Path to the written HTML file
-        """
+        """Write the dashboard HTML for ``generation`` and return its path."""
         html = self._build_html(generation, config, generations_data, run_id)
         path = self.dashboard_dir / f"gen{generation:04d}.html"
         path.write_text(html)
@@ -58,7 +43,6 @@ class Dashboard:
         generations_data: list[dict[str, Any]],
         run_id: str,
     ) -> str:
-        # Prepare summary data
         all_candidates = []
         fitness_history = []
 

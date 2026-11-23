@@ -1,11 +1,7 @@
 # AI-assisted code: generated and revised with Claude Opus 5.5
 # under the author's direction; reviewed and tested by the author
 # (see the thesis section "Use of AI tools").
-"""Role prompts (markdown files next to this module) and per-call task text.
-
-The prompts are harness-neutral; the same text is used by the built-in api
-backend and exported for coding-agent harnesses (see evoalgo.export).
-"""
+"""Role prompts (markdown files next to this module) and per-call task text."""
 
 from __future__ import annotations
 

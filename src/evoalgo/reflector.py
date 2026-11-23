@@ -1,11 +1,7 @@
 # AI-assisted code: generated and revised with GLM-5.2
 # under the author's direction; reviewed and tested by the author
 # (see the thesis section "Use of AI tools").
-"""Reflector: wraps the LLM reflector agent.
-
-The reflector reads a failed candidate and its failing case, invokes
-the reflector agent, and stores the structured reflection.
-"""
+"""Reflector: asks the reflector agent for a structured reflection on a failed candidate."""
 
 from __future__ import annotations
 
@@ -41,7 +37,6 @@ class Reflector:
         reflections_dir = run_dir / "reflections"
         reflections_dir.mkdir(parents=True, exist_ok=True)
 
-        # Read the candidate's source code
         code_path = Path(candidate.code_path)
         if not code_path.is_absolute():
             code_path = run_dir / candidate.code_path
@@ -52,7 +47,6 @@ class Reflector:
             logger.error("Cannot read candidate code for reflection: %s", e)
             return None
 
-        # Build failing case info
         failing_case: dict[str, Any] = candidate.failing_case or {
             "error": candidate.error_message or "Unknown failure",
         }

@@ -3,14 +3,10 @@
 # (see the thesis section "Use of AI tools").
 """The ``api`` backend: a small agent loop over any OpenAI-compatible endpoint.
 
-The model only ever returns text or tool calls; this loop executes the calls
-through ``Toolbox`` (path-confined, see tools.py), feeds the results back and
-stops when the model answers without a tool call or a limit is hit.
-
-Works with OpenRouter, OpenAI, vLLM, llama.cpp or Ollama: anything
-that speaks ``/chat/completions`` with ``tools``. Connection settings come from
-the run config (``api_base_url``, ``api_key_env``, ``api_ca_cert``,
-``model``); the key itself is read from the environment, never stored.
+The model only returns text or tool calls; this loop executes the calls through
+``Toolbox`` (path-confined, see tools.py) and stops when the model answers
+without a tool call or a limit is hit. The key is read from the environment,
+never stored.
 """
 
 from __future__ import annotations

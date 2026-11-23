@@ -3,14 +3,8 @@
 # (see the thesis section "Use of AI tools").
 """Atomic checkpoint persistence for generation state.
 
-Implements the Checkpoint class from the design doc:
-  commit(generation)   - atomic temp-write + rename + COMMITTED marker
-  load_latest(run_dir) - read last committed generation
-  checksum(path)       - SHA-256 verification
-
-Generation file schema (schema_version 2):
-  schema_version, run_id, generation, timestamp, problem, bound, config_ref,
-  candidates[], checksum
+``commit`` writes generation_NNNN.json (temp file + rename) and then the
+COMMITTED marker; loading verifies the schema version and SHA-256 checksum.
 """
 
 from __future__ import annotations
@@ -93,7 +87,6 @@ class Checkpoint:
         tmp.write_text(content)
         os.replace(tmp, target)  # atomic on POSIX
 
-        # Update COMMITTED marker
         committed_path = self.run_dir / "COMMITTED"
         committed_path.write_text(str(generation))
 
@@ -129,7 +122,6 @@ class Checkpoint:
         except json.JSONDecodeError as e:
             raise ValueError(f"{path.name} is not valid JSON: {e}") from None
 
-        # Check schema version
         sv = data.get("schema_version", 0)
         if sv != SCHEMA_VERSION:
             raise ValueError(
@@ -137,7 +129,6 @@ class Checkpoint:
                 f"(expected {SCHEMA_VERSION})"
             )
 
-        # Verify checksum
         stored_checksum = data.pop("checksum", None)
         if stored_checksum is None:
             raise ValueError(f"Missing checksum in {path.name}")

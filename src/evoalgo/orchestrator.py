@@ -3,19 +3,10 @@
 # (see the thesis section "Use of AI tools").
 """Orchestrator: composition root and evolutionary loop driver.
 
-The Orchestrator owns the evolutionary loop:
-  1. Select parents (elitism + fitness-proportional)
-  2. Generate offspring (LLM provider -> generator agent)
-  3. Verify candidates (sandbox + verifier)
-  4. Reflect on failures (LLM provider -> reflector agent)
-  5. Score (evaluator: fitness, work_ratio)
-  6. Select and commit (population cull + checkpoint)
-
-Stop conditions:
-  - Any candidate reaches fitness 1.0 (success)
-  - Max generations reached
-  - Max consecutive all-failed generations
-  - Model call budget exhausted
+Each generation selects parents, generates or repairs offspring, verifies them,
+reflects on failures, culls the population and commits a checkpoint, until a
+stop condition holds (success, generation limit, repeated all-failed
+generations, call budget, user stop, or an unusable agent backend).
 """
 
 from __future__ import annotations
@@ -61,7 +52,6 @@ class Orchestrator:
         self.run_id = run_id or self._generate_run_id()
         self.run_dir = Path(config.workdir).resolve() / self.run_id
 
-        # Validate config
         errors = config.validate()
         if errors:
             raise ValueError(f"Invalid config: {'; '.join(errors)}")
@@ -113,7 +103,6 @@ class Orchestrator:
         self.stop_reason: str | None = None
         self.fitness_history: list[float] = []
 
-        # Save config
         self.run_dir.mkdir(parents=True, exist_ok=True)
         config.save(self.run_dir / "config.yaml")
 
@@ -142,7 +131,6 @@ class Orchestrator:
             self._remove_engine_file()
 
     def _run(self) -> dict[str, Any]:
-        # Try to resume from checkpoint
         loaded = self._try_resume()
         self._seed_selection(self.generation)
         # A hint set before a resume stays in effect.
@@ -171,7 +159,6 @@ class Orchestrator:
 
             self.step_generation()
 
-        # Final export
         self._final_grade()
         summary = self._export_summary()
         self._maybe_formalize(summary)
@@ -440,7 +427,6 @@ class Orchestrator:
             if not self._before_call(1, "seed", candidate_id):
                 break
 
-            # Call generator with no parent
             with self._agent_call(1, "seed", candidate_id, self.config.generator_agent,
                                   code_path.exists):
                 self.provider.generate(
@@ -465,7 +451,6 @@ class Orchestrator:
                 logger.warning("Generator did not produce %s", code_path)
                 self.events.emit("agent_failed", gen=1, id=candidate_id, role="seed")
 
-        # Verify all new candidates
         for candidate in new_candidates:
             self.verifier.verify(candidate)
             self._emit_verified(candidate)
@@ -482,11 +467,9 @@ class Orchestrator:
                     break
                 self._reflect(candidate, self.generation + 1)
 
-        # Add to population
         for candidate in new_candidates:
             self.population.add(candidate)
 
-        # Commit generation 1
         self.generation = 1
         if not new_candidates and not self.stop_reason:
             # Not one seed produced: the backend is unusable (missing binary
@@ -534,14 +517,12 @@ class Orchestrator:
             candidate_id = f"gen{gen:03d}_c{i + 1:02d}"
             code_filename = f"{candidate_id}.py"
 
-            # Read parent code
             parent_code_path = Path(parent.code_path)
             try:
                 parent_code = parent_code_path.read_text()
             except Exception:
                 parent_code = ""
 
-            # Read reflection
             reflection_text = ""
             if parent.reflection_path:
                 refl_path = Path(parent.reflection_path)
@@ -673,7 +654,6 @@ class Orchestrator:
             self._agent_boundary()
             return
 
-        # Verify all new candidates
         for candidate in new_candidates:
             self.verifier.verify(candidate)
             self._emit_verified(candidate)
@@ -690,11 +670,9 @@ class Orchestrator:
                     break
                 self._reflect(candidate, gen)
 
-        # Add to population
         for candidate in new_candidates:
             self.population.add(candidate)
 
-        # Cull
         discarded = self.population.cull()
         if discarded:
             logger.info("Discarded %d candidates", len(discarded))
@@ -708,7 +686,6 @@ class Orchestrator:
         self._commit_generation()
         self._agent_boundary()
 
-        # Dashboard
         if gen % self.config.dashboard_interval == 0:
             self._emit_dashboard()
 
@@ -770,7 +747,6 @@ class Orchestrator:
             logger.info("SUCCESS: candidate reached fitness 1.0 at generation %d", self.generation)
             return
 
-        # Stop on max generations
         if self.generation >= self.config.max_generations:
             self.stop_reason = "max_generations"
             logger.info("Max generations reached (%d)", self.config.max_generations)
@@ -787,7 +763,6 @@ class Orchestrator:
         else:
             self.consecutive_all_failed = 0
 
-        # Stop on model call budget
         if self.model_calls >= self.config.model_call_budget:
             self.stop_reason = "model_call_budget_exhausted"
             logger.warning("Model call budget exhausted (%d)", self.model_calls)
@@ -811,7 +786,6 @@ class Orchestrator:
         """Export final run summary."""
         best = self.population.best_candidate
 
-        # Emit final dashboard
         self._emit_dashboard()
 
         summary = {
@@ -832,7 +806,6 @@ class Orchestrator:
             "config": self.config.to_dict(),
         }
 
-        # Write summary
         results_dir = self.run_dir / "results"
         results_dir.mkdir(exist_ok=True)
         import json
@@ -840,7 +813,6 @@ class Orchestrator:
             json.dumps(summary, indent=2, ensure_ascii=False)
         )
 
-        # Efficiency report CSV
         csv_lines = ["candidate_id,generation,fitness,work_ratio,state,timeout,tests_passed,tests_total"]
         for gen_num in range(1, self.generation + 1):
             gen_data = self.checkpoint.load_generation(gen_num)

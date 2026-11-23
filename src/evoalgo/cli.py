@@ -1,17 +1,7 @@
 # AI-assisted code: generated and revised with Qwen3.8-Flash-Next, GLM-5.2, Claude Opus 5.5, DeepSeek-V4-Flash and Qwen3.8-27B
 # under the author's direction; reviewed and tested by the author
 # (see the thesis section "Use of AI tools").
-"""CLI: argument parsing and command dispatch.
-
-Commands:
-  evoalgo run configure   - set and validate run parameters
-  evoalgo run start       - begin the evolutionary loop
-  evoalgo run status      - show current generation, best fitness
-  evoalgo run resume      - reload last committed generation and continue
-  evoalgo run export      - save results as report
-  evoalgo run history     - list previous runs with summaries
-  evoalgo verify          - run verifier self-test (FR-VER-08)
-"""
+"""CLI: argument parsing and command dispatch."""
 
 from __future__ import annotations
 
@@ -45,7 +35,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # run configure
     p_configure = subparsers.add_parser("configure", help="set and validate run parameters")
     p_configure.add_argument("--problem", choices=sorted(VALID_PROBLEMS), default="dynamic_mcs")
     p_configure.add_argument("--model", default=None, help="model id (null = provider default)")
@@ -62,26 +51,21 @@ def main(argv: list[str] | None = None) -> int:
                              help="keep evolving past fitness 1.0 instead of stopping on first success")
     p_configure.add_argument("--output", "-o", default="config.yaml", help="output config file")
 
-    # run start
     p_start = subparsers.add_parser("start", help="begin the evolutionary loop")
     p_start.add_argument("config", help="path to config.yaml")
     p_start.add_argument("--run-id", default=None, help="run identifier (auto-generated if omitted)")
     p_start.add_argument("--model", default=None, help="override model id (e.g. openrouter/qwen/qwen3-coder)")
 
-    # run status
     p_status = subparsers.add_parser("status", help="show current run status")
     p_status.add_argument("run_dir", help="path to run directory")
     p_status.add_argument("--json", action="store_true", help="machine-readable summary")
 
-    # run resume
     p_resume = subparsers.add_parser("resume", help="resume from last checkpoint")
     p_resume.add_argument("run_dir", help="path to run directory")
 
-    # run export
     p_export = subparsers.add_parser("export", help="export run results")
     p_export.add_argument("run_dir", help="path to run directory")
 
-    # run history
     p_history = subparsers.add_parser("history", help="list previous runs")
     p_history.add_argument("--workdir", default="runs", help="run directory root")
     p_history.add_argument("--json", action="store_true", help="machine-readable list")
@@ -508,7 +492,6 @@ def cmd_resume(args) -> int:
     except (OSError, ValueError) as e:
         raise RunReadError(f"cannot resume {run_dir}: {e}") from None
 
-    # Discard any incomplete generations
     removed = orch.checkpoint.discard_incomplete()
     if removed:
         print(f"Discarded incomplete generations: {removed}")
@@ -554,7 +537,6 @@ def cmd_export(args) -> int:
     )
     best = ranked[0] if ranked else None
 
-    # Write summary
     summary = {
         "run_id": run_dir.name,
         "total_generations": gen_num,
@@ -570,7 +552,6 @@ def cmd_export(args) -> int:
         json.dumps(summary, indent=2, ensure_ascii=False)
     )
 
-    # CSV
     csv_lines = ["candidate_id,generation,fitness,work_ratio,state,timeout,tests_passed,tests_total"]
     for c in all_candidates:
         csv_lines.append(
@@ -644,7 +625,7 @@ def cmd_history(args) -> int:
 
 
 def cmd_verify(args) -> int:
-    """Run the verifier self-test (FR-VER-08) for a problem with a fault corpus.
+    """Run the verifier self-test for a problem with a fault corpus.
 
     The known-good reference and every equivalent control must PASS, and every
     seeded fault must be rejected (FAIL or CRASH). Exit code 0 only if all hold.
@@ -750,7 +731,6 @@ def _cmd_verify_corpus(problem, n_max: int, args, tmpdir: Path) -> int:
     for ctrl in equivalent_controls(problem.name):
         record(f"control_{ctrl['id']}", "control", compose_fault_code(problem.name, ctrl), "PASS")
 
-    # Summary table
     print("\n  Summary:")
     print(f"  {'candidate':<24} {'kind':<10} {'state':<6} {'wall(s)':>8}  expected")
     print("  " + "-" * 64)

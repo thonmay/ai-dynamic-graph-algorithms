@@ -3,25 +3,15 @@
 # (see the thesis section "Use of AI tools").
 """Dynamic agent generation: spawn a specialist agent when the search plateaus.
 
-A plateau is declared at a generation boundary when, over the last
-``plateau_window`` generations, the population best improved neither its
-fitness by ``plateau_epsilon`` nor its work ratio by ``plateau_epsilon``
-(relative). Correctness plateaus and efficiency plateaus both count: on
-the calibration problems fitness reaches 1.0 within a few generations, so
-in practice the search stalls on cost, not on correctness.
-
-On a plateau a specialist is spawned. It is the generator role with an
-extra focus section in its task, written from the dominant signature of
-the window: the update kind most failures hit (correctness), or the best
-candidate's work ratio (efficiency). Each generation it derives one extra
-candidate from the population best. At most ``agent_budget`` specialists
-are active at once; one is retired after ``specialist_generations``
-generations, or after ``plateau_window`` generations without producing a
-new population best.
-
-All state is derived from the run's event log (``agent_spawned``,
-``agent_retired``, specialist ``candidate_generated``, ``gen_committed``),
-so a resumed run continues with the same specialists.
+A plateau: over the last ``plateau_window`` generations the population best
+improved neither its fitness nor its work ratio (relative) by
+``plateau_epsilon``. The specialist is the generator role with a focus written
+from the window's dominant signature (the update kind most failures hit, or
+the best work ratio) and derives one candidate per generation from the best.
+At most ``agent_budget`` are active; one retires after
+``specialist_generations`` generations or ``plateau_window`` generations
+without a new best. All state is derived from the event log, so a resumed run
+keeps its specialists.
 """
 
 from __future__ import annotations

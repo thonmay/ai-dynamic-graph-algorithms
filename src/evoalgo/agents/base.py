@@ -61,7 +61,7 @@ class Backend(Protocol):
 
 
 class CallLog:
-    """Writes one JSON file per call (FR-AGENT-05)."""
+    """Writes one JSON file per call."""
 
     def __init__(self, run_dir: Path):
         self.dir = Path(run_dir) / "prompt_logs"

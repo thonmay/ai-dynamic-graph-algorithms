@@ -3,15 +3,9 @@
 # (see the thesis section "Use of AI tools").
 """Problem definitions: invariants, oracles, and offline algorithms.
 
-Each problem owns:
-  - check_invariant(state, graph, root_or_source) -> bool
-  - extract_result(state) -> the maintained result (tree, ordering, partition, set)
-  - offline_compute(graph, root_or_source) -> the reference result
-  - baseline_work(graph) -> int (work for offline recomputation)
-
-The candidate's state contains the maintained result. The verifier calls
-the candidate's init/insert_edge/delete_edge, then asks the problem definition
-to check the invariant on the current state.
+Each problem checks a candidate's maintained state against the current graph
+(``check_invariant``) and provides the offline reference (``offline_compute``)
+that defines the semantics and the efficiency baseline.
 """
 
 from __future__ import annotations
@@ -66,12 +60,10 @@ class ProblemDefinition(ABC):
 
     @property
     def offline_source(self) -> str:
-        """Return standalone source code for the offline algorithm.
+        """Standalone source of ``offline_compute(graph, root)``, exec'd in the sandbox.
 
-        This is exec'd in the sandbox subprocess to time the offline
-        baseline alongside the candidate. Must be a self-contained
-        function named offline_compute(graph, root) with no `self` refs.
-        Subclasses override this to provide the source.
+        It times the offline baseline next to the candidate, so it must be
+        self-contained (no ``self``).
         """
         return ""
 
@@ -193,8 +185,7 @@ def offline_compute(graph, root):
         #     {"parent": {...}, "distances": {...}} (see the offline oracle and
         #     the skill's invariant spec), so a candidate that keeps a valid
         #     parent tree but corrupts its distance field is still wrong and
-        #     must be rejected. Previously only `parent` was certified, so a
-        #     distances-only fault (e.g. dist[v] = dist[u] + 2) slipped through.
+        #     must be rejected (e.g. dist[v] = dist[u] + 2).
         cand_dist = self._extract_distances(state)
         if cand_dist is not None:
             for v in range(n):
@@ -274,7 +265,6 @@ def offline_compute(graph, root):
 
     def _tree_reachable(self, parent: dict, root: int, n: int) -> set[int]:
         reachable = {root}
-        # Build children map
         children: dict[int, list[int]] = {}
         for v, p in parent.items():
             if p is not None and p != v:
@@ -355,7 +345,6 @@ def offline_compute(graph, root):
         if parent is None or discover is None or finish is None:
             return False
 
-        # Normalize to dicts
         parent = self._normalize_dict(parent, graph.shape[0])
         discover = self._normalize_dict(discover, graph.shape[0])
         finish = self._normalize_dict(finish, graph.shape[0])

@@ -3,10 +3,8 @@
 # (see the thesis section "Use of AI tools").
 """Candidate state machine and serialization.
 
-Implements the single state machine from the design doc:
-  NEW -> TESTING -> {PASS, FAIL, CRASH} -> DISCARDED
-
-timeout maps to FAIL with a timeout flag. Crash maps to CRASH.
+NEW -> TESTING -> {PASS, FAIL, CRASH} -> DISCARDED; a timeout is a FAIL with
+the timeout flag set.
 """
 
 from __future__ import annotations

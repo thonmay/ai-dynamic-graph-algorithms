@@ -3,30 +3,18 @@
 # (see the thesis section "Use of AI tools").
 """Sandbox: isolated execution of candidate code.
 
-Executes candidate algorithms in a subprocess with:
-  - wall-clock timeout
-  - a Linux namespace jail (see _jail_argv): no network, its own pid
-    namespace, a read-only file tree holding only the interpreter and its
-    import paths, so no home directory, token files or /proc/<pid>/environ
-    of the verifier
-  - resource limits (address space, CPU time, process count) and capped
-    stdout/stderr, so a candidate cannot exhaust the host (see _limits)
-  - a scrubbed environment and an isolated interpreter (-I)
-  - structured result output (JSON over stdout)
+Candidate code is untrusted (LLM-written). It runs in a subprocess inside a
+Linux namespace jail (see _jail_argv): no network, its own pid namespace, and a
+read-only file tree holding only the interpreter and its import paths, so it
+cannot reach the user's files, credentials, or the verifier's environment.
+Resource limits (address space, CPU time, processes; see _limits), capped
+stdout/stderr and a wall-clock timeout keep it from exhausting the host. It
+sees only adjacency matrices and edge tuples, never the verifier, test graphs
+or oracle. Where the jail is unavailable the sandbox refuses to run unless
+EVOALGO_SANDBOX=none is set.
 
-The candidate source is sent in the input; its init/insert_edge/delete_edge
-are called in the subprocess.
-
-Trust boundary: candidate code is untrusted (LLM-written). It never sees the
-verifier, test graphs or oracle, only adjacency matrices and edge tuples, and
-it cannot reach the user's files, credentials or the network. Where the jail
-is unavailable (not Linux, user namespaces disabled) the sandbox refuses to
-run unless EVOALGO_SANDBOX=none is set.
-
-Batched execution: all test cases for a candidate are sent to a single
-subprocess. This avoids paying ~160ms Python startup cost per test case,
-which makes the system unworkable at n>=4 where exhaustive digraph
-enumeration produces thousands of graphs.
+All test cases of a chunk go to one subprocess, which avoids ~160 ms of Python
+start-up per case (thousands of graphs at n >= 4).
 """
 
 from __future__ import annotations
@@ -555,24 +543,14 @@ class Sandbox:
         repeat: int = 20,
         timeout: int | None = None,
     ) -> SandboxResult:
-        """Run a candidate against all test cases in a single subprocess.
+        """Run a candidate on all test cases in one subprocess.
 
-        Args:
-            module_path: path to the candidate .py file
-            test_cases: list of {graph: list[list[int]], sequences: list[list[dict]]}
-                        where each sequence is a list of {type: insert|delete, edge: [u, v]}
-            offline_src: source of the offline_compute baseline function
-            root: root/source vertex for problems that need one
-            repeat: REPEAT amplification for timing (fewer for large test sets)
-            timeout: per-call wall-clock seconds. Defaults to ``self.timeout``.
-                The verifier passes a per-chunk timeout so a candidate that
-                loops forever on one chunk still fails fast, while the whole
-                batch is split across several subprocesses.
-
-        Returns:
-            SandboxResult with all_results: list[per_graph: list[per_seq: dict]]
-            Each per-seq dict has: status, results, timings, offline_timings
-            (or status=crash with error/traceback + partial results)
+        ``test_cases`` is a list of {graph, sequences}, each sequence a list of
+        {type: insert|delete, edge: [u, v]}. ``repeat`` amplifies the timing;
+        ``timeout`` (default ``self.timeout``) is per call, so the verifier can give
+        each chunk its own limit. The result's ``all_results`` holds, per graph and
+        sequence, a dict with status, results, timings and offline_timings (or a crash
+        with error, traceback and partial results).
         """
         module_path = Path(module_path)
         call_timeout = self.timeout if timeout is None else timeout

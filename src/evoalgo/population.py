@@ -82,14 +82,9 @@ class Population:
         return any(c.is_passing for c in self.candidates)
 
     def select_parents(self, count: int = 1) -> list[Candidate | None]:
-        """Select parents for offspring generation.
+        """Select one parent per call by tournament (k=3) among viable candidates.
 
-        Strategy:
-        1. If no viable candidates, return [None] (fresh generation)
-        2. Tournament selection: pick k=3 random viable candidates,
-           return the fittest. This preserves selection pressure while
-           ensuring different parents can be selected across repeated
-           calls (the orchestrator calls this once per offspring).
+        Returns [None] when no candidate is viable, which asks for a fresh one.
         """
         if not self.candidates:
             return [None] * count
@@ -122,13 +117,9 @@ class Population:
         return [c for c in self.candidates if c.is_repairable]
 
     def compute_diversity(self) -> float:
-        """Compute pairwise diversity of the population.
+        """Fraction of candidates with distinct (fitness, failing-case) pairs, in [0, 1].
 
-        Returns a value in [0, 1] where 1 means maximum diversity.
-        Low diversity (high similarity) triggers the diversity injection.
-
-        We use a simple metric: fraction of candidates with distinct
-        (fitness, failing_case_signature) pairs.
+        Low diversity triggers the diversity injection.
         """
         if len(self.candidates) <= 1:
             return 1.0
@@ -175,7 +166,6 @@ class Population:
 
         for c in rest:
             if len(elite) + len(kept_rest) >= self.max_size:
-                # Discard the rest
                 c.transition(CandidateState.DISCARDED)
                 discarded.append(c)
                 continue

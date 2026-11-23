@@ -4,23 +4,11 @@
 # (see the thesis section "Use of AI tools").
 """High-n cross-check for the proven dynamic-MCS candidate.
 
-The search's bounded verifier only tests graphs of size n=2..5
-(verifier.py bound_n_max=5). The Lean proof covers all n but proves the
-Lean *encoding*, not that the encoding equals this Python candidate.
-
-This script closes that gap empirically: it runs the ACTUAL candidate
-module on large random graphs (n up to --nmax, default 200), and after
-every edge flip independently checks two things:
-
-  1. VALID: the candidate's ordering is a legal MCS ordering of the
-     current graph (each pick has maximal chosen-neighbor count). This
-     re-derives cardinalities from the graph, independent of the
-     candidate's own logic.
-  2. EXACT: the ordering equals a from-scratch offline MCS (deterministic
-     tie-break by lowest id). This catches any drift between the dynamic
-     update and the formalization's assumption of the greedy rule.
-
-A single failure prints the counterexample and exits non-zero.
+The verifier tests n <= 5 and the Lean proof covers its encoding, not this
+Python file. This runs the actual candidate on large random graphs and after
+every edge flip checks that its ordering is (1) a valid MCS ordering and (2)
+equal to the offline MCS with lowest-id tie-break. Exits non-zero on the first
+failure.
 """
 
 from __future__ import annotations

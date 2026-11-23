@@ -3,37 +3,19 @@
 # (see the thesis section "Use of AI tools").
 """Known-good reference candidates for the verifier self-test.
 
-Two honest references per corpus problem (BFS, DFS, LBFS), each a self-contained
-candidate module (``init`` / ``insert_edge`` / ``delete_edge``) that the
-sandbox can exec:
+Per corpus problem (BFS, DFS, LBFS) there are two self-contained candidates:
 
-- **known-good** -- a *validate-or-rebuild* dynamic algorithm. On each update
-  it checks whether the maintained certificate stays valid; if not, it rebuilds
-  from scratch (offline BFS/DFS). For DFS the validity decision is informed by
-  Yang et al. Lemma 1 (a search spanning tree is a DFS tree iff it has no
-  forward-cross edge): a forward-cross insert or a tree-edge delete forces a
-  rebuild, everything else is kept. This is genuinely dynamic (recompute rate
-  ~40% over the small universe, well below the recompute-always baseline), not
-  a recompute-always wrapper. It is labelled "Yang Lemma-1 informed
-  validate-or-rebuild", NOT "Yang's algorithm" -- Yang's contribution is the
-  Lemma-1 characterization plus the interval machinery that makes the *check*
-  cheap; this reference uses that characterization for the keep/rebuild
-  decision but falls back to a full rebuild instead of Yang's ConstrainedDFS
-  partial repair.
-- **control** -- an *equivalent* valid variant: the same validate-or-rebuild
-  structure but with a different tie-break (descending neighbour order in the
-  offline BFS/DFS rebuild; for LBFS the highest start vertex and maximum-id
-  ties). It produces a different (but valid) output than the known-good. The
-  verifier must accept it -- this proves the checker is invariant-based and
-  not biased to one tie-break.
+- **known-good**: validate-or-rebuild. Each update checks whether the
+  maintained certificate is still valid and rebuilds from scratch if not. For
+  DFS the check uses Yang et al. Lemma 1 (a search tree is a DFS tree iff it
+  has no forward-cross edge); it is "Lemma-1 informed validate-or-rebuild",
+  not Yang's partial repair. For LBFS the check is the (LB) property.
+- **control**: the same structure with a different tie-break (descending
+  neighbour order; for LBFS the highest start and maximum-id ties). It gives
+  a different valid output, which the verifier must accept.
 
-The LBFS reference keeps the ordering while it still satisfies the (LB)
-property and otherwise rebuilds by partition refinement (see the LBFS blocks).
-
-The references are assembled from named code blocks so the fault corpus
-(:mod:`evoalgo.selftest.faults`) can inject a one-line mutation by overriding a
-single block, keeping each fault a clean, reviewable diff against the
-known-good.
+The references are built from named code blocks, so a fault in
+:mod:`evoalgo.selftest.faults` overrides one block and stays a clean diff.
 """
 
 from __future__ import annotations

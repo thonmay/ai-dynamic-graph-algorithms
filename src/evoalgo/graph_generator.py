@@ -3,26 +3,14 @@
 # (see the thesis section "Use of AI tools").
 """Graph generation for the bounded test universe.
 
-Directed problems (BFS, DFS, SCC, reachability) default to an
-exhaustive-up-to-isomorphism universe built from the nauty data files in
-``data/nauty/`` (``directed_n<n>.d6`` = all non-isomorphic loop-free digraphs
-on n vertices, OEIS A000273; ``rooted_n<n>.d6`` = one representative per
-(digraph, root-orbit) class with the root relabeled to vertex 0, OEIS A353996).
-For each class we also apply k deterministic random relabelings (vertex
-permutations) to catch label-dependent bugs such as id tie-breaks. For
-rooted problems the base classes are the rooted files (one case per root
-orbit); for unrooted problems they are the unrooted files.
-
-Undirected problems (MCS) keep the previous behaviour: all labeled graphs for
-n <= exhaustive_cap (5), then non-isomorphic ``geng`` representatives from
-``undirected_n<n>.g6`` for larger n, then seeded random samples when no data
-file exists.
-
-``universe="labeled"`` reproduces the old directed behaviour (all labeled
-digraphs for n <= 4, random samples beyond) and is kept only for comparison.
-
-nauty data provenance, counts, and generation commands: see
-``data/nauty/README.md``.
+Directed problems use every non-isomorphic digraph from the nauty files in
+``data/nauty/`` (``directed_n<n>.d6``, OEIS A000273; for rooted problems
+``rooted_n<n>.d6``, one per root orbit with the root at vertex 0, OEIS
+A353996), plus k deterministic relabelings per class to catch label-dependent
+bugs such as id tie-breaks. Undirected problems (MCS) use all labelled graphs
+for n <= 5, then ``geng`` representatives, then seeded random samples.
+``universe="labeled"`` (all labelled digraphs for n <= 4) is kept for
+comparison. Data provenance: ``data/nauty/README.md``.
 """
 
 from __future__ import annotations
@@ -327,23 +315,14 @@ def generate_test_graphs(
     rooted: bool = False,
     relabels_per_class: int = 2,
 ) -> list[tuple[int, np.ndarray]]:
-    """Generate the bounded test universe of base graphs.
+    """Generate the bounded test universe of base graphs as (n, adjacency) pairs.
 
-    Returns a list of (n, adjacency_matrix) pairs.
-
-    Directed, ``universe="nauty"`` (default): for each n with a data file,
-    every non-isomorphic representative (rooted files for rooted problems,
-    unrooted otherwise) plus ``relabels_per_class`` deterministic random
-    relabelings of each representative. For n with no data file, seeded
-    random samples. This is the exhaustive-up-to-isomorphism universe.
-
-    Directed, ``universe="labeled"`` (comparison only): all labeled digraphs
-    for n <= exhaustive_cap (4), random samples beyond.
-
-    Undirected (any universe): all labeled graphs for n <= exhaustive_cap
-    (5), then non-isomorphic ``geng`` representatives from the data files for
-    larger n, then seeded random samples when no data file exists. This path
-    is unchanged from the original so MCS behaviour is preserved.
+    Directed, ``universe="nauty"`` (default): every non-isomorphic representative
+    (rooted files for rooted problems) plus ``relabels_per_class`` deterministic
+    relabelings; seeded random samples where no data file exists. Directed,
+    ``universe="labeled"`` (comparison only): all labelled digraphs for n <= 4,
+    random samples beyond. Undirected: all labelled graphs for n <= 5, then
+    ``geng`` representatives, then seeded random samples.
     """
     if exhaustive_cap is None:
         exhaustive_cap = 4 if directed else 5
@@ -373,7 +352,7 @@ def generate_test_graphs(
                     for perm in _relabel_permutations(n, seed, relabels_per_class):
                         result.append((n, relabel_digraph(g, perm)))
         else:
-            # Undirected: preserve the original labelled/nauty/sampled mix.
+            # Undirected: labelled, then nauty, then sampled.
             if n <= exhaustive_cap:
                 for g in enumerate_undirected_graphs(n):
                     result.append((n, g))
