@@ -167,52 +167,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     setup_logging(args.verbose)
     try:
-        return _dispatch(parser, args)
+        return COMMANDS[args.command](args)
     except (ConfigError, RunReadError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
 
-def _dispatch(parser, args) -> int:
-    if args.command == "configure":
-        return cmd_configure(args)
-    elif args.command == "start":
-        return cmd_start(args)
-    elif args.command == "status":
-        return cmd_status(args)
-    elif args.command == "resume":
-        return cmd_resume(args)
-    elif args.command == "export":
-        return cmd_export(args)
-    elif args.command == "history":
-        return cmd_history(args)
-    elif args.command == "control":
-        return cmd_control(args)
-    elif args.command == "events":
-        return cmd_events(args)
-    elif args.command == "ui":
-        return cmd_ui(args)
-    elif args.command == "verify":
-        return cmd_verify(args)
-    elif args.command in ("init", "check", "finish", "skill", "packs"):
-        return cmd_workspace(args)
-    elif args.command == "formalize":
-        if args.stage_timeout < 60:
-            print("--stage-timeout must be at least 60 seconds")
-            return 2
-        from .formalize import run_formalize
-        return run_formalize(
-            Path(args.run),
-            args.candidate,
-            model=args.model,
-            opencode_path=args.opencode_path,
-            fresh=args.fresh,
-            stage_timeout=args.stage_timeout,
-            hints_path=args.hints,
-        )
-    else:
-        parser.print_help()
-        return 1
+def cmd_formalize(args) -> int:
+    if args.stage_timeout < 60:
+        print("--stage-timeout must be at least 60 seconds")
+        return 2
+    from .formalize import run_formalize
+    return run_formalize(Path(args.run), args.candidate, model=args.model,
+                         opencode_path=args.opencode_path, fresh=args.fresh,
+                         stage_timeout=args.stage_timeout, hints_path=args.hints)
 
 
 def cmd_configure(args) -> int:
@@ -959,6 +927,15 @@ def _compute(graph):
                 queue.append(v)
     return {"reachable": sorted(visited)}
 '''
+
+
+COMMANDS = {
+    "configure": cmd_configure, "start": cmd_start, "status": cmd_status,
+    "resume": cmd_resume, "export": cmd_export, "history": cmd_history,
+    "control": cmd_control, "events": cmd_events, "ui": cmd_ui, "verify": cmd_verify,
+    "init": cmd_workspace, "check": cmd_workspace, "finish": cmd_workspace,
+    "skill": cmd_workspace, "packs": cmd_workspace, "formalize": cmd_formalize,
+}
 
 
 if __name__ == "__main__":

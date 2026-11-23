@@ -44,6 +44,14 @@ from .verifier import Verifier
 logger = logging.getLogger(__name__)
 
 
+def _read_or(path: str | Path, default: Any) -> Any:
+    """A text file's content, or ``default`` if it cannot be read."""
+    try:
+        return Path(path).read_text()
+    except (OSError, UnicodeDecodeError):
+        return default
+
+
 class Orchestrator:
     """Composition root. Drives the evolutionary loop."""
 
@@ -330,10 +338,6 @@ class Orchestrator:
         self.control.ack(command, self.generation)
         logger.info("Control %s applied at generation %d", cmd, self.generation)
 
-    def _emit_candidate(self, candidate: Candidate, role: str) -> None:
-        self.events.emit("candidate_generated", id=candidate.id, gen=candidate.generation,
-                         parent_ids=candidate.parent_ids, role=role)
-
     def _emit_verified(self, candidate: Candidate) -> None:
         self.events.emit(
             "candidate_verified", id=candidate.id, gen=candidate.generation,
@@ -343,6 +347,54 @@ class Orchestrator:
             failing_case=candidate.failing_case,
             error=(candidate.error_message or "")[:500] or None,
         )
+
+    def _budget_left(self) -> bool:
+        if self.model_calls < self.config.model_call_budget:
+            return True
+        self.stop_reason = "model_call_budget_exhausted"
+        return False
+
+    def _produce(self, gen: int, index: int, role: str, agent_name: str, parent_ids: list[str],
+                 call: Callable[[str], Any], **event: Any) -> Candidate | None:
+        """One generate/repair call for candidate ``index`` of ``gen``.
+
+        Returns the new candidate, or None if the agent wrote no file (an
+        ``agent_failed`` event) or the run is stopping.
+        """
+        candidate_id = f"gen{gen:03d}_c{index:02d}"
+        code_path = self.run_dir / "candidates" / f"{candidate_id}.py"
+        if not self._before_call(gen, role, candidate_id):
+            return None
+        with self._agent_call(gen, role, candidate_id, agent_name, code_path.exists):
+            call(code_path.name)
+        self.model_calls = self.provider.call_count
+        if not code_path.exists():
+            if role == "seed":
+                logger.warning("Generator did not produce %s", code_path)
+            self.events.emit("agent_failed", gen=gen, id=candidate_id, role=role)
+            return None
+        candidate = Candidate(id=candidate_id, code_path=str(code_path), generation=gen,
+                              parent_ids=parent_ids)
+        self.events.emit("candidate_generated", id=candidate_id, gen=gen,
+                         parent_ids=parent_ids, role=role, **event)
+        return candidate
+
+    def _verify_and_reflect(self, new_candidates: list[Candidate], gen: int) -> None:
+        for candidate in new_candidates:
+            self.verifier.verify(candidate)
+            self._emit_verified(candidate)
+        # Off in the no-reflection ablation: failed candidates then never
+        # become repairable, so their slots go to mutation.
+        for candidate in new_candidates if self.config.reflection else []:
+            if candidate.is_failed:
+                if not self._budget_left():
+                    logger.warning("Model call budget exhausted during reflection")
+                    break
+                if not self._before_call(gen, "reflect", candidate.id):
+                    break
+                self._reflect(candidate, gen)
+        for candidate in new_candidates:
+            self.population.add(candidate)
 
     def _reflect(self, candidate: Candidate, gen: int) -> None:
         with self._agent_call(gen, "reflect", candidate.id, self.config.reflector_agent,
@@ -410,66 +462,23 @@ class Orchestrator:
         logger.info("Seeding initial population (size=%d)", self.config.population_size)
         self.generation = 0
         self.events.emit("gen_start", gen=1)
-
-        # Generate N candidates with no parent (fresh). range() is evaluated
-        # once, so a population_size change applies from the next generation.
         new_candidates: list[Candidate] = []
-
+        # range() is evaluated once, so a population_size change applies from
+        # the next generation.
         for i in range(self.config.population_size):
-            if self.model_calls >= self.config.model_call_budget:
-                self.stop_reason = "model_call_budget_exhausted"
+            if not self._budget_left():
                 logger.warning("Model call budget exhausted during seeding")
                 break
-
-            candidate_id = f"gen{self.generation + 1:03d}_c{i + 1:02d}"
-            code_filename = f"{candidate_id}.py"
-            code_path = self.run_dir / "candidates" / code_filename
-            if not self._before_call(1, "seed", candidate_id):
+            cand = self._produce(1, i + 1, "seed", self.config.generator_agent, [],
+                                 lambda name: self.provider.generate(
+                                     problem_name=self.config.problem, parent_code=None,
+                                     candidate_filename=name, generation=1,
+                                     workdir=str(self.run_dir)))
+            if cand:
+                new_candidates.append(cand)
+            elif self.stop_reason:  # stopped at the control point
                 break
-
-            with self._agent_call(1, "seed", candidate_id, self.config.generator_agent,
-                                  code_path.exists):
-                self.provider.generate(
-                    problem_name=self.config.problem,
-                    parent_code=None,
-                    candidate_filename=code_filename,
-                    generation=self.generation + 1,
-                    workdir=str(self.run_dir),
-                )
-            self.model_calls = self.provider.call_count
-
-            if code_path.exists():
-                candidate = Candidate(
-                    id=candidate_id,
-                    code_path=str(code_path),
-                    generation=self.generation + 1,
-                    parent_ids=[],
-                )
-                new_candidates.append(candidate)
-                self._emit_candidate(candidate, "seed")
-            else:
-                logger.warning("Generator did not produce %s", code_path)
-                self.events.emit("agent_failed", gen=1, id=candidate_id, role="seed")
-
-        for candidate in new_candidates:
-            self.verifier.verify(candidate)
-            self._emit_verified(candidate)
-
-        # Reflect on failures (off in the no-reflection ablation: failed
-        # candidates then never become repairable, so slots go to mutation)
-        for candidate in new_candidates if self.config.reflection else []:
-            if candidate.is_failed:
-                if self.model_calls >= self.config.model_call_budget:
-                    self.stop_reason = "model_call_budget_exhausted"
-                    logger.warning("Model call budget exhausted during reflection")
-                    break
-                if not self._before_call(1, "reflect", candidate.id):
-                    break
-                self._reflect(candidate, self.generation + 1)
-
-        for candidate in new_candidates:
-            self.population.add(candidate)
-
+        self._verify_and_reflect(new_candidates, 1)
         self.generation = 1
         if not new_candidates and not self.stop_reason:
             # Not one seed produced: the backend is unusable (missing binary
@@ -487,165 +496,82 @@ class Orchestrator:
         logger.info("=== Generation %d ===", gen)
         self._seed_selection(gen)
         self.events.emit("gen_start", gen=gen)
-
         new_candidates: list[Candidate] = []
 
-        # Determine how many new candidates to generate
-        slots = self.config.population_size - len([
-            c for c in self.population.candidates
-            if c.state == CandidateState.PASS
-        ])
-
-        # Prioritize repair of failed candidates with reflections
+        # Slots not held by a passing candidate: repairs first, then fresh or
+        # mutated candidates, plus one if the population is too similar.
+        slots = self.config.population_size - sum(
+            c.state == CandidateState.PASS for c in self.population.candidates)
         repairable = self.population.get_failed_repairable()
         repair_count = min(len(repairable), slots)
         fresh_count = slots - repair_count
-
-        # Diversity injection: if population is too similar, add a fresh candidate
         if self.population.needs_diversity_injection:
             logger.info("Diversity injection triggered (diversity=%.2f)",
                         self.population.compute_diversity())
             fresh_count += 1
 
-        # Repair phase
-        for i in range(repair_count):
-            if self.model_calls >= self.config.model_call_budget:
-                self.stop_reason = "model_call_budget_exhausted"
+        for i, parent in enumerate(repairable[:repair_count]):
+            if not self._budget_left():
                 break
-
-            parent = repairable[i]
-            candidate_id = f"gen{gen:03d}_c{i + 1:02d}"
-            code_filename = f"{candidate_id}.py"
-
-            parent_code_path = Path(parent.code_path)
-            try:
-                parent_code = parent_code_path.read_text()
-            except Exception:
-                parent_code = ""
-
-            reflection_text = ""
+            parent_code = _read_or(parent.code_path, "")
+            reflection = ""
             if parent.reflection_path:
                 refl_path = Path(parent.reflection_path)
                 if not refl_path.is_absolute():
                     refl_path = self.run_dir / parent.reflection_path
-                try:
-                    reflection_text = refl_path.read_text()
-                except Exception:
-                    pass
-
-            code_path = self.run_dir / "candidates" / code_filename
-            if not self._before_call(gen, "repair", candidate_id):
+                reflection = _read_or(refl_path, "")
+            cand = self._produce(gen, i + 1, "repair", self.config.repairer_agent, [parent.id],
+                                 lambda name: self.provider.repair(
+                                     problem_name=self.config.problem, failed_code=parent_code,
+                                     reflection=reflection, candidate_filename=name,
+                                     workdir=str(self.run_dir)))
+            if cand:
+                new_candidates.append(cand)
+            elif self.stop_reason:  # stopped at the control point
                 break
-            with self._agent_call(gen, "repair", candidate_id, self.config.repairer_agent,
-                                  code_path.exists):
-                self.provider.repair(
-                    problem_name=self.config.problem,
-                    failed_code=parent_code,
-                    reflection=reflection_text,
-                    candidate_filename=code_filename,
-                    workdir=str(self.run_dir),
-                )
-            self.model_calls = self.provider.call_count
 
-            if code_path.exists():
-                candidate = Candidate(
-                    id=candidate_id,
-                    code_path=str(code_path),
-                    generation=gen,
-                    parent_ids=[parent.id],
-                )
-                new_candidates.append(candidate)
-                self._emit_candidate(candidate, "repair")
-            else:
-                self.events.emit("agent_failed", gen=gen, id=candidate_id, role="repair")
-
-        # Fresh generation phase
         for i in range(fresh_count):
-            if self.model_calls >= self.config.model_call_budget:
-                self.stop_reason = "model_call_budget_exhausted"
+            if not self._budget_left():
                 break
-
-            idx = repair_count + i
-            candidate_id = f"gen{gen:03d}_c{idx + 1:02d}"
-            code_filename = f"{candidate_id}.py"
-
-            # Select a parent (or None for fresh)
             parents = self.population.select_parents(count=1)
             parent = parents[0] if parents else None
-
-            parent_code = None
-            parent_ids: list[str] = []
-            if parent is not None:
-                parent_code_path = Path(parent.code_path)
-                try:
-                    parent_code = parent_code_path.read_text()
-                    parent_ids = [parent.id]
-                except Exception:
-                    pass
-
+            parent_code = _read_or(parent.code_path, None) if parent is not None else None
+            parent_ids = [parent.id] if parent_code is not None else []
             role = "mutate" if parent_ids else "fresh"
-            code_path = self.run_dir / "candidates" / code_filename
-            if not self._before_call(gen, role, candidate_id):
+            cand = self._produce(gen, repair_count + i + 1, role, self.config.generator_agent,
+                                 parent_ids,
+                                 lambda name: self.provider.generate(
+                                     problem_name=self.config.problem, parent_code=parent_code,
+                                     candidate_filename=name, generation=gen,
+                                     workdir=str(self.run_dir)))
+            if cand:
+                new_candidates.append(cand)
+            elif self.stop_reason:  # stopped at the control point
                 break
-            with self._agent_call(gen, role, candidate_id, self.config.generator_agent,
-                                  code_path.exists):
-                self.provider.generate(
-                    problem_name=self.config.problem,
-                    parent_code=parent_code,
-                    candidate_filename=code_filename,
-                    generation=gen,
-                    workdir=str(self.run_dir),
-                )
-            self.model_calls = self.provider.call_count
 
-            if code_path.exists():
-                candidate = Candidate(
-                    id=candidate_id,
-                    code_path=str(code_path),
-                    generation=gen,
-                    parent_ids=parent_ids,
-                )
-                new_candidates.append(candidate)
-                self._emit_candidate(candidate, "mutate" if parent_ids else "fresh")
-            else:
-                self.events.emit("agent_failed", gen=gen, id=candidate_id,
-                                 role="mutate" if parent_ids else "fresh")
-
-        # Specialist phase (dynamic agent generation): each active specialist
-        # derives one candidate from the population best.
+        # Each active specialist derives one candidate from the population best.
         if self.config.dynamic_agents and not self.stop_reason:
             idx = repair_count + fresh_count
             for spec in [s for s in specialists.specialists(read_events(self.run_dir)) if not s.retired]:
-                if self.model_calls >= self.config.model_call_budget:
-                    self.stop_reason = "model_call_budget_exhausted"
+                if not self._budget_left():
                     break
                 best = self.population.best_candidate
                 if best is None:
                     break
                 idx += 1
-                candidate_id = f"gen{gen:03d}_c{idx:02d}"
-                code_path = self.run_dir / "candidates" / f"{candidate_id}.py"
-                try:
-                    parent_code = Path(best.code_path).read_text()
-                except OSError:
+                parent_code = _read_or(best.code_path, None)
+                if parent_code is None:
                     continue
-                if not self._before_call(gen, "specialist", candidate_id):
+                cand = self._produce(gen, idx, "specialist", spec.name, [best.id],
+                                     lambda name: self.provider.generate(
+                                         problem_name=self.config.problem, parent_code=parent_code,
+                                         candidate_filename=name, generation=gen,
+                                         workdir=str(self.run_dir), focus=spec.focus),
+                                     agent=spec.name)
+                if cand:
+                    new_candidates.append(cand)
+                elif self.stop_reason:
                     break
-                with self._agent_call(gen, "specialist", candidate_id, spec.name, code_path.exists):
-                    self.provider.generate(
-                        problem_name=self.config.problem, parent_code=parent_code,
-                        candidate_filename=code_path.name, generation=gen,
-                        workdir=str(self.run_dir), focus=spec.focus,
-                    )
-                self.model_calls = self.provider.call_count
-                if code_path.exists():
-                    candidate = Candidate(id=candidate_id, code_path=str(code_path),
-                                          generation=gen, parent_ids=[best.id])
-                    new_candidates.append(candidate)
-                    self.events.emit("candidate_generated", id=candidate_id, gen=gen,
-                                     parent_ids=[best.id], role="specialist", agent=spec.name)
-                else:
-                    self.events.emit("agent_failed", gen=gen, id=candidate_id, role="specialist")
 
         if not new_candidates:
             logger.warning("Generation %d produced no candidates", gen)
@@ -654,38 +580,16 @@ class Orchestrator:
             self._agent_boundary()
             return
 
-        for candidate in new_candidates:
-            self.verifier.verify(candidate)
-            self._emit_verified(candidate)
-
-        # Reflect on failures (off in the no-reflection ablation: failed
-        # candidates then never become repairable, so slots go to mutation)
-        for candidate in new_candidates if self.config.reflection else []:
-            if candidate.is_failed:
-                if self.model_calls >= self.config.model_call_budget:
-                    self.stop_reason = "model_call_budget_exhausted"
-                    logger.warning("Model call budget exhausted during reflection")
-                    break
-                if not self._before_call(gen, "reflect", candidate.id):
-                    break
-                self._reflect(candidate, gen)
-
-        for candidate in new_candidates:
-            self.population.add(candidate)
-
+        self._verify_and_reflect(new_candidates, gen)
         discarded = self.population.cull()
         if discarded:
             logger.info("Discarded %d candidates", len(discarded))
             self.events.emit("candidates_discarded", gen=gen, ids=[c.id for c in discarded])
-
-        # Check stop conditions before committing so the checkpoint
-        # captures the updated counter/reason atomically.
+        # Stop conditions are checked before the commit, so the checkpoint
+        # holds the updated counter and reason atomically.
         self._check_stop_conditions()
-
-        # Commit (includes stop_reason + consecutive_all_failed)
         self._commit_generation()
         self._agent_boundary()
-
         if gen % self.config.dashboard_interval == 0:
             self._emit_dashboard()
 
