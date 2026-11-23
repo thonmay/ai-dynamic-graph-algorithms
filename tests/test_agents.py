@@ -237,6 +237,9 @@ def test_unusable_backend_stops_after_seeding(tmp_path):
     assert summary["stop_reason"] == "agent_unavailable" and summary["generation"] == 1
     assert summary["model_calls"] == 2
     assert "binary not found" in summary["agent_error"]
+    # Once the backend works, resume continues the run.
+    resumed = Orchestrator(cfg, run_id="b").run()
+    assert resumed["stop_reason"] != "agent_unavailable" and resumed["best_fitness"] == 1.0
 
 
 # A plain BFS that skips vertex 2 entirely: right for n <= 2, wrong for n = 3.

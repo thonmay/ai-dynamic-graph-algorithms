@@ -424,7 +424,9 @@ class Orchestrator:
         self.stop_reason = latest.get("stop_reason")
 
         # Same for the generation limit.
-        if self.stop_reason == "max_generations" and self.generation < self.config.max_generations:
+        # A fixed backend (key exported, binary installed) can continue.
+        if self.stop_reason in ("max_generations", "agent_unavailable") \
+                and self.generation < self.config.max_generations:
             self.stop_reason = None
         # If the run stopped due to budget exhaustion but the budget has
         # been raised since, clear the stop reason so the loop can continue.

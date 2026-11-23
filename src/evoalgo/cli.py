@@ -14,6 +14,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from .checkpoint import Checkpoint
 from .config import ConfigError, RunConfig, Bound, VALID_PROBLEMS
 from .orchestrator import Orchestrator
 
@@ -451,14 +452,21 @@ def cmd_resume(args) -> int:
               "with `evoalgo check`")
         return 1
     config = RunConfig.load(config_path)
-    # Resume this directory, wherever it is: the saved workdir may be relative
-    # to the cwd of the original start.
-    config.workdir = str(run_dir.resolve().parent)
-    orch = Orchestrator(config=config, run_id=run_dir.name)
+    errors = config.validate()
+    if errors:
+        print("Configuration errors:")
+        for e in errors:
+            print(f"  {e}")
+        return 1
     try:
-        orch.checkpoint.load_latest()
+        Checkpoint(run_dir).load_latest()
     except (OSError, ValueError) as e:
         raise RunReadError(f"cannot resume {run_dir}: {e}") from None
+    # Resume this directory, wherever it is: the saved workdir may be relative
+    # to the cwd of the original start.
+    run_dir = run_dir.resolve()
+    config.workdir = str(run_dir.parent)
+    orch = Orchestrator(config=config, run_id=run_dir.name)
 
     removed = orch.checkpoint.discard_incomplete()
     if removed:
@@ -476,7 +484,8 @@ def cmd_resume(args) -> int:
 def _agent_status(summary: dict) -> int:
     if summary.get("stop_reason") != "agent_unavailable":
         return 0
-    print(f"error: the agent backend produced no candidate: {summary.get('agent_error')}",
+    print(f"error: the agent backend produced no candidate: "
+          f"{summary.get('agent_error') or 'no error reported'}",
           file=sys.stderr)
     return 1
 
