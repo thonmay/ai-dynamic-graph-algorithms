@@ -1,6 +1,6 @@
 # Execution record
 
-Revision `4a22f9dba135b40c725cf4f6d59b4c7189e7e485`, recorded 2026-11-22. Platform: Linux x86_64, user
+Revision `71f89e942169089b70948c1052d0b98b9d7adcb1`, recorded 2026-11-23. Platform: Linux x86_64, user
 namespaces available, sandbox jail on (`EVOALGO_SANDBOX` unset). Environment
 and the exact transitive dependency set: `01_environment.txt`.
 
@@ -21,7 +21,8 @@ model-driven research evidence is the committed campaign under `campaign/`.
 | 25_ui_typecheck | `bash -c cd ui && npx tsc --noEmit -p . ` | 0 | 0 | OK |
 | 26_ui_rebuild_identical | `bash -c cd ui && npm run build --silent && cd ..         && git status --porcelain --untra` | 0 | 0 | OK |
 | 30_invalid_config | `$WORK/venv/bin/evoalgo start $WORK/invalid.yaml --run-id invalid ` | 1 | 1 | OK |
-| 31_missing_credentials | `bash -c env -u EXECREC_MISSING_KEY '$WORK/venv/bin/evoalgo' start '$WORK/nokey.yaml' --run` | 0 | 0 | OK |
+| 31_missing_credentials | `env -u EXECREC_MISSING_KEY $WORK/venv/bin/evoalgo start $WORK/nokey.yaml --run-id nokey ` | 1 | 1 | OK |
+| 31b_key_named | `grep -q API key not found: export EXECREC_MISSING_KEY $OUT/31_missing_credentials.log ` | 0 | 0 | OK |
 | 32_run_bad_reflect_repair | `$WORK/venv/bin/evoalgo start $WORK/repair.yaml --run-id repair ` | 0 | 0 | OK |
 | 33_status | `$WORK/venv/bin/evoalgo status $WORK/runs/repair ` | 0 | 0 | OK |
 | 34_status_json | `$WORK/venv/bin/evoalgo status --json $WORK/runs/repair ` | 0 | 0 | OK |
@@ -37,10 +38,10 @@ model-driven research evidence is the committed campaign under `campaign/`.
 | 44_status_after_stop | `$WORK/venv/bin/evoalgo status $WORK/runs/stopresume ` | 0 | 0 | OK |
 | 45_resume | `$WORK/venv/bin/evoalgo resume $WORK/runs/stopresume ` | 0 | 0 | OK |
 | 46_lifecycle_events | `evsel stopresume run_start control_ack paused gen_committed run_end ` | 0 | 0 | OK |
-| 50_ui_refuses_without_token | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' 'http://127.0.0.1:37042/api/runs'` | 0 | 0 | OK |
+| 50_ui_refuses_without_token | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' 'http://127.0.0.1:34062/api/runs'` | 0 | 0 | OK |
 | 51_ui_run_list | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' -H 'Authorization: Bearer <token>` | 0 | 0 | OK |
 | 52_ui_run_detail | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' -H 'Authorization: Bearer <token>` | 0 | 0 | OK |
 | 53_ui_candidate | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' -H 'Authorization: Bearer <token>` | 0 | 0 | OK |
-| 54_ui_stream_and_ended_control | `$WORK/venv/bin/python $WORK/ws.py 37042 <token> ` | 0 | 0 | OK |
+| 54_ui_stream_and_ended_control | `$WORK/venv/bin/python $WORK/ws.py 34062 <token> ` | 0 | 0 | OK |
 
 Failed steps: 0. Redaction scan: clean.
