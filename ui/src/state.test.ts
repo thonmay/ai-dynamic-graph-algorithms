@@ -127,3 +127,15 @@ describe('failure patterns', () => {
     expect(failKind(s.cands['gen002_c01'])).toBeNull()
   })
 })
+
+describe('agent failures', () => {
+  it('shows the backend error when an agent wrote no candidate', () => {
+    const ev = (seq: number, e: Record<string, unknown>) => ({ seq, ts: '2026-01-01T00:00:00Z', ...e }) as RunEvent
+    const s = applyEvents(initialState(), [
+      ev(0, { type: 'agent_failed', gen: 1, id: 'gen001_c01', role: 'seed', error: 'harness binary not found: /x' }),
+      ev(1, { type: 'agent_failed', gen: 1, id: 'gen001_c02', role: 'seed' }),
+    ])
+    expect(s.log.map((l) => l.text)).toEqual([
+      'seed gen001_c01: harness binary not found: /x', 'seed gen001_c02: no candidate written'])
+  })
+})

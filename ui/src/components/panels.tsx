@@ -5,7 +5,7 @@ import {
   FAIL_KINDS, rank, type AgentInfo, type Cand, type FailKind, type FailurePatterns, type GenInfo,
   type LogEntry, type LogKind,
 } from '../state'
-import { clock, f3, isNum } from '../format'
+import { clock, f3, isNum, stagger } from '../format'
 
 export type LogFilter = LogKind | 'all'
 const FILTERS: LogFilter[] = ['all', 'agent', 'verify', 'control']
@@ -67,7 +67,7 @@ export function Population({ gen, cands, selected, onSelect }: {
       <tbody>
         {rows.map((p, i) => (
           <tr key={`${gen.gen}-${p.id}`} className={p.id === selected ? 'sel' : ''} onClick={() => onSelect(p.id)}
-              style={{ ['--i' as string]: i }}>
+              style={stagger(i)}>
             <td className="mono"><i className={`dot ${p.state === 'PASS' ? 'pass' : 'fail'}`} />{p.id}</td>
             <td className="mono muted">{p.parent_ids[0] ?? 'seed'}</td>
             <td className="muted">{cands[p.id]?.agent ?? cands[p.id]?.role ?? ''}</td>
@@ -110,7 +110,7 @@ export function Failures({ fp, onSelect }: { fp: FailurePatterns; onSelect: (id:
         <thead><tr><th>gen</th><th className="r">failed</th><th>kinds</th></tr></thead>
         <tbody>
           {fp.byGen.map((g, i) => (
-            <tr key={g.gen} style={{ ['--i' as string]: i }}>
+            <tr key={g.gen} style={stagger(i)}>
               <td className="num">g{g.gen}</td>
               <td className="r num">{g.failed}/{g.verified}</td>
               <td>
@@ -143,7 +143,7 @@ export function Agents({ agents, viewGen }: { agents: AgentInfo[]; viewGen: numb
         {shown.map((a, i) => {
           const retired = a.retiredGen !== null && a.retiredGen <= viewGen
           return (
-            <tr key={a.name} style={{ ['--i' as string]: i }} title={a.signature}>
+            <tr key={a.name} style={stagger(i)} title={a.signature}>
               <td className="mono"><i className={`dot ${retired ? '' : 'pass'}`} />{a.name}</td>
               <td className="muted">{a.kind}</td>
               <td className="r num">g{a.spawnedGen}</td>

@@ -64,7 +64,7 @@ export type RunEvent =
     })
   | (Base & { type: 'candidate_reflected'; id: string; gen: number; reflection_path?: string | null })
   | (Base & { type: 'candidates_discarded'; gen: number; ids: string[] })
-  | (Base & { type: 'agent_failed'; gen: number; id: string; role?: string })
+  | (Base & { type: 'agent_failed'; gen: number; id: string; role?: string; error?: string | null })
   | (Base & { type: 'agent_call_start'; gen: number; role: string; id: string; agent?: string | null; model?: string | null })
   | (Base & { type: 'agent_call_end'; gen: number; role: string; id: string; ok: boolean; duration_s: number })
   | (Base & { type: 'paused'; gen: number; before: { role: string; id: string } | null })

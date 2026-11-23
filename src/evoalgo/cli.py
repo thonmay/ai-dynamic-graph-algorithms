@@ -484,6 +484,7 @@ def cmd_resume(args) -> int:
 def _agent_status(summary: dict) -> int:
     if summary.get("stop_reason") != "agent_unavailable":
         return 0
+    sys.stdout.flush()  # the summary first, the error last
     print(f"error: the agent backend produced no candidate: "
           f"{summary.get('agent_error') or 'no error reported'}",
           file=sys.stderr)

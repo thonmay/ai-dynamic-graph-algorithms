@@ -371,7 +371,8 @@ class Orchestrator:
         if not code_path.exists():
             if role == "seed":
                 logger.warning("Generator did not produce %s", code_path)
-            self.events.emit("agent_failed", gen=gen, id=candidate_id, role=role)
+            error = (self.provider.call_error or "")[:300] or None
+            self.events.emit("agent_failed", gen=gen, id=candidate_id, role=role, error=error)
             return None
         candidate = Candidate(id=candidate_id, code_path=str(code_path), generation=gen,
                               parent_ids=parent_ids)

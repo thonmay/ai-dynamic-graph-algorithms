@@ -1,10 +1,10 @@
 // AI-assisted code: generated and revised with Claude Opus 5.5
 // under the author's direction; reviewed and tested by the author
 // (see the thesis section "Use of AI tools").
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { RunSummary } from '../types'
-import { f3, stamp } from '../format'
+import { f3, stagger, stamp } from '../format'
 import { Spark } from './charts'
 
 export function RunsPage() {
@@ -29,15 +29,15 @@ export function RunsPage() {
       </div></nav>
       <main className="wrap">
         <h1 className="title">Runs</h1>
-        <section className="panel list" style={{ ['--i' as string]: 0 } as CSSProperties}>
-          {error && <div className="empty small">{error}</div>}
+        <section className="panel list" style={stagger(0)}>
+          {error && <div className="empty small form-error-panel" role="alert">{error}</div>}
           {!runs && !error && [0, 1, 2, 3].map((i) => <div key={i} className="run skeleton"><span /></div>)}
           {runs?.length === 0 && (
             <div className="empty">No runs yet<a className="btn primary" href="#/new">Start the first run</a></div>
           )}
           {runs?.map((r, i) => (
             <a key={r.run_id} className="run" href={`#/run/${encodeURIComponent(r.run_id)}`}
-               style={{ ['--i' as string]: i } as CSSProperties}>
+               style={stagger(i)}>
               <span className={`status ${r.state}`}><i className="dot" /></span>
               <span className="name">
                 <b className="mono">{r.run_id}</b>

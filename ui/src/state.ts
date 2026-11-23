@@ -5,6 +5,7 @@
 // run through applyEvents, so they cannot disagree.
 
 import type { EngineState, FailingCase, PendingCmd, PopEntry, RunEvent, RunStartEvent } from './types'
+import { f3, isNum } from './format'
 
 export interface Cand {
   id: string
@@ -138,9 +139,6 @@ export function deriveStatus(s: RunState, connected: boolean): Live {
   return cmds.includes('pause') ? 'pausing' : 'running'
 }
 
-const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
-const f3 = (v: number | null | undefined) => (isNum(v) ? v.toFixed(3) : '-')
-
 export function describeCommand(c: { cmd?: string; text?: string; field?: string; value?: number }): string {
   if (c.cmd === 'hint') return c.text?.trim() ? `hint "${c.text.trim()}"` : 'hint cleared'
   if (c.cmd === 'set') return `${c.field} = ${c.value}`
@@ -231,7 +229,7 @@ export function applyEvents(prev: RunState, events: RunEvent[]): RunState {
         log('run', 'muted', `cull ${e.ids.join(', ')}`)
         break
       case 'agent_failed':
-        log('agent', 'fail', `${e.role ?? 'agent'} ${e.id}: no candidate written`)
+        log('agent', 'fail', `${e.role ?? 'agent'} ${e.id}: ${e.error || 'no candidate written'}`)
         break
       case 'agent_call_start':
         s.call = { gen: e.gen, role: e.role, id: e.id, ts: e.ts }

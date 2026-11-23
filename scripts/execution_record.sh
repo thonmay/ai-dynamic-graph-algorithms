@@ -133,8 +133,9 @@ PYEOF
 cfg "$WORK/invalid.yaml" population_size=0 max_generations=5000
 step 30_invalid_config 1 "$EVO" start "$WORK/invalid.yaml" --run-id invalid
 cfg "$WORK/nokey.yaml" provider=api model=example-model api_base_url=openai api_key_env=EXECREC_MISSING_KEY max_generations=1
-step 31_missing_credentials 0 bash -c "env -u EXECREC_MISSING_KEY '$EVO' start '$WORK/nokey.yaml' --run-id nokey 2>&1 \
-    | tee /dev/stderr | grep -q 'API key not found: export EXECREC_MISSING_KEY'"
+# A missing key is reported by name, and the run stops with exit 1 (agent_unavailable).
+step 31_missing_credentials 1 env -u EXECREC_MISSING_KEY "$EVO" start "$WORK/nokey.yaml" --run-id nokey
+step 31b_key_named 0 grep -q 'API key not found: export EXECREC_MISSING_KEY' "$OUT/31_missing_credentials.log"
 # bad -> reflection -> repair (good): FAIL then PASS, then the final grade.
 cfg "$WORK/repair.yaml" max_generations=4 'mock_script=["bad", "bad", "good", "good"]'
 step 32_run_bad_reflect_repair 0 "$EVO" start "$WORK/repair.yaml" --run-id repair

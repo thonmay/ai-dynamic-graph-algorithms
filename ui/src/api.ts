@@ -30,6 +30,7 @@ const FLUSH_MS = 60
 export function useRunStream(runId: string) {
   const [state, dispatch] = useReducer(reduce, undefined, initialState)
   const [connected, setConnected] = useState(false)
+  const [refused, setRefused] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const lastSeq = useRef(-1)
@@ -55,6 +56,7 @@ export function useRunStream(runId: string) {
       ws.onopen = () => {
         retry = 0
         setConnected(true)
+        setRefused(null)
       }
       ws.onmessage = (m) => {
         let msg: any
@@ -93,6 +95,10 @@ export function useRunStream(runId: string) {
       }
       ws.onclose = () => {
         setConnected(false)
+        // Browsers hide why a websocket closed; ask the HTTP API instead.
+        fetch(`api/runs/${encodeURIComponent(runId)}`).then((r) => {
+          if (!closed) setRefused(r.status === 401 ? 'token' : r.status === 404 ? 'run' : null)
+        }).catch(() => {})
         if (wsRef.current === ws) wsRef.current = null
         if (!closed) reconnect = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++))
       }
@@ -113,5 +119,5 @@ export function useRunStream(runId: string) {
     else setNotice({ id: Date.now(), tone: 'error', text: 'Not connected. Retrying.' })
   }, [])
 
-  return { state, connected, notice, send }
+  return { state, connected, refused, notice, send }
 }

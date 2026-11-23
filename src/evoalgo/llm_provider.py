@@ -34,6 +34,7 @@ class LLMProvider:
         # Researcher hint set through the control channel; added to every task.
         self.hint: str | None = None
         self.last_error: str | None = None  # of the latest failed call
+        self.call_error: str | None = None  # of the latest call, None if it had none
 
     def _backend(self) -> Any:
         if self.backend is None:
@@ -93,6 +94,7 @@ class LLMProvider:
         logger.info("Agent call #%d: %s %s via %s", self.call_count, task.role, task.candidate_id,
                     self.config.provider)
         result = self._backend().run(task)
+        self.call_error = result.error
         if result.error:
             self.last_error = result.error
             logger.warning("%s %s: %s", task.role, task.candidate_id, result.error)

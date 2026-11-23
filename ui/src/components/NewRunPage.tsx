@@ -1,8 +1,9 @@
 // AI-assisted code: generated and revised with Claude Opus 5.5
 // under the author's direction; reviewed and tested by the author
 // (see the thesis section "Use of AI tools").
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
+import { stagger } from '../format'
 import type { AgentOptions, EndpointId, LaunchBody, PackInfo, RunSummary } from '../types'
 
 type Step = 1 | 2 | 3 | 4
@@ -235,7 +236,7 @@ export function NewRunPage() {
               <section className="packs" aria-label="Problem packs">
                 {packs.map((p, i) => (
                   <button key={p.name} className="pack" aria-pressed={p.name === form.pack}
-                          style={{ ['--i' as string]: i } as CSSProperties}
+                          style={stagger(i)}
                           onClick={() => set({ pack: p.name })} onDoubleClick={() => { set({ pack: p.name }); setStep(2) }}>
                     <span className="pk-title">{p.title}</span>
                     <span className="pk-q">{p.question ?? p.name}</span>

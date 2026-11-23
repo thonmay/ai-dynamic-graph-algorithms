@@ -1,10 +1,10 @@
 // AI-assisted code: generated and revised with Claude Opus 5.5
 // under the author's direction; reviewed and tested by the author
 // (see the thesis section "Use of AI tools").
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useState } from 'react'
 import { useRunStream } from '../api'
 import { deriveStatus, failurePatterns, genAt, type Live } from '../state'
-import { duration, f3, pct } from '../format'
+import { duration, f3, pct, stagger } from '../format'
 import { Activity } from './Activity'
 import { Lineage, Spark, WorkRatioChart } from './charts'
 import { Agents, EventLog, Failures, Population, type LogFilter } from './panels'
@@ -19,10 +19,8 @@ const LABEL: Record<Live, string> = {
 }
 const ACTIVE: Live[] = ['running', 'pausing', 'paused', 'resuming', 'stopping']
 
-const delay = (i: number) => ({ ['--i' as string]: i }) as CSSProperties
-
 export function RunPage({ runId }: { runId: string }) {
-  const { state, connected, notice, send } = useRunStream(runId)
+  const { state, connected, refused, notice, send } = useRunStream(runId)
   const [mode, setMode] = useState<'live' | 'replay'>('live')
   const [replayGen, setReplayGen] = useState(1)
   const [playing, setPlaying] = useState(false)
@@ -125,7 +123,14 @@ export function RunPage({ runId }: { runId: string }) {
           </div>
         </div>
       </nav>
-      {live && <Activity state={state} status={status} runId={runId} now={now} />}
+      {refused ? (
+        <div className="activity fail" role="alert">
+          <i className="dot" />
+          <span className="what">{refused === 'token'
+            ? <>Access refused: the server was restarted. Open the new link printed by <code className="mono">evoalgo ui</code>.</>
+            : <>This run no longer exists. <a href="#/">Back to runs</a></>}</span>
+        </div>
+      ) : live && <Activity state={state} status={status} runId={runId} now={now} />}
       <Steer open={steerOpen} onClose={() => setSteerOpen(false)} activeHint={state.activeHint} send={send} />
 
       <main className="wrap">
@@ -140,7 +145,7 @@ export function RunPage({ runId }: { runId: string }) {
           </div>
         )}
 
-        <section className="panel kpis" style={delay(0)}>
+        <section className="panel kpis" style={stagger(0)}>
           {kpis.map((k) => (
             <div className="kpi" key={k.label}>
               <div key={k.value} className="v num tick">{k.value}</div>
@@ -152,36 +157,36 @@ export function RunPage({ runId }: { runId: string }) {
 
         <div className="main">
           <div className="stack">
-            <section className="panel" style={delay(1)}>
+            <section className="panel" style={stagger(1)}>
               <div className="ph">
                 <h3>Work ratio</h3>
                 <span className="legend"><span><i className="best" />best</span><span><i className="mean" />mean</span></span>
               </div>
               <WorkRatioChart gens={shownGens} maxGen={maxGen} viewGen={popGen} onPick={pick} />
             </section>
-            <section className="panel" style={delay(2)}>
+            <section className="panel" style={stagger(2)}>
               <div className="ph"><h3>Lineage</h3><span className="meta">{state.order.length} candidates</span></div>
               <Lineage state={state} viewGen={viewGen} bestGen={popGen} selected={selected} onSelect={setSelected} />
             </section>
           </div>
-          <section className="panel events" style={delay(3)}>
+          <section className="panel events" style={stagger(3)}>
             <EventLog entries={state.log} filter={filter} setFilter={setFilter}
                       maxGen={live ? Infinity : popGen} onPick={setSelected} />
           </section>
         </div>
 
-        <section className="panel" style={delay(4)}>
+        <section className="panel" style={stagger(4)}>
           <div className="ph"><h3>Population</h3><span className="meta num">{gen ? `gen ${gen.gen}` : ''}</span></div>
           <Population gen={gen} cands={state.cands} selected={selected} onSelect={setSelected} />
         </section>
 
-        <section className="panel" style={delay(5)}>
+        <section className="panel" style={stagger(5)}>
           <div className="ph"><h3>Failure patterns</h3><span className="meta num">{fp.failed} failed</span></div>
           <Failures fp={fp} onSelect={setSelected} />
         </section>
 
         {state.agents.length > 0 && (
-          <section className="panel" style={delay(6)}>
+          <section className="panel" style={stagger(6)}>
             <div className="ph"><h3>Specialist agents</h3><span className="meta">spawned on a plateau</span></div>
             <Agents agents={state.agents} viewGen={live ? Infinity : popGen} />
           </section>
