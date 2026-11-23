@@ -196,7 +196,7 @@ def test_bad_config_files_give_one_line_errors(tmp_path, capsys):
     }
     expected = {
         "missing.yaml": "cannot read config",
-        "syntax.yaml": "is not valid YAML",
+        "syntax.yaml": "is not valid YAML: expected the node content, but found '<stream end>' (line 2, column 1)",
         "list.yaml": "must be a mapping",
         "bound.yaml": "'bound' must be a mapping",
         "types.yaml": "population_size must be an integer",

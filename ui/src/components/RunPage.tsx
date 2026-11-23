@@ -127,7 +127,7 @@ export function RunPage({ runId }: { runId: string }) {
         <div className="activity fail" role="alert">
           <i className="dot" />
           <span className="what">{refused === 'token'
-            ? <>Access refused: the server was restarted. Open the new link printed by <code className="mono">evoalgo ui</code>.</>
+            ? <>Access refused: open the link printed by <code className="mono">evoalgo ui</code> (a restarted server prints a new one).</>
             : <>This run no longer exists. <a href="#/">Back to runs</a></>}</span>
         </div>
       ) : live && <Activity state={state} status={status} runId={runId} now={now} />}

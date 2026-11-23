@@ -239,6 +239,12 @@ def test_unusable_backend_stops_after_seeding(tmp_path):
     assert "binary not found" in summary["agent_error"]
     failed = [e for e in read_events(tmp_path / "b") if e["type"] == "agent_failed"]
     assert [e["error"] for e in failed] == ["harness binary not found: /x/opencode"] * 2
+    # Resumed with the backend still broken: it stops again after one generation.
+    orch = Orchestrator(cfg, run_id="b")
+    orch.provider.backend = Broken()
+    again = orch.run()
+    assert again["stop_reason"] == "agent_unavailable" and again["generation"] == 2
+    assert again["model_calls"] == 4
     # Once the backend works, resume continues the run.
     resumed = Orchestrator(cfg, run_id="b").run()
     assert resumed["stop_reason"] != "agent_unavailable" and resumed["best_fitness"] == 1.0

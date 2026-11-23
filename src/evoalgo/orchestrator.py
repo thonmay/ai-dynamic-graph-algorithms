@@ -107,6 +107,7 @@ class Orchestrator:
 
         self.generation = 0
         self.consecutive_all_failed = 0
+        self.agent_retry = False  # resumed from agent_unavailable: recheck once
         self.model_calls = 0
         self.stop_reason: str | None = None
         self.fitness_history: list[float] = []
@@ -348,6 +349,18 @@ class Orchestrator:
             error=(candidate.error_message or "")[:500] or None,
         )
 
+    def _check_agent_unavailable(self, new_candidates: list[Candidate]) -> None:
+        """Stop if not one call of the generation produced a candidate: the
+        backend is unusable (missing binary or key, unreachable endpoint), so
+        further generations cannot help. Checked after seeding and after the
+        first generation of a run resumed from such a stop."""
+        self.agent_retry = False
+        if new_candidates or self.stop_reason:
+            return
+        self.stop_reason = "agent_unavailable"
+        logger.error("No agent call produced a candidate: %s",
+                     self.provider.last_error or "no error reported")
+
     def _budget_left(self) -> bool:
         if self.model_calls < self.config.model_call_budget:
             return True
@@ -371,7 +384,7 @@ class Orchestrator:
         if not code_path.exists():
             if role == "seed":
                 logger.warning("Generator did not produce %s", code_path)
-            error = (self.provider.call_error or "")[:300] or None
+            error = (self.provider.call_error or "")[-500:] or None
             self.events.emit("agent_failed", gen=gen, id=candidate_id, role=role, error=error)
             return None
         candidate = Candidate(id=candidate_id, code_path=str(code_path), generation=gen,
@@ -425,7 +438,9 @@ class Orchestrator:
         self.stop_reason = latest.get("stop_reason")
 
         # Same for the generation limit.
-        # A fixed backend (key exported, binary installed) can continue.
+        # A fixed backend (key exported, binary installed) can continue; if it
+        # is still broken, the first resumed generation stops the run again.
+        self.agent_retry = self.stop_reason == "agent_unavailable"
         if self.stop_reason in ("max_generations", "agent_unavailable") \
                 and self.generation < self.config.max_generations:
             self.stop_reason = None
@@ -483,12 +498,7 @@ class Orchestrator:
                 break
         self._verify_and_reflect(new_candidates, 1)
         self.generation = 1
-        if not new_candidates and not self.stop_reason:
-            # Not one seed produced: the backend is unusable (missing binary
-            # or key, unreachable endpoint), so further generations cannot help.
-            self.stop_reason = "agent_unavailable"
-            logger.error("No agent call produced a candidate: %s",
-                         self.provider.last_error or "no error reported")
+        self._check_agent_unavailable(new_candidates)
         self._check_stop_conditions()
         self._commit_generation()
 
@@ -576,6 +586,8 @@ class Orchestrator:
                 elif self.stop_reason:
                     break
 
+        if self.agent_retry:
+            self._check_agent_unavailable(new_candidates)
         if not new_candidates:
             logger.warning("Generation %d produced no candidates", gen)
             self._check_stop_conditions()

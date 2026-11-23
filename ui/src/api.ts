@@ -96,7 +96,7 @@ export function useRunStream(runId: string) {
       ws.onclose = () => {
         setConnected(false)
         // Browsers hide why a websocket closed; ask the HTTP API instead.
-        fetch(`api/runs/${encodeURIComponent(runId)}`).then((r) => {
+        if (!closed) fetch(`api/runs/${encodeURIComponent(runId)}`).then((r) => {
           if (!closed) setRefused(r.status === 401 ? 'token' : r.status === 404 ? 'run' : null)
         }).catch(() => {})
         if (wsRef.current === ws) wsRef.current = null
