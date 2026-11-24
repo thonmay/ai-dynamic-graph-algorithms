@@ -38,9 +38,7 @@ def runs(tmp_path, monkeypatch):
     shutil.copytree(SRC_RUN / "prompt_logs", run / "prompt_logs")
     backfill(run)
     (tmp_path / "bare").mkdir()
-    # The recorded run predates the harness rename to opencode.
-    for cfg in (run / "config.yaml", tmp_path / "bare" / "config.yaml"):
-        cfg.write_text((SRC_RUN / "config.yaml").read_text().replace("provider: enlcode", "provider: opencode"))
+    shutil.copy(SRC_RUN / "config.yaml", tmp_path / "bare" / "config.yaml")
     monkeypatch.setattr(server, "POLL_SECONDS", 0.01)
     return tmp_path
 
