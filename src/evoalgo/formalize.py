@@ -16,13 +16,16 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-from .agents.harness import OpencodeBackend, harness_env
+from .agents.harness import OpencodeBackend, confined, harness_env, jail_error
 from .config import RunConfig
+from .sandbox import JAIL_ENV
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +169,8 @@ def _dispatch_agent(
     run_dir: Path,
     task: str,
     model: str | None,
+    candidate_path: Path,
+    project_dir: Path,
     timeout: int = 900,
 ) -> tuple[int, str, str | None]:
     """Dispatch one opencode agent invocation.
@@ -176,9 +181,22 @@ def _dispatch_agent(
     if model:
         cmd.extend(["-m", model])
     cmd.append(task)
+    if error := jail_error():
+        return -1, "", error
+    # Jailed like the other harness calls (agents/harness.py): the prover sees
+    # the Lean project and a copy of the candidate at its usual path, not the
+    # verifier or the rest of the run.
+    work = None
+    if os.environ.get(JAIL_ENV) != "none":
+        (run_dir / ".agent").mkdir(exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix="formalize-", dir=run_dir / ".agent"))
+        rel = candidate_path.relative_to(run_dir)
+        (work / rel).parent.mkdir(parents=True)
+        shutil.copyfile(candidate_path, work / rel)
+        cmd = confined(cmd, run_dir, work, writable=project_dir)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              env=harness_env("opencode"))
+                              cwd=run_dir, env=harness_env("opencode"))
         return proc.returncode, proc.stdout + "\n" + proc.stderr, None
     except FileNotFoundError:
         return -1, "", f"opencode binary not found at {opencode}"
@@ -186,6 +204,9 @@ def _dispatch_agent(
         return -1, "", f"opencode agent timed out after {timeout}s"
     except Exception as e:  # noqa: BLE001 - record any dispatch failure
         return -1, "", f"agent dispatch failed: {e}"
+    finally:
+        if work is not None:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 def _verify_leanchecker(project_dir: Path, module_name: str) -> tuple[bool, str]:
@@ -495,7 +516,8 @@ def run_formalize(
             banned_before = len(_scan_for_banned(module_path)) if module_path.exists() else 0
             t0 = time.time()
             returncode, report, agent_exc = _dispatch_agent(
-                opencode, run_dir, task, resolved_model, timeout=stage_timeout
+                opencode, run_dir, task, resolved_model, candidate_path, project_dir,
+                timeout=stage_timeout,
             )
             elapsed = time.time() - t0
             total_elapsed += elapsed

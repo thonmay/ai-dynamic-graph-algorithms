@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace as NS
 
+import pytest
+
 from evoalgo.agents.api import ApiBackend
 from evoalgo.agents.base import CallResult, Task, make_backend
 from evoalgo.agents.examples import PUBLIC_N_MAX, run_examples
@@ -372,6 +374,78 @@ def test_api_error_text_drops_response_body():
     text = _safe_error(AuthenticationError("Error code: 401 - Incorrect API key provided: sk-abc...wxyz"))
     assert text == "AuthenticationError (HTTP 401, invalid_api_key)" and "sk-" not in text
     assert _safe_error(TimeoutError("read timed out")) == "TimeoutError: read timed out"
+
+
+FAKE_OPENCODE = r'''#!/bin/sh
+# Stand-in for opencode: probes what an agent with a shell can reach (paths
+# from OPENCODE_* variables, which the harness passes on), then leaves its
+# output file in the run directory it was started in.
+{
+  for f in "$OPENCODE_VERIFIER" "$OPENCODE_TESTFILE"; do
+    if [ -r "$f" ]; then echo "read $f"; fi
+    if [ -w "$f" ]; then echo "write $f"; fi
+  done
+  if [ -e "$OPENCODE_PRIOR" ]; then echo "see $OPENCODE_PRIOR"; fi
+  if cat /proc/[0-9]*/environ 2>/dev/null | tr '\0' '\n' | grep -q EVOALGO_TEST_KEY; then echo "key"; fi
+} > "$OPENCODE_PROBE"
+ln -s "$OPENCODE_VERIFIER" candidates/escape.py 2>/dev/null || :
+if [ -n "$OPENCODE_HARDLINK" ]; then
+  ln "$OPENCODE_HARDLINK" candidates/gen001_c01.py
+else
+  printf 'def init(g): return {}\n' > candidates/gen001_c01.py
+fi
+'''
+
+
+@pytest.mark.parametrize("run_in_repo", [False, True])
+def test_harness_agent_cannot_reach_trusted_code(tmp_path, monkeypatch, run_in_repo):
+    """The opencode backend's process is jailed: it can write its output file
+    but cannot read or change the verifier or the tests, see the rest of the
+    run, or read the engine's environment; a symlink it leaves is not
+    followed back into the run. Also when the run directory is inside the
+    hidden checkout (the default runs/ of a source install)."""
+    import os
+    from pathlib import Path
+    import evoalgo
+    from evoalgo import sandbox
+    from evoalgo.agents import harness
+    if os.environ.get(sandbox.JAIL_ENV) == "none":
+        pytest.skip("jail disabled")
+    if run_in_repo:
+        real = harness.hidden_from_agents
+        monkeypatch.setattr(harness, "hidden_from_agents", lambda: real() + [str(tmp_path / "repo")])
+    probe = tmp_path / "probe" / "out.txt"
+    probe.parent.mkdir()
+    fake = tmp_path / "bin" / "opencode"
+    fake.parent.mkdir()
+    fake.write_text(FAKE_OPENCODE)
+    fake.chmod(0o755)
+    verifier_src = Path(evoalgo.__file__).parent / "verifier.py"
+    before = verifier_src.read_bytes()
+    run = tmp_path / "repo" / "runs" / "r" if run_in_repo else tmp_path / "run"
+    run.mkdir(parents=True)
+    t = task(run)
+    (run / "candidates" / "gen000_c01.py").write_text("prior = 1\n")
+    monkeypatch.setenv("EVOALGO_TEST_KEY", "x")  # like an API key in the engine's environment
+    for name, value in {"VERIFIER": verifier_src, "TESTFILE": Path(__file__),
+                        "PRIOR": run / "candidates" / "gen000_c01.py", "PROBE": probe}.items():
+        monkeypatch.setenv(f"OPENCODE_{name}", str(value))
+    cfg = RunConfig(problem="dynamic_bfs", provider="opencode", harness_bin=str(fake))
+    result = OpencodeBackend(cfg, run).run(t)
+    assert result.ok, result.error
+    assert probe.read_text() == ""
+    assert (run / "candidates" / "gen001_c01.py").read_text() == "def init(g): return {}\n"
+    assert not (run / "candidates" / "escape.py").exists()
+    assert verifier_src.read_bytes() == before
+    assert not list((run / ".agent").iterdir())  # the work directory is removed
+
+    # An output that is a hard link to another file of the user is not taken.
+    other = tmp_path / "probe" / "users_file"
+    other.write_text("not a candidate\n")
+    monkeypatch.setenv("OPENCODE_HARDLINK", str(other))
+    (run / "candidates" / "gen001_c01.py").unlink()
+    result = OpencodeBackend(cfg, run).run(t)
+    assert not result.ok and not (run / "candidates" / "gen001_c01.py").exists()
 
 
 def test_harness_env_is_allow_listed(monkeypatch):

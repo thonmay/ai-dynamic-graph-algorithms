@@ -36,10 +36,35 @@ DEFAULT_CHUNK_SIZE = 2000
 DEFAULT_PARALLEL_CHUNK_SIZE = 1000
 
 
+# Measured at n <= 5 with 8 workers: about 14.5 GB in total, so a worker with
+# its sandbox runner needs up to about 2 GB.
+WORKER_MEMORY_MB = 2048
+
+
+def _available_memory_mb() -> int | None:
+    """MemAvailable, or the cgroup limit when lower (a container's /proc/meminfo
+    shows the host's memory)."""
+    found = []
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                found.append(int(line.split()[1]) // 1024)
+        limit = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        if limit.isdigit():
+            found.append(int(limit) >> 20)
+    except (OSError, ValueError):
+        pass
+    return min(found) if found else None
+
+
 def _default_workers() -> int:
-    """Default worker count: modest on a shared build server (80 cores)."""
-    cpu = os.cpu_count() or 1
-    return max(1, min(8, cpu))
+    """Default worker count: modest on a shared build server (80 cores), and
+    no more than the available memory holds."""
+    workers = min(8, os.cpu_count() or 1)
+    mem = _available_memory_mb()
+    if mem is not None:
+        workers = min(workers, mem // WORKER_MEMORY_MB)
+    return max(1, workers)
 
 logger = logging.getLogger(__name__)
 
@@ -422,23 +447,37 @@ class Verifier:
                 )
                 next_submit += 1
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers=self.workers) as pool:
-            fill()
-            while futures:
-                done, _ = concurrent.futures.wait(
-                    list(futures.values()),
-                    return_when=concurrent.futures.FIRST_COMPLETED,
-                )
-                for fut in done:
-                    idx = next(k for k, v in futures.items() if v is fut)
-                    del futures[idx]
-                    pending[idx] = fut.result()
-                # Merge in chunk order up to the first failure.
-                while next_merge in pending and not stopped:
-                    partial = pending.pop(next_merge)
-                    stopped = self._merge_partial(result, partial, acc)
-                    next_merge += 1
+        try:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=self.workers) as pool:
                 fill()
+                while futures:
+                    done, _ = concurrent.futures.wait(
+                        list(futures.values()),
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for fut in done:
+                        idx = next(k for k, v in futures.items() if v is fut)
+                        del futures[idx]
+                        pending[idx] = fut.result()
+                    # Merge in chunk order up to the first failure.
+                    while next_merge in pending and not stopped:
+                        partial = pending.pop(next_merge)
+                        stopped = self._merge_partial(result, partial, acc)
+                        next_merge += 1
+                    fill()
+        except concurrent.futures.process.BrokenProcessPool:
+            # A worker died (the OOM killer, a signal): not the candidate's
+            # doing, which runs in its own sandbox process. Finish the
+            # unmerged chunks serially; the result is the same.
+            logger.warning("a verifier worker process died (out of memory?); "
+                           "checking the remaining chunks serially")
+            for i, chunk_start, chunk_cases, chunk_meta in chunk_args[next_merge:]:
+                if stopped:
+                    break
+                partial = pending.pop(i, None) or _check_chunk_impl(
+                    self.problem, self.sandbox, ctx["code_path"], chunk_cases, chunk_meta,
+                    chunk_start, ctx["root"], ctx["offline_src"], ctx["adaptive_repeat"])
+                stopped = self._merge_partial(result, partial, acc)
 
 
 # ---------------------------------------------------------------------------

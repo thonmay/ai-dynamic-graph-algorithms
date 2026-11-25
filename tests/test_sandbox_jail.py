@@ -7,6 +7,7 @@ network, or exhaust the host's processes, memory, CPU, disk or output."""
 from __future__ import annotations
 
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -50,8 +51,15 @@ def _probe():
                                       "/run/systemd/journal/socket") if os.path.exists(n)]
     out["pid1"] = os.getpid() == 1
     # Host data the candidate could copy into its result (which the LLM sees).
-    out["host_data"] = [d for d in ("/var/log", "/var/lib", "/opt", "/boot", "/etc/ssh")
-                        if os.path.isdir(d) and os.listdir(d)]
+    # A hidden directory may hold only the path to the interpreter's own
+    # install, bound back read-only (Python under /opt, say).
+    def _extra(d):
+        if not os.path.isdir(d):
+            return []
+        names = [d + "/" + n for n in os.listdir(d)]
+        return [p for p in names if not any(k == p or k.startswith(p + "/") for k in KEEP)]
+    out["host_data"] = [p for d in ("/var/log", "/var/lib", "/opt", "/boot", "/etc/ssh")
+                        for p in _extra(d)]
     return out
 def init(graph): return {"probe": _probe()}
 def insert_edge(graph, edge, state): return state
@@ -67,7 +75,8 @@ def test_candidate_cannot_reach_secrets_or_network(tmp_path, monkeypatch):
     try:
         monkeypatch.setenv("EVOALGO_TEST_SECRET", "x")  # the verifier's env, like an API key
         cand = tmp_path / "cand.py"
-        cand.write_text(f"SECRET_FILE = {str(home_secret)!r}\n"
+        cand.write_text(f"KEEP = {sandbox._keep_paths(sys.executable)!r}\n"
+                        f"SECRET_FILE = {str(home_secret)!r}\n"
                         f"REPO_FILE = {str(Path(sandbox.__file__))!r}\n"
                         f"VENV_FILE = {str(Path(sys.prefix) / 'jail_test_write')!r}\n" + PROBE)
         r = Sandbox(timeout_seconds=60).execute_batch(cand, [{"graph": [[0]], "sequences": [[]]}],
@@ -103,6 +112,13 @@ def test_killed_candidate_is_reported_as_kill_and_traceback_has_line(tmp_path):
     sb = Sandbox(timeout_seconds=60)
     killed = sb.execute_batch(cand, [{"graph": [[0]], "sequences": [[]]}], repeat=1)
     assert killed.status == "timeout" and "killed" in killed.error
+    if os.environ.get(sandbox.JAIL_ENV) != "none":
+        # The jail names the signal itself, whatever unshare reports.
+        import subprocess
+        prefix, env = sandbox.jailed_python()
+        r = subprocess.run(prefix + ["-I", "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"],
+                           capture_output=True, text=True, env=env, timeout=60)
+        assert f"EVOALGO_SIGNAL {int(signal.SIGKILL)}" in r.stderr, r.stderr
     err = sb.execute_batch(cand, [{"graph": [[0, 0], [0, 0]], "sequences": [[]]}], repeat=1)
     assert err.all_results[0][0]["error"] == "KeyError: 0 at line 5: return {}[0]"
 

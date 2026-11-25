@@ -24,6 +24,7 @@ once per candidate) but are executed in a normal ``pytest`` run.
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 
 import numpy as np
@@ -316,6 +317,40 @@ def test_parallel_workers_match_serial_n4(tmp_path):
                 code, tmp_path, f"{pname}_{label}_parallel",
             )
             assert serial == parallel, (pname, label, serial, parallel)
+
+
+def _dies_on_chunk_1(ctx, i, *args):
+    """Stand-in worker (module level: the pool pickles it by name)."""
+    import signal
+    from evoalgo import verifier as vmod
+    if i == 1:
+        os.kill(os.getpid(), signal.SIGKILL)
+    return vmod._check_worker_chunk_real(ctx, i, *args)
+
+
+def test_dead_worker_falls_back_to_the_serial_result(tmp_path, monkeypatch):
+    """A verifier worker killed mid-run (as by the OOM killer) does not end the
+    verification with BrokenProcessPool: the rest is checked serially, with
+    the same result as a serial run."""
+    from evoalgo import verifier as vmod
+
+    monkeypatch.setattr(vmod, "_check_worker_chunk_real", vmod._worker_check_chunk, raising=False)
+    monkeypatch.setattr(vmod, "_worker_check_chunk", _dies_on_chunk_1)  # forked workers inherit it
+    for label, code in {"known-good": reference_code("dynamic_bfs"),
+                        "fault": compose_fault_code("dynamic_bfs", real_faults("dynamic_bfs")[0])}.items():
+        serial = _verify_tuple(_make_verifier("dynamic_bfs", 3, chunk_size=10, workers=1),
+                               code, tmp_path, f"{label}_serial")
+        parallel = _verify_tuple(_make_verifier("dynamic_bfs", 3, chunk_size=10, workers=2),
+                                 code, tmp_path, f"{label}_parallel")
+        assert serial == parallel, (label, serial, parallel)
+
+
+def test_worker_count_fits_available_memory(monkeypatch):
+    from evoalgo import verifier as vmod
+    monkeypatch.setattr(vmod, "_available_memory_mb", lambda: 3 * vmod.WORKER_MEMORY_MB + 1)
+    assert vmod._default_workers() == min(3, os.cpu_count() or 1)
+    monkeypatch.setattr(vmod, "_available_memory_mb", lambda: 100)
+    assert vmod._default_workers() == 1
 
 
 def test_fault_counterexamples_trigger_invariant():

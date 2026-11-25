@@ -66,8 +66,7 @@ HIDDEN_DIRS = ("/home", "/proj", "/tmp", "/var", "/local", "/repo", "/root",
 
 _JAIL_SCRIPT = r'''
 set -e
-uid=$1; gid=$2; shift 2
-r=/mnt
+uid=$1; gid=$2; r=$3; shift 3
 mount --rbind / "$r"
 while [ "$1" != "--keep" ]; do
   # Not through a symlink: it would resolve against the host root.
@@ -90,8 +89,14 @@ pivot_root . tmp/.old
 umount -l /tmp/.old
 rmdir /tmp/.old
 cd /
-# --fork: the candidate is not pid 1 (pid 1 ignores signals it has no handler for).
-exec unshare -U --fork --kill-child --map-user="$uid" --map-group="$gid" -- "$@"
+# This shell stays pid 1 and waits, so the runner is not pid 1 (pid 1 ignores
+# signals it has no handler for), and it names the signal that ended the
+# runner: unshare --fork's own report of that differs between util-linux
+# versions. Its credentials are of this namespace: the runner cannot read it.
+r=0
+unshare -U --map-user="$uid" --map-group="$gid" -- "$@" || r=$?
+if [ "$r" -gt 128 ]; then echo "EVOALGO_SIGNAL $((r - 128))" >&2; fi
+exit "$r"
 '''
 
 # Recursive read-only remount. util-linux's ro=recursive does not apply to
@@ -147,6 +152,9 @@ def _jail_prefix(python: str, readonly: tuple[str, ...] = ()) -> list[str] | Non
     """
     if os.environ.get(JAIL_ENV) == "none":
         return None
+    # Lexically, not realpath: a venv's python is a symlink that must stay
+    # inside the venv. A ".." would walk through directories the jail hides.
+    python = os.path.abspath(python)
     key = (python, tuple(sorted(os.path.realpath(p) for p in readonly)))
     if key not in _JAIL_CACHE:
         hint = f"set {JAIL_ENV}=none to run candidates unconfined at your own risk"
@@ -182,7 +190,14 @@ def jailed_python(readonly: tuple[str, ...] = (), python: str | None = None) -> 
 def _jail_argv(python: str, keep: list[str]) -> list[str]:
     hidden = sorted({d for h in HIDDEN_DIRS for d in (h, os.path.realpath(h))})
     return ["unshare", "-rnmpfi", "--kill-child", "sh", "-c", _JAIL_SCRIPT, "jail",
-            str(os.getuid()), str(os.getgid()), *hidden, "--keep", *keep, "--", python]
+            str(os.getuid()), str(os.getgid()), _staging_dir(), *hidden, "--keep", *keep,
+            "--", python]
+
+
+def _staging_dir() -> str:
+    """Where the jail assembles its tree: an existing directory, since an
+    unprivileged user cannot create one at the host root. /tmp always exists."""
+    return "/mnt" if os.path.isdir("/mnt") and not os.path.islink("/mnt") else "/tmp"
 
 
 # numpy's BLAS otherwise starts one thread per core in every runner: the
@@ -582,10 +597,9 @@ class Sandbox:
 
         if "EVOALGO_CPU_LIMIT" in stderr[-200:]:
             return SandboxResult(status="timeout", error="CPU time limit exceeded")
-        # Through unshare a signal death of the candidate shows as exit 1
-        # with this message instead of -N/128+N.
-        signalled = jail and not stdout and "sigprocmask unblock failed" in stderr
-        if rc in (-signal.SIGKILL, 137) or signalled:
+        # Jailed, the reaper reports the signal; unjailed, the return code is -N.
+        signalled = jail and f"EVOALGO_SIGNAL {int(signal.SIGKILL)}" in stderr[-200:]
+        if rc == -signal.SIGKILL or signalled:
             return SandboxResult(status="timeout", error="Process killed (OOM or CPU limit)")
 
         if rc != 0 and not stdout:
