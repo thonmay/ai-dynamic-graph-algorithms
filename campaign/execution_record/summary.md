@@ -1,6 +1,6 @@
 # Execution record
 
-Revision `71f89e942169089b70948c1052d0b98b9d7adcb1`, recorded 2026-11-23. Platform: Linux x86_64, user
+Revision `f7ba4d1826c4c1ad6a2451c04fc654d7e271bd1c`, recorded 2026-11-26. Platform: Linux x86_64, user
 namespaces available, sandbox jail on (`EVOALGO_SANDBOX` unset). Environment
 and the exact transitive dependency set: `01_environment.txt`.
 
@@ -38,10 +38,10 @@ model-driven research evidence is the committed campaign under `campaign/`.
 | 44_status_after_stop | `$WORK/venv/bin/evoalgo status $WORK/runs/stopresume ` | 0 | 0 | OK |
 | 45_resume | `$WORK/venv/bin/evoalgo resume $WORK/runs/stopresume ` | 0 | 0 | OK |
 | 46_lifecycle_events | `evsel stopresume run_start control_ack paused gen_committed run_end ` | 0 | 0 | OK |
-| 50_ui_refuses_without_token | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' 'http://127.0.0.1:34062/api/runs'` | 0 | 0 | OK |
+| 50_ui_refuses_without_token | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' 'http://127.0.0.1:22970/api/runs'` | 0 | 0 | OK |
 | 51_ui_run_list | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' -H 'Authorization: Bearer <token>` | 0 | 0 | OK |
 | 52_ui_run_detail | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' -H 'Authorization: Bearer <token>` | 0 | 0 | OK |
 | 53_ui_candidate | `bash -c test "$(curl -s -o /dev/stderr -w '%{http_code}' -H 'Authorization: Bearer <token>` | 0 | 0 | OK |
-| 54_ui_stream_and_ended_control | `$WORK/venv/bin/python $WORK/ws.py 34062 <token> ` | 0 | 0 | OK |
+| 54_ui_stream_and_ended_control | `$WORK/venv/bin/python $WORK/ws.py 22970 <token> ` | 0 | 0 | OK |
 
 Failed steps: 0. Redaction scan: clean.

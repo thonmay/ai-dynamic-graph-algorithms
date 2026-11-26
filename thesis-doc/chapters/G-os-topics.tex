@@ -1,0 +1,163 @@
+\chapter{Operating Systems in This System}
+\label{app:os-topics}
+
+This appendix relates the subtopics of final-examination topic 17 (Operating
+systems) that the body does not treat to the system as built. Each item says what
+the mechanism is, where it acts in \texttt{evoalgo}, and what was measured on the
+recording host (SUSE Linux Enterprise Server 15 SP6, kernel 6.4, 80 logical CPUs,
+755 GB of memory, no swap). Processes, threads, IPC, signals, namespaces, resource
+limits, deadlock and the virtual address space are in Sections~\ref{sec:design-concurrency},
+\ref{sec:design-sandbox} and~\ref{sec:impl-concurrency}.
+
+\section{The kind of operating system the tool needs}
+
+Linux here is a multi-user, multiprogramming, time-sharing operating system with
+a monolithic kernel \citep{silberschatz2018os,tanenbaum2015modern}. The design
+depends on each of these properties. Multiprogramming and time-sharing let eight
+verifier workers, their runners, the engine and the UI server share the CPUs.
+Being multi-user, it has per-user credentials and permission checks, which is what
+makes an unprivileged user namespace safe to create: inside it a process is root
+only over objects the namespace owns. The kernel, not a library, enforces the
+mount, PID, network and IPC isolation; a batch or single-user system could not
+host the candidate jail without root. The design also assumes two pieces of CPU
+support. The first is a memory-management unit that gives each process its own
+address space, so a candidate's memory cannot reach the verifier's. The second is
+the user/kernel mode distinction, which makes \texttt{mount\_setattr} and
+\texttt{pivot\_root} system calls the jail requests rather than operations it can
+perform itself. The same kernel mechanisms confine the coding-agent harness
+(Section~\ref{sec:impl-agents}).
+
+\section{CPU scheduling}
+
+The verifier stacks three levels of scheduling. The first two are its own; the
+third is the kernel's. First, chunks are dispatched to workers first-come,
+first-served in chunk order; it is not preemptive, and a hanging chunk is stopped
+only by the per-chunk wall-clock timeout, which acts like a fixed time quantum
+for a whole job. Second, inside the UI server, \texttt{asyncio} schedules its
+tasks cooperatively: a task runs until its next \texttt{await}, so there is no
+preemption and no lock is needed (Section~\ref{sec:impl-concurrency}). Third, the
+kernel's fair scheduler time-shares the worker processes: each runnable process
+gets CPU in proportion to its weight, the process that has run least is picked
+next, and a process that waits on a pipe is not runnable and gets no share. On
+this host the worker count (at most eight) is below the CPU count, so the
+CPU-bound runners are rarely preempted at all.
+
+Starvation is ruled out at each level. In-order dispatch means a chunk waits for
+at most \texttt{workers} earlier ones; cooperative tasks yield at every
+\texttt{await} on the socket or the file; and the fair scheduler bounds the wait
+of every runnable process. Shortest-job-first would be a poor choice for the
+first level even though chunk costs differ: the merge must proceed in chunk order
+(Section~\ref{sec:impl-concurrency}), so finishing a short later chunk first
+gains nothing until the earlier one is done.
+
+\section{Mutual exclusion without hardware support}
+
+Peterson's algorithm achieves mutual exclusion for two threads with two flags
+and a turn variable, using only ordinary loads and stores
+\citep{herlihy2012art}. It is correct only if those loads and stores are
+sequentially consistent, which modern CPUs and compilers do not guarantee
+without memory barriers, and it busy-waits. The system needs mutual exclusion
+in two places, and Peterson's algorithm fits neither. The two sides of the
+harness workspace check are separate processes with no shared memory to hold
+flags, and the waiting side should sleep, not spin. The workspace therefore uses
+\texttt{fcntl.flock}: the kernel holds the lock and blocks the waiter, so the
+critical section (grading the snapshot and appending to \texttt{results.tsv})
+is entered by one check at a time, without spinning. The append-only event and
+control logs avoid a critical section altogether by making each record one
+\texttt{write} (Section~\ref{sec:design-concurrency}).
+
+\section{Paging, segmentation and the page table}
+
+The address-space limit of the sandbox (Section~\ref{sec:design-sandbox}) acts
+on paged virtual memory. With paging, a virtual address is a page number and an
+offset, and the page table maps each page to a physical frame. Pages are of
+fixed size (4096 bytes on this host), so physical memory has no external
+fragmentation, only internal fragmentation inside a process's last page of each
+mapping. Segmentation instead divides the address space into variable-sized
+logical segments (code, data, stack) with a base and a limit. It matches how a
+program is organised, and it protects each segment as a unit. Its cost is
+external fragmentation, because segments of different sizes leave holes in
+physical memory. x86-64 keeps segments only vestigially (flat segments, with
+\texttt{fs} and \texttt{gs} for thread-local storage), so a runner's memory is
+protected page by page: each mapping of the interpreter, NumPy and the
+candidate's data is a set of pages with its own permissions.
+
+A flat page table for a 48-bit virtual address space would need $2^{36}$
+entries per process. The host's CPUs report 48-bit virtual addresses, so the
+kernel uses a four-level page table: each level is indexed by 9 bits of the
+address, and a lower-level table exists only for the parts of the space that
+are populated. A runner that maps 4 GB of address space but touches 600 MB
+therefore pays for page tables only for the ranges it populates, and, by demand
+paging (Section~\ref{sec:design-sandbox}), for frames only for the pages it
+touched. Every memory access would need four table look-ups. The translation
+lookaside buffer (TLB) caches recent translations, so that most accesses need
+none. Two effects matter here. A chunk's per-graph data is tiny (adjacency
+matrices of at most five vertices, a few hundred bytes as NumPy arrays), so the
+pages it touches repeatedly are few and the TLB rarely misses. A runner is also
+a fresh process, which starts with no cached translations of its own; the 80
+CPUs support process-context identifiers (\texttt{pcid}), which let the
+translations of different processes stay in the TLB across a context switch, so
+switching between the concurrently running workers and runners does not flush
+it each time. Transparent huge pages are enabled on the host (\texttt{always}), so
+large mappings can use 2 MB pages and one TLB entry covers 512 ordinary pages.
+
+\section{Page replacement}
+
+When memory is short, the kernel must choose which page to evict. Least recently
+used (LRU) evicts the page unused for longest, a good approximation of the
+optimal choice for programs with locality, but exact LRU needs a timestamp per
+access, so kernels approximate it. Linux keeps active and inactive lists and
+uses the hardware accessed bit, a clock-like second chance
+\citep{silberschatz2018os}. On this host the question is mostly avoided by
+design: there is no swap, so anonymous pages (the runners' heaps) cannot be
+evicted at all, and under real memory pressure the kernel's out-of-memory killer
+ends a process instead. That is the failure mode the verifier now handles. The
+worker count is capped so that the measured demand fits the available memory
+(2 GB per worker; 14.5 GB in total for eight workers at $n \le 5$), and a worker
+the kernel kills anyway is detected as \texttt{BrokenProcessPool}, after which the
+remaining chunks are checked serially with the same result
+(Section~\ref{sec:impl-concurrency}). File-backed pages, such as the
+interpreter's code and the test-graph data, can be evicted and read back, and
+the read-only jail mounts share them between all runners.
+
+\section{Input/output scheduling}
+
+The verifier's disk I/O is small: it reads the nauty graph data once per process
+and writes one generation file and a few log lines per generation. The host's
+block devices use the \texttt{mq-deadline} I/O scheduler, which sorts requests to
+reduce seeks and gives each request a deadline so that none waits indefinitely.
+It thus prevents starvation at the device, as the fair scheduler does for the
+CPU. The I/O that matters for this design is pipe and socket I/O. The sandbox's
+feed and drain threads use blocking reads and writes, because each thread
+serves exactly one pipe, and a blocked thread costs nothing while it waits. The
+UI server serves many WebSockets on one thread, so it uses non-blocking I/O
+through the \texttt{asyncio} event loop, which on Linux waits on
+\texttt{epoll}: one wait covers all sockets, and a task resumes only when its
+socket is ready.
+
+\section{Storage, file systems and redundancy}
+
+Three kinds of file system hold the system's data, chosen per use. The run
+directories are on NFS (the shared project storage), a network file system whose
+server owns the data and caches it on the clients. The host's \texttt{/tmp} is
+btrfs, a local copy-on-write file system. The jail's \texttt{/tmp} and the
+covers of the hidden directories are tmpfs, which lives in memory and disappears
+with the mount namespace. The persistence design relies on two file-system
+services and states where they stop holding. The first is \texttt{os.replace},
+an atomic rename within one directory, which makes a generation file appear
+whole or not at all. The second is \texttt{O\_APPEND} single-write appends for
+the logs, which are atomic on a local file system but not guaranteed when
+processes on different NFS clients append to one file. Only the engine appends
+to \texttt{events.jsonl}, so there the question does not arise; the several
+writers of \texttt{control.jsonl} (the CLI and the UI server) are safe as long
+as they run on one host, which is how the tool is used, but the tool does not
+enforce it. Every record is followed by \texttt{fsync}, so an acknowledged event
+or command survives a crash of the process that wrote it. The
+\texttt{COMMITTED} marker is not atomic (Section~\ref{sec:impl-shortcomings}).
+
+Redundancy (RAID mirroring or parity across disks, and server-side replication)
+belongs to the storage layer under NFS, not to this tool. The tool's own answer
+to data loss is the backup rule of Section~\ref{sec:ud-security}: a run is
+exactly its directory, so a copy is a complete backup. The append-only event
+log, the checksummed generation files and the commit marker let a copied or
+interrupted run be verified and resumed.
