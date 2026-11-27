@@ -754,7 +754,7 @@ def _generate_known_good_candidate(problem_name: str) -> str:
     }
     if problem_name not in algorithms:
         raise ValueError(f"no known-good recompute candidate for {problem_name!r}")
-    algo = algorithms.get(problem_name, _BFS_CODE)
+    algo = algorithms[problem_name]
     return f'''# Known-good candidate: recompute from scratch after each update
 # Problem: {problem_name}
 

@@ -28,6 +28,20 @@ def _extract_ordering(state: Any) -> list[int] | None:
     return None
 
 
+def _bfs_distances(graph: np.ndarray, root: int) -> dict[int, int]:
+    """Shortest-path distances from ``root`` in ``graph`` (keys are reachable vertices)."""
+    n = graph.shape[0]
+    dist = {root: 0}
+    queue = deque([root])
+    while queue:
+        u = queue.popleft()
+        for v in range(n):
+            if graph[u, v] == 1 and v not in dist:
+                dist[v] = dist[u] + 1
+                queue.append(v)
+    return dist
+
+
 class ProblemDefinition(ABC):
     """Base class for problem definitions."""
 
@@ -51,11 +65,6 @@ class ProblemDefinition(ABC):
     @abstractmethod
     def offline_compute(self, graph: np.ndarray, root: int | None) -> Any:
         """Compute the reference result from scratch."""
-        ...
-
-    @abstractmethod
-    def baseline_work(self, graph: np.ndarray) -> int:
-        """Estimate work for offline recomputation (vertices + edges scanned)."""
         ...
 
     @property
@@ -161,8 +170,8 @@ def offline_compute(graph, root):
                     return False
 
         # (2) Tree spans all vertices reachable from root
-        distances = self._bfs_distances(graph, root)
-        tree_reachable = self._tree_reachable(parent, root, n)
+        distances = _bfs_distances(graph, root)
+        tree_reachable = self._tree_reachable(parent, root)
         for v in range(n):
             if distances.get(v, -1) != -1 and v not in tree_reachable:
                 return False
@@ -222,10 +231,6 @@ def offline_compute(graph, root):
     def offline_compute(self, graph: np.ndarray, root: int | None) -> dict:
         return self._bfs_tree(graph, root)
 
-    def baseline_work(self, graph: np.ndarray) -> int:
-        n = graph.shape[0]
-        return n + int(graph.sum())
-
     def _extract_parent(self, state: Any) -> dict[int, int | None] | None:
         if isinstance(state, dict):
             p = state.get("parent")
@@ -236,18 +241,6 @@ def offline_compute(graph, root):
             if isinstance(p, np.ndarray):
                 return {i: int(p[i]) for i in range(len(p))}
         return None
-
-    def _bfs_distances(self, graph: np.ndarray, root: int) -> dict[int, int]:
-        n = graph.shape[0]
-        dist = {root: 0}
-        queue = deque([root])
-        while queue:
-            u = queue.popleft()
-            for v in range(n):
-                if graph[u, v] == 1 and v not in dist:
-                    dist[v] = dist[u] + 1
-                    queue.append(v)
-        return dist
 
     def _bfs_tree(self, graph: np.ndarray, root: int | None) -> dict:
         n = graph.shape[0]
@@ -263,7 +256,7 @@ def offline_compute(graph, root):
                     queue.append(v)
         return {"parent": parent, "distances": dist}
 
-    def _tree_reachable(self, parent: dict, root: int, n: int) -> set[int]:
+    def _tree_reachable(self, parent: dict, root: int) -> set[int]:
         reachable = {root}
         children: dict[int, list[int]] = {}
         for v, p in parent.items():
@@ -345,9 +338,9 @@ def offline_compute(graph, root):
         if parent is None or discover is None or finish is None:
             return False
 
-        parent = self._normalize_dict(parent, graph.shape[0])
-        discover = self._normalize_dict(discover, graph.shape[0])
-        finish = self._normalize_dict(finish, graph.shape[0])
+        parent = self._normalize_dict(parent)
+        discover = self._normalize_dict(discover)
+        finish = self._normalize_dict(finish)
 
         # Verify DFS forest certificate: parent pointers + discovery/finish times
         # are consistent with a DFS of the current graph per Yang et al.
@@ -376,11 +369,7 @@ def offline_compute(graph, root):
             dfs(root)
         return {"parent": parent, "discover": discover, "finish": finish}
 
-    def baseline_work(self, graph: np.ndarray) -> int:
-        n = graph.shape[0]
-        return n + int(graph.sum())
-
-    def _normalize_dict(self, data: Any, n: int) -> dict[int, Any]:
+    def _normalize_dict(self, data: Any) -> dict[int, Any]:
         if isinstance(data, dict):
             return {int(k): v for k, v in data.items()}
         if isinstance(data, (list, tuple)):
@@ -404,7 +393,7 @@ def offline_compute(graph, root):
             return False
 
         # Every vertex reachable from root must be in the forest
-        reachable = self._reachable_vertices(graph, root)
+        reachable = set(_bfs_distances(graph, root))
         for v in reachable:
             if v not in discover:
                 return False
@@ -470,20 +459,6 @@ def offline_compute(graph, root):
                         return False
 
         return True
-
-    def _reachable_vertices(self, graph: np.ndarray, root: int) -> set[int]:
-        n = graph.shape[0]
-        visited = set()
-        stack = [root]
-        while stack:
-            u = stack.pop()
-            if u in visited:
-                continue
-            visited.add(u)
-            for v in range(n):
-                if graph[u, v] == 1 and v not in visited:
-                    stack.append(v)
-        return visited
 
 
 class DynamicMCS(ProblemDefinition):
@@ -627,10 +602,6 @@ def offline_compute(graph, root):
 
         return ordering
 
-    def baseline_work(self, graph: np.ndarray) -> int:
-        n = graph.shape[0]
-        return n * n  # O(n^2) for MCS
-
 
 class DynamicSCC(ProblemDefinition):
     """Strongly Connected Components partition (directed)."""
@@ -728,10 +699,6 @@ def offline_compute(graph, root):
 
     def offline_compute(self, graph: np.ndarray, root: int | None) -> list[list[int]]:
         return self._tarjan_scc(graph)
-
-    def baseline_work(self, graph: np.ndarray) -> int:
-        n = graph.shape[0]
-        return n + int(graph.sum())
 
     def _extract_components(self, state: Any) -> list[set[int]] | None:
         if isinstance(state, dict):
@@ -848,15 +815,11 @@ def offline_compute(graph, root):
         maintained = self._extract_set(state)
         if maintained is None:
             return False
-        true_reachable = self._bfs_reachable(graph, root)
+        true_reachable = set(_bfs_distances(graph, root))
         return maintained == true_reachable
 
     def offline_compute(self, graph: np.ndarray, root: int | None) -> set[int]:
-        return self._bfs_reachable(graph, root)
-
-    def baseline_work(self, graph: np.ndarray) -> int:
-        n = graph.shape[0]
-        return n + int(graph.sum())
+        return set(_bfs_distances(graph, root))
 
     def _extract_set(self, state: Any) -> set[int] | None:
         if isinstance(state, dict):
@@ -871,18 +834,6 @@ def offline_compute(graph, root):
         if isinstance(state, np.ndarray):
             return set(int(x) for x in state)
         return None
-
-    def _bfs_reachable(self, graph: np.ndarray, root: int) -> set[int]:
-        n = graph.shape[0]
-        visited = {root}
-        queue = deque([root])
-        while queue:
-            u = queue.popleft()
-            for v in range(n):
-                if graph[u, v] == 1 and v not in visited:
-                    visited.add(v)
-                    queue.append(v)
-        return visited
 
 
 class DynamicLBFS(ProblemDefinition):
@@ -992,10 +943,6 @@ def offline_compute(graph, root):
                     refined.append(b)
             partition = refined
         return order
-
-    def baseline_work(self, graph: np.ndarray) -> int:
-        n = graph.shape[0]
-        return n * n  # O(n^2) partition-refinement LexBFS
 
     def failing_context(self, state: Any, graph: np.ndarray, root: int | None) -> dict:
         ordering = _extract_ordering(state)

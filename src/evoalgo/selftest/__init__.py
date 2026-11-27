@@ -6,13 +6,11 @@ corpus with equivalent controls (``faults``), used by ``evoalgo verify`` and the
 tests.
 """
 
-from .references import reference_code, reference_functions, REFERENCE_CODE
+from .references import reference_code
 from .faults import FAULTS, faults_for, compose_fault_code
 
 __all__ = [
     "reference_code",
-    "reference_functions",
-    "REFERENCE_CODE",
     "FAULTS",
     "faults_for",
     "compose_fault_code",

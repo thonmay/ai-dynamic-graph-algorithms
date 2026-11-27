@@ -443,7 +443,7 @@ class Verifier:
             while next_submit < n_chunks and len(futures) < self.workers and not stopped:
                 i, chunk_start, chunk_cases, chunk_meta = chunk_args[next_submit]
                 futures[i] = pool.submit(
-                    _worker_check_chunk, ctx, i, chunk_start, chunk_cases, chunk_meta,
+                    _worker_check_chunk, ctx, chunk_start, chunk_cases, chunk_meta,
                 )
                 next_submit += 1
 
@@ -494,7 +494,7 @@ def _worker_sandbox(ctx: dict[str, Any]) -> Sandbox:
     )
 
 
-def _worker_check_chunk(ctx: dict[str, Any], i: int, chunk_start: int,
+def _worker_check_chunk(ctx: dict[str, Any], chunk_start: int,
                         chunk_cases: list, chunk_meta: list) -> dict[str, Any]:
     """Worker entry point: rebuild trusted objects and check one chunk.
 

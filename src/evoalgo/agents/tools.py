@@ -81,27 +81,29 @@ class Toolbox:
         self.out.parent.mkdir(parents=True, exist_ok=True)
         self.examples_runs = 0
 
+    def _is_under_roots(self, path: Path, roots: list[Path | None]) -> bool:
+        return any(r is not None and (path == r or r in path.parents) for r in roots)
+
+    def _run_roots(self) -> list[Path]:
+        run = self.task.run_dir.resolve()
+        return [(run / "candidates").resolve(), (run / "reflections").resolve()]
+
     def _resolve_read(self, raw: str) -> Path | None:
         raw = (raw or "").strip().lstrip("/")
         if raw.startswith("pack/"):
             if self.pack_dir is None:
                 return None
             base, rel = self.pack_dir, raw[len("pack/"):]
+            allowed: list[Path | None] = [self.pack_dir]
         else:
             base, rel = self.task.run_dir.resolve(), raw
+            allowed = list(self._run_roots())
         target = (base / rel).resolve()
-        allowed = [self.pack_dir] if base == self.pack_dir else [
-            (self.task.run_dir / "candidates").resolve(), (self.task.run_dir / "reflections").resolve()]
-        if any(a is not None and (target == a or a in target.parents) for a in allowed):
-            return target
-        return None
+        return target if self._is_under_roots(target, allowed) else None
 
     def _is_allowed_dir(self, folder: Path) -> bool:
         """True if folder is one of the readable roots or inside one."""
-        roots = [self.pack_dir, (self.task.run_dir / "candidates").resolve(),
-                 (self.task.run_dir / "reflections").resolve()]
-        folder = folder.resolve()
-        return any(r is not None and (folder == r or r in folder.parents) for r in roots)
+        return self._is_under_roots(folder.resolve(), [self.pack_dir, *self._run_roots()])
 
     def call(self, name: str, raw_args: str | None) -> str:
         try:

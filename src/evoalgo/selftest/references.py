@@ -439,17 +439,6 @@ def reference_blocks(problem_name: str) -> tuple[dict[str, str], list[str]]:
     return blocks, order
 
 
-def reference_functions(problem_name: str) -> tuple:
-    """Return the in-process (init, insert_edge, delete_edge) of the known-good.
-
-    Used by tests to exercise the reference without the sandbox. The functions
-    operate on plain list-of-lists graphs (as the sandbox passes them).
-    """
-    ns: dict = {}
-    exec(compile(reference_code(problem_name), "<reference>", "exec"), ns)
-    return ns["init"], ns["insert_edge"], ns["delete_edge"]
-
-
 # Mutations of the Yang reference (one textual change each) with the
 # smallest counterexample found by exhaustive search over n <= 5 single
 # updates; ``None`` means no single update breaks it and it only shows over
@@ -486,7 +475,3 @@ def yang_mutation_code(mutation: dict) -> str:
     if code == YANG_DFS_CODE:
         raise ValueError(f"mutation {mutation['id']} does not apply")
     return code
-
-
-# Convenience: the known-good source for each corpus problem.
-REFERENCE_CODE = {name: reference_code(name) for name in CORPUS_PROBLEMS}

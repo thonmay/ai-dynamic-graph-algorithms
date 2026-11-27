@@ -750,16 +750,3 @@ class Orchestrator:
                      summary["best_fitness"], self.generation)
 
         return summary
-
-    def status(self) -> dict[str, Any]:
-        """Return current run status for CLI."""
-        return {
-            "run_id": self.run_id,
-            "generation": self.generation,
-            "best_fitness": self.population.best_fitness,
-            "population_size": self.population.size,
-            "passing": self.population.has_passing,
-            "stop_reason": self.stop_reason,
-            "model_calls": self.model_calls,
-            "consecutive_all_failed": self.consecutive_all_failed,
-        }
