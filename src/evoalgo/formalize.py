@@ -273,16 +273,36 @@ def _verify_lean_no_sorry(project_dir: Path, module_path: Path) -> tuple[bool, s
 THEOREM_DECL = re.compile(r"^theorem\s")
 
 
+RAW_STRING_START = re.compile(r'(?<![\w.])r(#*)"')
+CHAR_LITERAL = re.compile(r"(?<![\w'.])'(?:\\.[^']*|[^'\\])'")  # not the prime of h'
+
+
 def _iter_lean_code_lines(lines: list[str]) -> list[tuple[int, str]]:
-    """Yield (1-based line_no, code) with Lean `--` and nested `/- ... -/` comments stripped."""
+    """Yield (1-based line_no, code) with Lean `--` and nested `/- ... -/` comments stripped.
+
+    String and char literals are kept as code, and comment markers inside
+    them are not comments: otherwise `"/-"` would hide the code after it.
+    """
     out: list[tuple[int, str]] = []
     depth = 0
+    close: str | None = None  # inside a string literal: what ends it
     for lineno, line in enumerate(lines, 1):
         buf: list[str] = []
         i = 0
         n = len(line)
         while i < n:
-            if depth > 0:
+            if close is not None:
+                if close == '"' and line[i] == "\\":
+                    buf.append(line[i : i + 2])
+                    i += 2
+                elif line.startswith(close, i):
+                    buf.append(close)
+                    i += len(close)
+                    close = None
+                else:
+                    buf.append(line[i])
+                    i += 1
+            elif depth > 0:
                 if line[i : i + 2] == "/-":
                     depth += 1
                     i += 2
@@ -292,9 +312,22 @@ def _iter_lean_code_lines(lines: list[str]) -> list[tuple[int, str]]:
                 else:
                     i += 1
             else:
+                raw = RAW_STRING_START.match(line, i)
+                char = CHAR_LITERAL.match(line, i)
                 if line[i : i + 2] == "--":
                     break
-                if line[i : i + 2] == "/-":
+                if raw:
+                    buf.append(raw.group(0))
+                    close = '"' + raw.group(1)
+                    i = raw.end()
+                elif line[i] == '"':
+                    buf.append('"')
+                    close = '"'
+                    i += 1
+                elif char:
+                    buf.append(char.group(0))
+                    i = char.end()
+                elif line[i : i + 2] == "/-":
                     depth += 1
                     buf.append(" ")  # preserve token separation across inline block comments
                     i += 2

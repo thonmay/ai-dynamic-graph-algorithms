@@ -31,3 +31,17 @@ def test_has_theorem_ignores_commented_theorem(tmp_path):
     )
     assert _has_theorem(p) is False
     assert _scan_for_banned(p) == []
+
+
+def test_comment_markers_inside_literals_do_not_hide_code(tmp_path):
+    p = tmp_path / "Str.lean"
+    p.write_text(
+        'def s := "/-"\n'
+        "axiom bad : False\n"
+        'def s2 := "-/ \\" --"\n'
+        "def c := '-' -- a char, then a comment: sorry\n"
+        'def r := r#"a "/-" b"# admit\n'
+        "theorem t (h' : True) : True := h'\n"
+    )
+    assert _has_theorem(p) is True
+    assert _scan_for_banned(p) == ["2: axiom", "5: admit"]

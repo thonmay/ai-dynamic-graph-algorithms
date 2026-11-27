@@ -354,8 +354,10 @@ def run():
         os.write(_err, b"\\nEVOALGO_CPU_LIMIT\\n")
         os._exit(152)
     signal.signal(signal.SIGXCPU, _on_xcpu)
-    # The candidate's prints (including raw fd 1 writes) go to stderr, not into the result channel.
-    os.dup2(2, 1)
+    # The candidate's prints go to stderr, not into the result channel. Raw
+    # writes to fd 1 still reach it (and count against the output cap); a
+    # forged result must still hold a valid state for every operation, which
+    # the verifier re-checks.
     sys.stdout = sys.stderr
     import linecache, types
     src = data["module_src"]

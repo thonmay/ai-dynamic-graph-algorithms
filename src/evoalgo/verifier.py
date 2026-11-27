@@ -642,6 +642,15 @@ def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
             # The sequence is recovered from the chunk's own test case (the
             # ops list), so the worker needs no access to the parent's cache.
             seq_ops = chunk_cases[local_g_idx]["sequences"][seq_idx]
+            # A finished sequence has a state and a timing per step; a forged
+            # result channel must not pass by leaving steps out.
+            if seq_result.get("status") == "ok" and not (
+                    len(results) == len(candidate_times) == len(seq_ops) + 1):
+                failing_case = {
+                    "graph_n": n, "sequence_idx": seq_idx,
+                    "operation": "incomplete results from sandbox",
+                }
+                break
             current_graph = original_graph.copy()
 
             state = _deserialize_state(results[0]["state"])

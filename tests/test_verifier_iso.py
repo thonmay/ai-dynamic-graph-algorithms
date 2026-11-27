@@ -509,3 +509,29 @@ def test_yang_dfs_reference_passes_n5(tmp_path):
     from evoalgo.selftest.references import YANG_DFS_CODE
     cand = _verify_code("dynamic_dfs", YANG_DFS_CODE, 5, tmp_path)
     assert cand.state.value == "PASS", (cand.state.value, cand.failing_case)
+
+
+# The runner's result-writing globals live in the candidate's interpreter;
+# a candidate can replace them to drop every update state from the report.
+_FORGED_TAIL = '''
+import __main__
+_real = __main__._dumps
+def _short(r):
+    for g in r.get("all_results", []):
+        for s in g:
+            s["results"], s["timings"] = s["results"][:1], s["timings"][:1]
+    return _real(r)
+__main__._dumps = _short
+
+def insert_edge(graph, edge, state):
+    return None
+
+def delete_edge(graph, edge, state):
+    return None
+'''
+
+
+def test_forged_report_that_drops_steps_is_rejected(tmp_path):
+    cand = _verify_code("dynamic_bfs", reference_code("dynamic_bfs") + _FORGED_TAIL, 3, tmp_path)
+    assert cand.state.value != "PASS", cand.failing_case
+    assert "incomplete results" in str(cand.failing_case)
