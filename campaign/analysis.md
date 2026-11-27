@@ -37,10 +37,11 @@ Source: `eval1/results.csv`, `eval1/summary.md`, `eval1/bench.csv`.
 |---|---|---|---|---|
 | orchestrator | 9/9 | 0.65 / 0.22 / 0.45 | 204-250 | 1.76 M |
 | no reflection | 8/9 | 1.38 / 0.25 / 0.58 | 147-206 | 1.52 M |
-| single agent (harness) | 9/9 | 0.69 / 0.32 / 0.21 | 35-60 | 1.93 M |
+| single agent (harness) | 9/9 | 0.69 / 0.32 / 0.21 | 35-60 | 1.93 M (2.22 M incl. the retried attempt) |
 
 - 26 of 27 cells reach final-grade PASS. The miss is no-reflection BFS seed 3:
-  all three graded candidates fail 1 of 51,465 cases at n = 5, which the
+  all three graded candidates pass 51,464 sequences at n = 5 and then fail
+  one (the grade stops at the first counterexample), which the
   n <= 4 search grade cannot see. This is the case the two-tier grade exists
   for.
 - Every cell has a search-grade PASS by generation 3 (most in generation 1):
@@ -106,8 +107,8 @@ ran first; seeds 4-8 were added because 3 seeds showed no clear effect.
   loss (+0.99). Exact two-sided Wilcoxon signed-rank test p = 0.46; sign test
   p = 0.29. **No significant effect at 8 seeds.**
 - Final-grade correctness: 8/8 with dynamic agents, 7/8 without. In
-  orchestrator seed 6, all three final candidates fail one case each at
-  n = 5. One run is no evidence of a correctness effect.
+  orchestrator seed 6, all three final candidates fail at n = 5, after
+  1,154 to 1,610 passing sequences. One run is no evidence of a correctness effect.
 - Cost: median 30 vs 28 model calls (same budget), with more tokens for
   dynamic agents (the specialists' prompts carry the plateau context).
 - **The small-graph problem on LBFS:** seed 2's best search candidate (0.654
