@@ -513,8 +513,8 @@ class Orchestrator:
 
         # Slots not held by a passing candidate: repairs first, then fresh or
         # mutated candidates, plus one if the population is too similar.
-        slots = self.config.population_size - sum(
-            c.state == CandidateState.PASS for c in self.population.candidates)
+        slots = max(0, self.config.population_size - sum(
+            c.state == CandidateState.PASS for c in self.population.candidates))
         repairable = self.population.get_failed_repairable()
         repair_count = min(len(repairable), slots)
         fresh_count = slots - repair_count

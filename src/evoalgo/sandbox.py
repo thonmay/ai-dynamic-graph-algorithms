@@ -354,7 +354,8 @@ def run():
         os.write(_err, b"\\nEVOALGO_CPU_LIMIT\\n")
         os._exit(152)
     signal.signal(signal.SIGXCPU, _on_xcpu)
-    # The candidate's prints go to stderr, not into the result channel.
+    # The candidate's prints (including raw fd 1 writes) go to stderr, not into the result channel.
+    os.dup2(2, 1)
     sys.stdout = sys.stderr
     import linecache, types
     src = data["module_src"]
@@ -400,8 +401,8 @@ def run():
                         _ = mod.init(graph_copies[i])
                     t1 = clock()
                     timings.append((t1 - t0) // repeat // 1000)
-                    state = mod.init(current_graph)
-                    results.append({"after": "init", "state": _serialize(state)})
+                    state = mod.init([row[:] for row in current_graph])
+                    results.append({"after": "init", "state": _serialize(state, np)})
 
                     if offline_fn:
                         g_np = np.array(current_graph)
@@ -438,7 +439,7 @@ def run():
                             _ = fn(graph_copies[i], edge, state_copies[i])
                         t1 = clock()
                         timings.append((t1 - t0) // repeat // 1000)
-                        state = fn(current_graph, edge, state)
+                        state = fn([row[:] for row in current_graph], edge, state)
 
                         if offline_fn:
                             g_np = np.array(current_graph)
@@ -449,7 +450,7 @@ def run():
                             offline_timings.append((t1 - t0) // repeat // 1000)
 
                         results.append({"after": op_type + " " + str(edge),
-                                        "state": _serialize(state)})
+                                        "state": _serialize(state, np)})
 
                     graph_results.append({
                         "status": "ok",
@@ -487,16 +488,15 @@ def _describe(e, module_path=None):
     except Exception:
         return type(e).__name__
 
-def _serialize(obj):
-    import numpy as np
+def _serialize(obj, np):
     if isinstance(obj, np.ndarray):
         return obj.tolist()
     if isinstance(obj, (set, frozenset)):
         return sorted(obj)
     if isinstance(obj, dict):
-        return {str(k): _serialize(v) for k, v in obj.items()}
+        return {str(k): _serialize(v, np) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [_serialize(x) for x in obj]
+        return [_serialize(x, np) for x in obj]
     if isinstance(obj, (np.integer,)):
         return int(obj)
     if isinstance(obj, (np.floating,)):

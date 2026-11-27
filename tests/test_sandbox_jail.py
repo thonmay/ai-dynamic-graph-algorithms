@@ -272,3 +272,33 @@ def test_candidate_cannot_fake_or_cache_its_timing(tmp_path):
                                                    repeat=5)
     assert r.is_ok, (r.error, r.traceback_str)
     assert r.all_results[0][0]["timings"][0] >= 1500  # microseconds per init
+
+
+HARDENED_CAND = """
+import os, sys
+os.write(1, b'{"status": "forged"}\\n')
+sys.modules["numpy"] = None
+
+def init(graph):
+    graph[0][0] = 99
+    return {"diag": graph[0][0]}
+
+def insert_edge(graph, edge, state):
+    diag_before = graph[0][0]
+    graph[0][0] = 88
+    return {"diag_before": diag_before, "edge_val": graph[edge[0]][edge[1]]}
+
+def delete_edge(graph, edge, state):
+    return state
+"""
+
+
+def test_candidate_cannot_forge_fd1_corrupt_graph_or_break_serialize(tmp_path):
+    cand = tmp_path / "cand.py"
+    cand.write_text(HARDENED_CAND)
+    cases = [{"graph": [[0, 0], [0, 0]], "sequences": [[{"type": "insert", "edge": [0, 1]}]]}]
+    r = Sandbox(timeout_seconds=60).execute_batch(cand, cases, repeat=1)
+    assert r.is_ok, (r.error, r.traceback_str)
+    res = r.all_results[0][0]["results"]
+    assert res[0]["state"] == {"diag": 99}
+    assert res[1]["state"] == {"diag_before": 0, "edge_val": 1}

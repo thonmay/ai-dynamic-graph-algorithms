@@ -268,3 +268,20 @@ def test_check_accepts_candidate_by_other_path_and_one_final(tmp_path, monkeypat
     wsm.check(w, level="full", final=True)
     with pytest.raises(RuntimeError, match="final grade has run"):
         wsm.check(w, level="full", final=True)
+
+
+def test_custom_path_pack_check(tmp_path):
+    pack_dir = tmp_path / "custom_bfs"
+    pack_dir.mkdir()
+    (pack_dir / "problem.yaml").write_text(
+        "name: custom_bfs\n"
+        "title: Custom BFS\n"
+        "directed: true\n"
+        "needs_root: true\n"
+        "checker: dynamic_bfs\n"
+        "tier: calibration\n"
+    )
+    (pack_dir / "brief.md").write_text("Research question: test custom pack.\n")
+    w = wsm.init_workspace(str(pack_dir), tmp_path / "w", runs_root=tmp_path / "runs", run_id="custom")
+    (w.dir / "candidate.py").write_text(GOOD)
+    assert wsm.check(w, level="examples")["verdict"] == "PASS"
