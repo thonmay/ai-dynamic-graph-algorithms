@@ -30,7 +30,7 @@ Pick the task:
    `calibration` packs have known solutions; `open` ones may not. Ask the
    user which one if they have not said.
 2. Create a workspace from the evoalgo repo root, so the run shows in the web UI:
-   `evoalgo init <pack> --harness <claude|codex|opencode> [--goal "..."]`.
+   `evoalgo init <pack> --harness <claude|codex|opencode|agy> [--goal "..."]`.
    It prints the workspace path. Work only there.
 3. Read `program.md` in the workspace in full. It holds the interface, the
    state contract the grader reads, the research brief and the loop rules.

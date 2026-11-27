@@ -285,3 +285,11 @@ def test_custom_path_pack_check(tmp_path):
     w = wsm.init_workspace(str(pack_dir), tmp_path / "w", runs_root=tmp_path / "runs", run_id="custom")
     (w.dir / "candidate.py").write_text(GOOD)
     assert wsm.check(w, level="examples")["verdict"] == "PASS"
+
+
+def test_skill_install_reaches_antigravity_user_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(wsm.Path, "home", lambda: tmp_path)
+    assert tmp_path / ".gemini" / "config" / "skills" in wsm.skill_targets("user")
+    assert all(".gemini" not in str(p) for p in wsm.skill_targets("project", tmp_path))
+    wsm.install_skill("user")
+    assert (tmp_path / ".gemini" / "config" / "skills" / wsm.SKILL_NAME / "SKILL.md").is_file()

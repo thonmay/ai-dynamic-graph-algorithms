@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--run-id", default=None)
     p_init.add_argument("--goal", default=None, help="research goal for this run")
     p_init.add_argument("--harness", default=None,
-                        help="which agent drives it (claude, codex, opencode), shown in the UI")
+                        help="which agent drives it (claude, codex, opencode, agy), shown in the UI")
     p_init.add_argument("--max-checks", type=int, default=None,
                         help="graded checks allowed before the final grade (default: no limit)")
 
