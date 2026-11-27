@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace as NS
+from types import SimpleNamespace
 
 import pytest
 
@@ -104,15 +104,15 @@ class ScriptedClient:
     def __init__(self, turns):
         self.turns = list(turns)
         self.requests = []
-        self.chat = NS(completions=NS(create=self._create))
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **kw):
         self.requests.append({**kw, "messages": [dict(m) for m in kw["messages"]]})
         content, calls = self.turns.pop(0)
-        tcs = [NS(id=f"t{i}", function=NS(name=n, arguments=json.dumps(a))) for i, (n, a) in enumerate(calls)]
-        msg = NS(content=content, tool_calls=tcs or None)
-        return NS(choices=[NS(message=msg, finish_reason="tool_calls" if tcs else "stop")],
-                  usage=NS(prompt_tokens=100, completion_tokens=20))
+        tcs = [SimpleNamespace(id=f"t{i}", function=SimpleNamespace(name=n, arguments=json.dumps(a))) for i, (n, a) in enumerate(calls)]
+        msg = SimpleNamespace(content=content, tool_calls=tcs or None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="tool_calls" if tcs else "stop")],
+                  usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20))
 
 
 def api_config(**kw):
@@ -145,7 +145,7 @@ def test_api_loop_step_limit_and_errors(tmp_path):
     assert not r.ok and "step limit" in r.error
 
     class Boom:
-        chat = NS(completions=NS(create=lambda **kw: (_ for _ in ()).throw(RuntimeError("503"))))
+        chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: (_ for _ in ()).throw(RuntimeError("503"))))
     r = ApiBackend(api_config(), tmp_path, client=Boom()).run(task(tmp_path))
     assert not r.ok and "503" in r.error
 
@@ -155,8 +155,8 @@ def test_api_thinking_off_and_length_nudge(tmp_path):
         def _create(self, **kw):
             if not self.requests:  # a reasoning model burning the whole budget
                 self.requests.append({**kw, "messages": [dict(m) for m in kw["messages"]]})
-                msg = NS(content="", tool_calls=None)
-                return NS(choices=[NS(message=msg, finish_reason="length")], usage=None)
+                msg = SimpleNamespace(content="", tool_calls=None)
+                return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="length")], usage=None)
             return super()._create(**kw)
 
     client = LengthThenWrite([(None, [("write_candidate", {"code": GOOD})]), ("done", [])])

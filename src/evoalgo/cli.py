@@ -13,10 +13,14 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .checkpoint import Checkpoint
 from .config import ConfigError, RunConfig, Bound, VALID_PROBLEMS
 from .orchestrator import Orchestrator
+
+if TYPE_CHECKING:
+    from .verifier import Verifier
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -429,7 +433,7 @@ def cmd_status(args) -> int:
     print(f"  Best fitness: {best:.2f}")
     print(f"  Best candidate: {top_str}")
     print(f"  Passing: {passing}/{len(candidates)}")
-    print(f"  Candidates:")
+    print("  Candidates:")
     for c in candidates:
         fit = c.get("fitness", 0)
         state = c.get("state", "?")
@@ -542,7 +546,7 @@ def cmd_export(args) -> int:
 
     print(f"Exported to {results_dir}/")
     print(f"  run_summary.json ({len(all_candidates)} candidates, {gen_num} generations)")
-    print(f"  efficiency_report.csv")
+    print("  efficiency_report.csv")
     return 0
 
 

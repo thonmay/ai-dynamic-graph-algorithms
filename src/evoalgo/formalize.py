@@ -131,8 +131,8 @@ def _build_stage_task(
         else ""
     )
     broken = (
-        f"\nThe existing module does not compile and must be rewritten from\n"
-        f"scratch; do not preserve its content.\n"
+        "\nThe existing module does not compile and must be rewritten from\n"
+        "scratch; do not preserve its content.\n"
         if broken_existing
         else ""
     )
@@ -481,7 +481,7 @@ def run_formalize(
         print(f"  Existing module found and builds ({len(existing_sorries)} "
               f"sorry placeholders remaining); resuming from lemmas stage.")
     elif module_path.exists():
-        print(f"  Existing module found but does NOT build; will redo from definitions.")
+        print("  Existing module found but does NOT build; will redo from definitions.")
     for i, stage in enumerate(STAGES, 1):
         if stage["name"] in completed_stages:
             print(f"  Stage {i}/{len(STAGES)} ({stage['name']}): already done, skipping.")

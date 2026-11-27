@@ -970,27 +970,27 @@ def offline_compute(graph, root):
         start = 0
         tiebreak = list(range(n))
         cell = [start] + [v for v in tiebreak if v != start]
-        Pi = [cell]
+        partition = [cell]  # the ordered partition Pi of the LexBFS paper
         order = []
         while len(order) < n:
-            p = Pi[0][0]
+            p = partition[0][0]
             order.append(p)
             neigh = set()
             for v in range(n):
                 if graph[p, v] == 1:
                     neigh.add(v)
-            newPi = []
-            for C in Pi:
-                C = [v for v in C if v != p]
-                if not C:
+            refined = []
+            for part in partition:
+                part = [v for v in part if v != p]
+                if not part:
                     continue
-                a = [v for v in C if v in neigh]
-                b = [v for v in C if v not in neigh]
+                a = [v for v in part if v in neigh]
+                b = [v for v in part if v not in neigh]
                 if a:
-                    newPi.append(a)
+                    refined.append(a)
                 if b:
-                    newPi.append(b)
-            Pi = newPi
+                    refined.append(b)
+            partition = refined
         return order
 
     def baseline_work(self, graph: np.ndarray) -> int:
@@ -1021,23 +1021,23 @@ def offline_compute(graph, root):
         """Return None if `ordering` satisfies (LB), else the first violation.
 
         (LB): for all positions a<b<c with ac in E and ab not in E, there is
-        d<a with db in E and dc not in E. minD[b][c] precomputes the earliest
+        d<a with db in E and dc not in E. min_d[b][c] precomputes the earliest
         (in the ordering) such d, so the witness exists before a iff
-        minD[b][c] < pos[a].
+        min_d[b][c] < pos[a].
         """
         pos = {v: i for i, v in enumerate(ordering)}
-        INF = 10**9
-        minD = [[INF] * n for _ in range(n)]
+        inf = 10**9
+        min_d = [[inf] * n for _ in range(n)]
         for b in range(n):
             for c in range(n):
                 if b == c:
                     continue
-                best = INF
+                best = inf
                 for d in range(n):
                     if d != b and d != c and graph[b, d] == 1 and graph[c, d] == 0:
                         if pos[d] < best:
                             best = pos[d]
-                minD[b][c] = best
+                min_d[b][c] = best
         for a in range(n):
             pa = pos[a]
             for b in range(n):
@@ -1049,10 +1049,10 @@ def offline_compute(graph, root):
                     if pc <= pb:
                         continue
                     if graph[a, c] == 1 and graph[a, b] == 0:
-                        if minD[b][c] >= pa:
+                        if min_d[b][c] >= pa:
                             return {
                                 "a": a, "b": b, "c": c,
-                                "pos_a": pa, "minD": minD[b][c],
+                                "pos_a": pa, "minD": min_d[b][c],
                             }
         return None
 

@@ -315,10 +315,10 @@ class Verifier:
         # Adaptive REPEAT: keep total timed calls under a budget so timing
         # stays meaningful without dominating wall time. Target ~500K total
         # calls (candidate + offline), minimum REPEAT=1.
-        TIMING_BUDGET = 500_000
+        timing_budget = 500_000
         timing_multiplier = 2 if offline_src else 1
         if total_steps > 0:
-            adaptive_repeat = max(1, TIMING_BUDGET // (total_steps * timing_multiplier))
+            adaptive_repeat = max(1, timing_budget // (total_steps * timing_multiplier))
         else:
             adaptive_repeat = 20
         adaptive_repeat = min(adaptive_repeat, 20)  # cap at 20

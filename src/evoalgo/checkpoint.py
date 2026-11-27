@@ -3,8 +3,9 @@
 # (see the thesis section "Use of AI tools").
 """Atomic checkpoint persistence for generation state.
 
-``commit`` writes generation_NNNN.json (temp file + rename) and then the
-COMMITTED marker; loading verifies the schema version and SHA-256 checksum.
+``commit`` writes generation_NNNN.json and then the COMMITTED marker, each
+by fsynced temp file + rename; loading verifies the schema version and
+SHA-256 checksum.
 """
 
 from __future__ import annotations
@@ -27,6 +28,23 @@ def _sha256(data: bytes) -> str:
 
 def _canonical_json(obj: Any) -> str:
     return json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False)
+
+
+def _write_durable(target: Path, text: str) -> None:
+    """Replace ``target`` with ``text`` atomically and durably: fsync the
+    temp file before the rename and the directory after it, so a host crash
+    leaves either the old or the new content, never an empty file."""
+    tmp = target.with_name(target.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, target)
+    fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 class Checkpoint:
@@ -56,10 +74,10 @@ class Checkpoint:
         fitness_history: list[float] | None = None,
         stop_reason: str | None = None,
     ) -> Path:
-        """Atomically write a generation state file.
+        """Durably write a generation state file, then the COMMITTED marker.
 
-        Writes to a temp file, then os.replace (atomic on POSIX),
-        then updates the COMMITTED marker.
+        Both go through ``_write_durable``; the marker is written last, so it
+        never points at a generation file that is not complete on disk.
         """
         payload = {
             "schema_version": SCHEMA_VERSION,
@@ -81,15 +99,8 @@ class Checkpoint:
         payload["checksum"] = f"sha256:{checksum}"
 
         target = self._gen_path(generation)
-        tmp = target.with_suffix(".tmp")
-
-        content = json.dumps(payload, indent=2, ensure_ascii=False)
-        tmp.write_text(content)
-        os.replace(tmp, target)  # atomic on POSIX
-
-        committed_path = self.run_dir / "COMMITTED"
-        committed_path.write_text(str(generation))
-
+        _write_durable(target, json.dumps(payload, indent=2, ensure_ascii=False))
+        _write_durable(self.run_dir / "COMMITTED", str(generation))
         return target
 
     def load_generation(self, generation: int) -> dict[str, Any] | None:

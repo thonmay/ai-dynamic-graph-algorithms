@@ -225,6 +225,34 @@ def test_corrupt_run_dir_is_reported_not_raised(tmp_path, capsys):
     assert "corrupt marker" in capsys.readouterr().err
 
 
+def test_commit_marker_is_replaced_atomically_and_fsynced(tmp_path, monkeypatch):
+    """A crash while moving the COMMITTED marker keeps the old marker intact,
+    and every write is fsynced before its rename (R7 durability)."""
+    import os
+
+    from evoalgo import checkpoint as cp
+    ck = cp.Checkpoint(tmp_path)
+    ck.commit(1, "r", "dynamic_bfs", {}, [])
+    synced, real_replace = [], os.replace
+    monkeypatch.setattr(cp.os, "fsync", lambda fd: synced.append(fd))
+
+    def crash_on_marker(src, dst):
+        if str(dst).endswith("COMMITTED"):
+            raise OSError("simulated crash")
+        real_replace(src, dst)
+    monkeypatch.setattr(cp.os, "replace", crash_on_marker)
+    try:
+        ck.commit(2, "r", "dynamic_bfs", {}, [])
+    except OSError:
+        pass
+    assert ck.latest_generation_number() == 1
+    assert ck.load_latest()["generation"] == 1
+    assert ck.discard_incomplete() == [2]
+    # _write_durable fsyncs the temp file, then the directory after the rename:
+    # gen file + its directory, then the marker temp file before the crash.
+    assert len(synced) == 3
+
+
 # -- prompt brief inclusion --------------------------------------------------
 
 def test_prompt_contains_pack_brief(tmp_path):

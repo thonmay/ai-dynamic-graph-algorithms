@@ -29,12 +29,15 @@ def dfs_runs(g, n):
         u = path[-1]
         nxt = [v for v in range(n) if g[u][v] and v not in disc]
         if not nxt:
-            fin2 = dict(fin); fin2[u] = t
+            fin2 = dict(fin)
+            fin2[u] = t
             go(parent, disc, fin2, t + 1, path[:-1])
             return
         for v in nxt:
-            p2 = dict(parent); p2[v] = u
-            d2 = dict(disc); d2[v] = t
+            p2 = dict(parent)
+            p2[v] = u
+            d2 = dict(disc)
+            d2[v] = t
             go(p2, d2, fin, t + 1, path + [v])
     go({0: None}, {0: 0}, {}, 1, [0])
     return out
@@ -63,7 +66,8 @@ for n in range(1, 5):
                     continue
                 for q in [None] + [w for w in reach if w != v]:
                     if q != par[v]:
-                        p2 = dict(par); p2[v] = q
+                        p2 = dict(par)
+                        p2[v] = q
                         cands.add((tuple(sorted(p2.items())), cert[1], cert[2]))
             times = [("d", v) for v in reach] + [("f", v) for v in reach]
             for (k1, a), (k2, b) in itertools.combinations(times, 2):
@@ -72,10 +76,14 @@ for n in range(1, 5):
                 y = d2[b] if k2 == "d" else f2[b]
                 if x == y:
                     continue
-                if k1 == "d": d2[a] = y
-                else: f2[a] = y
-                if k2 == "d": d2[b] = x
-                else: f2[b] = x
+                if k1 == "d":
+                    d2[a] = y
+                else:
+                    f2[a] = y
+                if k2 == "d":
+                    d2[b] = x
+                else:
+                    f2[b] = x
                 cands.add((cert[0], tuple(sorted(d2.items())), tuple(sorted(f2.items()))))
         for c in cands:
             total += 1

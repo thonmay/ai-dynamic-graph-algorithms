@@ -154,7 +154,8 @@ def create_app(runs_root: Path | str, static_dir: Path | None = STATIC_DIR,
     """The app. ``token`` None disables the access check (tests only)."""
     root = Path(runs_root).resolve()
     if packs_root is None:
-        from .packs import DEFAULT_PROBLEMS_ROOT as packs_root
+        from .packs import DEFAULT_PROBLEMS_ROOT
+        packs_root = DEFAULT_PROBLEMS_ROOT
     app = FastAPI(title="evoalgo", docs_url=None, redoc_url=None)
 
     if token is not None:

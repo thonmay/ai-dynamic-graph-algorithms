@@ -88,7 +88,7 @@ def test_digraph6_round_trip_all_files():
     for prefix, counts in (("directed", DIRECTED_COUNTS), ("rooted", ROOTED_COUNTS)):
         for n, expected in counts.items():
             path = NAUTY_DATA_DIR / f"{prefix}_n{n}.d6"
-            lines = [l for l in path.read_text().splitlines() if l.strip()]
+            lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
             assert len(lines) == expected, (prefix, n, len(lines), expected)
             seen = set()
             for line in lines:

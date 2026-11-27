@@ -45,24 +45,24 @@ def lex_bfs_multi(graph, n: int, start: int, tiebreak: list[int]) -> list[int]:
     and break ties. Matches the verified scratch implementation.
     """
     cell = [start] + [v for v in tiebreak if v != start]
-    Pi = [cell]
+    partition = [cell]
     order = []
     while len(order) < n:
-        p = Pi[0][0]
+        p = partition[0][0]
         order.append(p)
         neigh = {v for v in range(n) if graph[p][v] == 1}
-        newPi = []
-        for C in Pi:
-            C = [v for v in C if v != p]
-            if not C:
+        refined = []
+        for part in partition:
+            part = [v for v in part if v != p]
+            if not part:
                 continue
-            a = [v for v in C if v in neigh]
-            b = [v for v in C if v not in neigh]
+            a = [v for v in part if v in neigh]
+            b = [v for v in part if v not in neigh]
             if a:
-                newPi.append(a)
+                refined.append(a)
             if b:
-                newPi.append(b)
-        Pi = newPi
+                refined.append(b)
+        partition = refined
     return order
 
 
