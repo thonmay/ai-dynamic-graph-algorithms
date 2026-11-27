@@ -644,8 +644,9 @@ def _check_chunk_impl(problem: ProblemDefinition, sandbox: Sandbox,
             seq_ops = chunk_cases[local_g_idx]["sequences"][seq_idx]
             # A finished sequence has a state and a timing per step; a forged
             # result channel must not pass by leaving steps out.
-            if seq_result.get("status") == "ok" and not (
-                    len(results) == len(candidate_times) == len(seq_ops) + 1):
+            if seq_result.get("status") != "ok" or not (
+                    len(results) == len(candidate_times) == len(seq_ops) + 1) or not all(
+                    isinstance(r, dict) and "state" in r for r in results):
                 failing_case = {
                     "graph_n": n, "sequence_idx": seq_idx,
                     "operation": "incomplete results from sandbox",

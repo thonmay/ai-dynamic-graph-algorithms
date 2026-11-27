@@ -520,6 +520,7 @@ def _short(r):
     for g in r.get("all_results", []):
         for s in g:
             s["results"], s["timings"] = s["results"][:1], s["timings"][:1]
+            s["status"] = STATUS
     return _real(r)
 __main__._dumps = _short
 
@@ -531,7 +532,9 @@ def delete_edge(graph, edge, state):
 '''
 
 
-def test_forged_report_that_drops_steps_is_rejected(tmp_path):
-    cand = _verify_code("dynamic_bfs", reference_code("dynamic_bfs") + _FORGED_TAIL, 3, tmp_path)
+@pytest.mark.parametrize("status", ["ok", "fine"])
+def test_forged_report_that_drops_steps_is_rejected(tmp_path, status):
+    code = reference_code("dynamic_bfs") + _FORGED_TAIL.replace("STATUS", repr(status))
+    cand = _verify_code("dynamic_bfs", code, 3, tmp_path)
     assert cand.state.value != "PASS", cand.failing_case
     assert "incomplete results" in str(cand.failing_case)
