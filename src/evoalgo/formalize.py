@@ -273,6 +273,73 @@ def _verify_lean_no_sorry(project_dir: Path, module_path: Path) -> tuple[bool, s
 THEOREM_DECL = re.compile(r"^theorem\s")
 
 
+RAW_STRING_START = re.compile(r'(?<![\w.])r(#*)"')
+CHAR_LITERAL = re.compile(r"(?<![\w'.])'(?:\\.[^']*|[^'\\])'")  # not the prime of h'
+
+
+def _iter_lean_code_lines(lines: list[str]) -> list[tuple[int, str]]:
+    """Yield (1-based line_no, code) with Lean `--` and nested `/- ... -/` comments stripped.
+
+    String and char literals are kept as code, and comment markers inside
+    them are not comments: otherwise `"/-"` would hide the code after it.
+    """
+    out: list[tuple[int, str]] = []
+    depth = 0
+    close: str | None = None  # inside a string literal: what ends it
+    for lineno, line in enumerate(lines, 1):
+        buf: list[str] = []
+        i = 0
+        n = len(line)
+        while i < n:
+            if close is not None:
+                if close == '"' and line[i] == "\\":
+                    buf.append(line[i : i + 2])
+                    i += 2
+                elif line.startswith(close, i):
+                    buf.append(close)
+                    i += len(close)
+                    close = None
+                else:
+                    buf.append(line[i])
+                    i += 1
+            elif depth > 0:
+                if line[i : i + 2] == "/-":
+                    depth += 1
+                    i += 2
+                elif line[i : i + 2] == "-/":
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            else:
+                raw = RAW_STRING_START.match(line, i)
+                char = CHAR_LITERAL.match(line, i)
+                if line[i : i + 2] == "--":
+                    break
+                if raw:
+                    buf.append(raw.group(0))
+                    close = '"' + raw.group(1)
+                    i = raw.end()
+                elif line[i] == '"':
+                    buf.append('"')
+                    close = '"'
+                    i += 1
+                elif char:
+                    buf.append(char.group(0))
+                    i = char.end()
+                elif line[i : i + 2] == "/-":
+                    depth += 1
+                    buf.append(" ")  # preserve token separation across inline block comments
+                    i += 2
+                else:
+                    buf.append(line[i])
+                    i += 1
+        code = "".join(buf)
+        if code.strip():
+            out.append((lineno, code))
+    return out
+
+
 def _has_theorem(file_path: Path) -> bool:
     """True if the module declares at least one top-level `theorem`.
 
@@ -284,22 +351,7 @@ def _has_theorem(file_path: Path) -> bool:
         lines = file_path.read_text().splitlines()
     except OSError:
         return False
-    depth = 0
-    for line in lines:
-        stripped = line.strip()
-        if depth > 0:
-            depth += stripped.count("/-") - stripped.count("-/")
-            if depth < 0:
-                depth = 0
-            continue
-        if stripped.startswith("--"):
-            continue
-        if stripped.startswith("/-"):
-            depth = stripped.count("/-") - stripped.count("-/")
-            continue
-        if THEOREM_DECL.match(stripped):
-            return True
-    return False
+    return any(THEOREM_DECL.match(code.strip()) for _, code in _iter_lean_code_lines(lines))
 
 
 def _scan_for_banned(file_path: Path) -> list[str]:
@@ -309,28 +361,12 @@ def _scan_for_banned(file_path: Path) -> list[str]:
     block comments, and nested block comments (Lean supports nesting). Counts
     each construct, not each line, so two `sorry` on one line count twice.
     """
-    hits: list[str] = []
     try:
         lines = file_path.read_text().splitlines()
     except OSError:
         return ["<unreadable>"]
-    depth = 0
-    for i, line in enumerate(lines, 1):
-        code = line
-        stripped = line.strip()
-        if depth > 0:
-            depth += stripped.count("/-") - stripped.count("-/")
-            if depth < 0:
-                depth = 0
-            continue
-        if stripped.startswith("--"):
-            continue
-        if stripped.startswith("/-"):
-            depth = stripped.count("/-") - stripped.count("-/")
-            continue
-        # strip a trailing `--` line comment so code like `... := trivial -- no sorry`
-        # is not counted; only the code part before `--` matters.
-        code = line.split("--", 1)[0]
+    hits: list[str] = []
+    for i, code in _iter_lean_code_lines(lines):
         for m in BANNED.finditer(code):
             hits.append(f"{i}: {m.group(0)}")
     return hits

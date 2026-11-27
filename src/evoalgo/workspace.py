@@ -29,7 +29,7 @@ from typing import Any
 from .candidate import Candidate
 from .config import RunConfig
 from .events import EventLog, read_events
-from .packs import resolve_pack
+from .packs import DEFAULT_PROBLEMS_ROOT, resolve_pack
 from .problem_definitions import get_problem
 from .sandbox import Sandbox
 from .verifier import Verifier
@@ -113,9 +113,14 @@ def init_workspace(pack_name: str, target: Path | str | None = None,
     errors = [e for e in config.validate() if "max_checks" in e]
     if errors:
         raise ValueError(errors[0])
+    pack_ref = (
+        pack.name
+        if pack.path.resolve().parent == DEFAULT_PROBLEMS_ROOT.resolve()
+        else str(pack.path.resolve())
+    )
     program = program_text(pack, config.research_goal, max_checks)
     agent_files = {
-        WORKSPACE_FILE: json.dumps({"run_dir": str(run_dir), "pack": pack.name,
+        WORKSPACE_FILE: json.dumps({"run_dir": str(run_dir), "pack": pack_ref,
                                     "problem": pack.checker}, indent=2) + "\n",
         PROGRAM_FILE: program, CANDIDATE_FILE: _STARTER, RESULTS_FILE: RESULTS_HEADER,
     }
@@ -140,7 +145,7 @@ def init_workspace(pack_name: str, target: Path | str | None = None,
             f.unlink(missing_ok=True)
         shutil.rmtree(run_dir, ignore_errors=True)
         raise
-    return Workspace(dir=ws_dir, run_dir=run_dir, pack=pack.name, problem=pack.checker)
+    return Workspace(dir=ws_dir, run_dir=run_dir, pack=pack_ref, problem=pack.checker)
 
 
 def program_text(pack: Any, goal: str | None, max_checks: int | None = None) -> str:
@@ -417,11 +422,15 @@ def skill_source() -> Path:
 
 
 def skill_targets(scope: str, project: Path | None = None) -> list[Path]:
-    """Folders the three harnesses read (verified for Claude Code 2.1.303,
-    Codex 0.163.0, opencode): `.agents/skills` (Codex, opencode)
-    and `.claude/skills` (Claude Code, opencode)."""
+    """Folders the harnesses read (verified for Claude Code 2.1.303,
+    Codex 0.163.0, opencode): `.agents/skills` (Codex, opencode; Antigravity
+    in a project) and `.claude/skills` (Claude Code, opencode). Antigravity's
+    user-level folder is `~/.gemini/config/skills` (antigravity.google/docs/skills)."""
     base = (project or Path.cwd()).resolve() if scope == "project" else Path.home()
-    return [base / ".agents" / "skills", base / ".claude" / "skills"]
+    targets = [base / ".agents" / "skills", base / ".claude" / "skills"]
+    if scope == "user":
+        targets.append(base / ".gemini" / "config" / "skills")
+    return targets
 
 
 def install_skill(scope: str = "user", project: Path | None = None,
