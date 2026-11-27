@@ -93,6 +93,9 @@ def make_backend(config: Any, run_dir: Path) -> Backend:
     if kind == "opencode":
         from .harness import OpencodeBackend
         return OpencodeBackend(config, run_dir)
+    if kind == "agy":
+        from .harness import AgyBackend
+        return AgyBackend(config, run_dir)
     if kind == "mock":
         from .mock import MockBackend
         return MockBackend(config, run_dir)

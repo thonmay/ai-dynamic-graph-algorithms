@@ -61,7 +61,7 @@ VALID_PROBLEMS = {
     "dynamic_scc", "dynamic_lbfs", "reachability",
 }
 
-VALID_PROVIDERS = {"api", "opencode", "mock"}
+VALID_PROVIDERS = {"api", "opencode", "agy", "mock"}
 MAX_GOAL_CHARS = 2000
 
 

@@ -268,3 +268,9 @@ def test_check_accepts_candidate_by_other_path_and_one_final(tmp_path, monkeypat
     wsm.check(w, level="full", final=True)
     with pytest.raises(RuntimeError, match="final grade has run"):
         wsm.check(w, level="full", final=True)
+
+
+def test_skill_targets_includes_antigravity_user_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(wsm.Path, "home", lambda: tmp_path)
+    targets = wsm.skill_targets("user")
+    assert tmp_path / ".gemini" / "antigravity-cli" / "skills" in targets

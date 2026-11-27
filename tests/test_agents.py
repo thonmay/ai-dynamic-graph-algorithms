@@ -532,3 +532,31 @@ def test_harness_env_is_allow_listed(monkeypatch):
     env = harness_env("opencode", TMPDIR="/scratch")
     assert "GERRIT_PASSWORD" not in env and "OPENROUTER_API_KEY" not in env
     assert env["OPENCODE_CONFIG"] == "/cfg" and env["TMPDIR"] == "/scratch" and "HOME" in env
+
+
+def test_agy_backend_command_parse_and_env(tmp_path, monkeypatch):
+    from evoalgo.agents import make_backend
+    from evoalgo.agents.base import Task
+    from evoalgo.agents.harness import AgyBackend, harness_env
+    from evoalgo.config import RunConfig
+
+    cfg = RunConfig(pack="dynamic_bfs", problem="dynamic_bfs", provider="agy",
+                    model="gemini-3.8-flash", agent_max_seconds=90, harness_bin="/usr/bin/agy")
+    assert cfg.validate() == []
+    backend = make_backend(cfg, tmp_path)
+    assert isinstance(backend, AgyBackend)
+    task = Task(role="generate", candidate_id="gen001_c01", problem="dynamic_bfs",
+                problem_prompt="P", run_dir=tmp_path)
+    cmd = backend.command(task, "PROMPT")
+    assert cmd[:2] == ["/usr/bin/agy", "-p"]
+    assert "--output-format" in cmd and "json" in cmd
+    assert "--model" in cmd and "gemini-3.8-flash" in cmd
+    assert cmd[-1] == "PROMPT"
+
+    summary, usage = backend.parse('{"result": "done", "usage": {"input_tokens": 12, "output_tokens": 34}}')
+    assert summary == "done" and usage == {"prompt_tokens": 12, "completion_tokens": 34}
+
+    monkeypatch.setenv("ANTIGRAVITY_HOME", "/agy")
+    monkeypatch.setenv("UNRELATED_SECRET", "nope")
+    env = harness_env("agy")
+    assert env["ANTIGRAVITY_HOME"] == "/agy" and "UNRELATED_SECRET" not in env

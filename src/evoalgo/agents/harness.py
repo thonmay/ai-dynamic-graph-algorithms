@@ -40,6 +40,9 @@ BASE_ENV_PREFIXES = ("LC_", "XDG_")
 HARNESS_ENV = {
     # opencode keeps its provider credentials in its own config directory.
     "opencode": (("OPENCODE_PATH",), ("OPENCODE_",)),
+    # agy (Antigravity CLI) uses ~/.gemini/antigravity-cli and Gemini/Google env vars.
+    "agy": (("AGY_PATH", "GEMINI_API_KEY", "GOOGLE_API_KEY"),
+            ("ANTIGRAVITY_", "AGY_", "GEMINI_")),
 }
 
 
@@ -268,4 +271,50 @@ class OpencodeBackend(HarnessBackend):
                 usage["prompt_tokens"] += int(tokens.get("input") or 0)
                 usage["completion_tokens"] += int(tokens.get("output") or 0)
         return (texts[-1].strip() if texts else None), usage
+
+
+class AgyBackend(HarnessBackend):
+    """Antigravity CLI (``agy``), driven headlessly; ``harness_bin`` overrides the binary."""
+
+    name = "agy"
+
+    def __init__(self, config: Any, run_dir: Path):
+        super().__init__(config, run_dir)
+        self.bin = self.find_bin(config.harness_bin)
+
+    @staticmethod
+    def find_bin(override: str | None) -> str:
+        return override or os.environ.get("AGY_PATH") or shutil.which("agy") or "agy"
+
+    def command(self, task: Task, prompt: str) -> list[str]:
+        cmd = [
+            self.bin, "-p",
+            "--output-format", "json",
+            "--mode", "auto",
+            "--disable-slash-commands",
+            "--print-timeout", f"{self.timeout}s",
+        ]
+        if self.config.model:
+            cmd += ["--model", self.config.model]
+        # Prompt last so HarnessBackend.run() redacts it with cmd[:-1] + ["<task>"].
+        return cmd + [prompt]
+
+    def parse(self, stdout: str) -> tuple[str | None, dict[str, int]]:
+        usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        raw = stdout.strip()
+        if not raw:
+            return None, usage
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            # Fall back to NDJSON / plain text if stream-json or mixed output was emitted.
+            return super().parse(stdout)
+        if not isinstance(obj, dict):
+            return super().parse(stdout)
+        text = obj.get("result") or obj.get("response") or obj.get("text")
+        if isinstance(obj.get("usage"), dict):
+            u = obj["usage"]
+            usage["prompt_tokens"] = int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
+            usage["completion_tokens"] = int(u.get("output_tokens") or u.get("completion_tokens") or 0)
+        return (text.strip() if isinstance(text, str) and text.strip() else None), usage
 
