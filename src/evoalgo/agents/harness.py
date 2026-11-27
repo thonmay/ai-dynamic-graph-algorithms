@@ -64,9 +64,16 @@ def harness_env(harness: str, **overrides: str) -> dict[str, str]:
 
 # Directories are opened before they are hidden and bound back through the
 # descriptor, so this also works when the run is inside the hidden checkout.
+# The jail's own tools run before the agent is confined, and the agent can
+# write its home, which is on its PATH and LD_LIBRARY_PATH; so they are found
+# on a fixed system PATH with no loader variables (jail_env), and the agent's
+# own values are set by env only after the inner unshare has dropped root in
+# the namespace, so a library the agent plants cannot undo the mounts.
 _AGENT_JAIL = r'''
 set -e
 uid=$1; gid=$2; run=$3; work=$4; extra=$5; shift 5
+u=$EVOALGO_UNSHARE; p=$EVOALGO_AGENT_PATH; l=$EVOALGO_AGENT_LD
+unset EVOALGO_UNSHARE EVOALGO_AGENT_PATH EVOALGO_AGENT_LD
 exec 3<"$work"
 if [ -n "$extra" ]; then exec 4<"$extra"; fi
 while [ "$1" != "--" ]; do
@@ -74,6 +81,10 @@ while [ "$1" != "--" ]; do
   shift
 done
 shift
+# A private /tmp and no /run/user: their sockets (tmux, the session bus that
+# systemd-run uses) would run commands outside the jail.
+mount -t tmpfs -o size=512m,mode=1777 none /tmp
+if [ -d "/run/user/$uid" ]; then mount -t tmpfs -o size=1m,mode=700 none "/run/user/$uid"; fi
 mkdir -p "$run"
 mount --no-canonicalize --bind /proc/self/fd/3 "$run"
 if [ -n "$extra" ]; then
@@ -84,9 +95,12 @@ exec 3<&- 4<&-
 mount -t proc proc /proc
 cd "$run"
 r=0
-unshare -U --map-user="$uid" --map-group="$gid" -- "$@" || r=$?
+if [ -n "$l" ]; then set -- LD_LIBRARY_PATH="$l" "$@"; fi
+"$u" -U --map-user="$uid" --map-group="$gid" -- /usr/bin/env PATH="$p" "$@" || r=$?
 exit "$r"
 '''
+SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+UNSHARE = shutil.which("unshare", path=SYSTEM_PATH)
 
 MAX_OUTPUT_BYTES = 1 << 20  # a candidate or reflection; anything larger is not one
 
@@ -109,17 +123,27 @@ def hidden_from_agents() -> list[str]:
 
 def confined(cmd: list[str], run_dir: Path, work: Path, writable: Path | None = None) -> list[str]:
     """``cmd`` wrapped in the agent jail; inside, ``run_dir`` is ``work``, and
-    ``writable`` (the Lean project, for the prover) stays visible."""
-    return ["unshare", "-rmpf", "--kill-child", "sh", "-c", _AGENT_JAIL, "agent-jail",
+    ``writable`` (the Lean project, for the prover) stays visible. Run it
+    with ``jail_env``."""
+    return [str(UNSHARE), "-rmpf", "--kill-child", "/bin/sh", "-c", _AGENT_JAIL, "agent-jail",
             str(os.getuid()), str(os.getgid()), str(run_dir), str(work),
             str(writable or ""), *hidden_from_agents(), "--", *cmd]
+
+
+def jail_env(env: dict[str, str]) -> dict[str, str]:
+    """``env`` for a ``confined`` command: the jail is set up on the system
+    PATH without LD_LIBRARY_PATH; the agent's own values reach its command."""
+    out = {k: v for k, v in env.items() if k not in ("PATH", "LD_LIBRARY_PATH")}
+    return out | {"PATH": SYSTEM_PATH, "EVOALGO_UNSHARE": str(UNSHARE),
+                  "EVOALGO_AGENT_PATH": env.get("PATH", SYSTEM_PATH),
+                  "EVOALGO_AGENT_LD": env.get("LD_LIBRARY_PATH", "")}
 
 
 def jail_error() -> str | None:
     """Why the agent jail cannot run here, or None (also when it is disabled)."""
     if os.environ.get(JAIL_ENV) == "none":
         return None
-    if not (sys.platform.startswith("linux") and shutil.which("unshare")):
+    if not (sys.platform.startswith("linux") and UNSHARE):
         return ("the agent jail needs Linux user namespaces (unshare); "
                 f"set {JAIL_ENV}=none to run the agent unconfined")
     return None
@@ -178,9 +202,11 @@ class HarnessBackend:
                 raise FileNotFoundError(cmd[0])
             if error := jail_error():
                 raise RuntimeError(error)
-            argv = confined(cmd, self.run_dir, work) if jailed else cmd
+            argv, env = cmd, harness_env(self.name)
+            if jailed:
+                argv, env = confined(cmd, self.run_dir, work), jail_env(env)
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout,
-                                  cwd=self.run_dir, env=harness_env(self.name))
+                                  cwd=self.run_dir, env=env)
             entry.update(returncode=proc.returncode, stderr=proc.stderr[-4000:])
             result.summary, result.usage = self.parse(proc.stdout)
             if proc.returncode != 0:

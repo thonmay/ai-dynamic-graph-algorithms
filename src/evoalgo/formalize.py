@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .agents.harness import OpencodeBackend, confined, harness_env, jail_error
+from .agents.harness import OpencodeBackend, confined, harness_env, jail_env, jail_error
 from .config import RunConfig
 from .sandbox import JAIL_ENV
 
@@ -187,16 +187,17 @@ def _dispatch_agent(
     # the Lean project and a copy of the candidate at its usual path, not the
     # verifier or the rest of the run.
     work = None
+    env = harness_env("opencode")
     if os.environ.get(JAIL_ENV) != "none":
         (run_dir / ".agent").mkdir(exist_ok=True)
         work = Path(tempfile.mkdtemp(prefix="formalize-", dir=run_dir / ".agent"))
         rel = candidate_path.relative_to(run_dir)
         (work / rel).parent.mkdir(parents=True)
         shutil.copyfile(candidate_path, work / rel)
-        cmd = confined(cmd, run_dir, work, writable=project_dir)
+        cmd, env = confined(cmd, run_dir, work, writable=project_dir), jail_env(env)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              cwd=run_dir, env=harness_env("opencode"))
+                              cwd=run_dir, env=env)
         return proc.returncode, proc.stdout + "\n" + proc.stderr, None
     except FileNotFoundError:
         return -1, "", f"opencode binary not found at {opencode}"
@@ -209,19 +210,24 @@ def _dispatch_agent(
             shutil.rmtree(work, ignore_errors=True)
 
 
+def _lake(project_dir: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
+    """lake on the agent-written project. Lean and lakefile code runs at build
+    time, so it runs in the agent jail too, with only the project visible."""
+    cmd, env = ["lake", *args], None
+    if error := jail_error():
+        return subprocess.CompletedProcess(cmd, 1, "", error)
+    if os.environ.get(JAIL_ENV) != "none":
+        cmd, env = confined(cmd, project_dir, project_dir), jail_env(harness_env("opencode"))
+    return subprocess.run(cmd, cwd=str(project_dir), capture_output=True, text=True,
+                          timeout=timeout, env=env)
+
+
 def _verify_leanchecker(project_dir: Path, module_name: str) -> tuple[bool, str]:
     """Run the independent external kernel checker (Lean4Lean leanchecker) on
     the compiled module. This guards against elaborator/kernel discrepancies
     beyond what `lake build` verifies."""
-    cmd = ["lake", "env", "leanchecker", f"ThesisLean.{module_name}"]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
+        proc = _lake(project_dir, ["env", "leanchecker", f"ThesisLean.{module_name}"], 1800)
     except FileNotFoundError:
         return False, "leanchecker binary not found on PATH"
     except subprocess.TimeoutExpired:
@@ -233,15 +239,8 @@ def _verify_leanchecker(project_dir: Path, module_name: str) -> tuple[bool, str]
 
 def _verify_lake_build(project_dir: Path, module_name: str) -> tuple[bool, str]:
     """Run lake build for the module; return (ok, tail_of_output)."""
-    cmd = ["lake", "build", f"ThesisLean.{module_name}"]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
+        proc = _lake(project_dir, ["build", f"ThesisLean.{module_name}"], 1800)
     except FileNotFoundError:
         return False, "lake binary not found on PATH"
     except subprocess.TimeoutExpired:
@@ -259,15 +258,8 @@ def _verify_lake_build(project_dir: Path, module_name: str) -> tuple[bool, str]:
 
 def _verify_lean_no_sorry(project_dir: Path, module_path: Path) -> tuple[bool, str]:
     """Run lean on the module; fail if it reports a `sorry` warning."""
-    cmd = ["lake", "env", "lean", str(module_path)]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
+        proc = _lake(project_dir, ["env", "lean", str(module_path)], 600)
     except FileNotFoundError:
         return False, "lake/lean binary not found on PATH"
     except subprocess.TimeoutExpired:

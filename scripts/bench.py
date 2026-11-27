@@ -13,7 +13,8 @@ check of correctness beyond n <= 5, where the verifier is exhaustive.
 
 Each (run, size) cell runs in the sandbox jail (candidates are untrusted
 code) under a wall-clock budget (--cell-timeout); a slower candidate is
-reported as a timeout. Writes <out>/bench.csv (one row per run and size).
+reported as a timeout. Writes <out>/bench.csv (one row per run and size), or
+--csv PATH (a live demo should not overwrite the committed table).
 Updates are balanced (half inserts of missing edges, half deletes of
 existing edges), so the density stays at the start value.
 Speedup = recompute time / candidate time over all updates (> 1 is faster).
@@ -177,6 +178,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--cell-timeout", type=int, default=600,
                     help="seconds per (run, size); slower candidates are reported as timeouts")
+    ap.add_argument("--csv", type=Path, help="output file (default: <plan out>/bench.csv)")
     args = ap.parse_args()
     plan = yaml.safe_load(Path(args.plan).read_text())
     out = REPO / plan["out"]
@@ -204,7 +206,7 @@ def main() -> int:
                    "recompute_us_per_update": round(res["t_ref"] / 1000 / total, 2) if ok else None}
             rows.append(row)
             print(json.dumps(row), flush=True)
-    with open(out / "bench.csv", "w", newline="") as f:
+    with open(args.csv or out / "bench.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["run_id"], lineterminator="\n")
         w.writeheader()
         w.writerows(rows)

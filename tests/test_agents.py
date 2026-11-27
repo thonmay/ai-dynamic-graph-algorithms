@@ -448,6 +448,82 @@ def test_harness_agent_cannot_reach_trusted_code(tmp_path, monkeypatch, run_in_r
     assert not result.ok and not (run / "candidates" / "gen001_c01.py").exists()
 
 
+PLANTING_OPENCODE = r'''#!/bin/sh
+# Plants fake jail tools in a directory on its own PATH (the user's home is
+# writable from the jail), then records whether the verifier is reachable.
+for t in unshare sh mount; do
+  printf '#!/bin/sh\necho planted >> "$OPENCODE_PROBE"\nexec /usr/bin/%s "$@"\n' "$t" > "$OPENCODE_PLANT/$t"
+  chmod +x "$OPENCODE_PLANT/$t"
+done
+if [ -r "$OPENCODE_VERIFIER" ]; then echo "read" >> "$OPENCODE_PROBE"; fi
+# Sockets of the user's tmux and session bus would run commands unjailed.
+if [ -n "$(ls -A /tmp)" ]; then echo "tmp" >> "$OPENCODE_PROBE"; fi
+if [ -n "$(ls -A "/run/user/$(id -u)" 2>/dev/null)" ]; then echo "run" >> "$OPENCODE_PROBE"; fi
+printf 'def init(g): return {}\n' > candidates/gen001_c01.py
+'''
+
+
+def test_agent_cannot_plant_jail_tools_on_its_path(tmp_path, monkeypatch):
+    """A tool the agent leaves on its PATH is not used to build the next
+    jail: the jail's own unshare, sh and mount come from the system PATH."""
+    import os
+    from pathlib import Path
+    import evoalgo
+    from evoalgo import sandbox
+    if os.environ.get(sandbox.JAIL_ENV) == "none":
+        pytest.skip("jail disabled")
+    plant, probe = tmp_path / "plant", tmp_path / "probe"
+    plant.mkdir()
+    probe.write_text("")
+    fake = tmp_path / "bin" / "opencode"
+    fake.parent.mkdir()
+    fake.write_text(PLANTING_OPENCODE)
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{plant}:{os.environ['PATH']}")
+    for name, value in {"PLANT": plant, "PROBE": probe,
+                        "VERIFIER": Path(evoalgo.__file__).parent / "verifier.py"}.items():
+        monkeypatch.setenv(f"OPENCODE_{name}", str(value))
+    run = tmp_path / "run"
+    run.mkdir()
+    cfg = RunConfig(problem="dynamic_bfs", provider="opencode", harness_bin=str(fake))
+    for _ in range(2):  # the second call would start from the planted tools
+        assert OpencodeBackend(cfg, run).run(task(run)).ok
+    assert probe.read_text() == ""
+    # A library planted on its LD_LIBRARY_PATH would be loaded by the inner
+    # unshare, which can still unmount; a broken libc there must not matter.
+    (plant / "libc.so.6").write_text("not a library")
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(plant))
+    monkeypatch.setenv("OPENCODE_PLANT", str(tmp_path / "unused"))
+    (tmp_path / "unused").mkdir()
+    err = OpencodeBackend(cfg, run).run(task(run)).error or ""
+    # The agent's own command may load it (it runs as the user); the jail's
+    # unshare and env must not.
+    assert "unshare: error while loading" not in err and "env: error while loading" not in err
+
+
+def test_lean_checks_run_jailed(tmp_path, monkeypatch):
+    """lake runs the agent-written Lean project (lakefile and #eval code run at
+    build time), so the formalize checks run in the agent jail as well."""
+    import os
+    from pathlib import Path
+    import evoalgo
+    from evoalgo import formalize, sandbox
+    if os.environ.get(sandbox.JAIL_ENV) == "none":
+        pytest.skip("jail disabled")
+    project, probe, bindir = tmp_path / "lean", tmp_path / "probe", tmp_path / "bin"
+    project.mkdir()
+    bindir.mkdir()
+    (bindir / "lake").write_text('#!/bin/sh\nif [ -r "$OPENCODE_VERIFIER" ]; then echo read > "$OPENCODE_PROBE"; fi\n'
+                                 'echo "Build completed successfully"\n')
+    (bindir / "lake").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    monkeypatch.setenv("OPENCODE_VERIFIER", str(Path(evoalgo.__file__).parent / "verifier.py"))
+    monkeypatch.setenv("OPENCODE_PROBE", str(probe))
+    proc = formalize._lake(project, ["build", "X"], 60)
+    assert proc.returncode == 0 and "Build completed" in proc.stdout
+    assert not probe.exists()
+
+
 def test_harness_env_is_allow_listed(monkeypatch):
     from evoalgo.agents.harness import harness_env
     monkeypatch.setenv("GERRIT_PASSWORD", "x")

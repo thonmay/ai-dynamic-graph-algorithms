@@ -9,7 +9,7 @@ permission:
   edit: allow
   grep: allow
   glob: allow
-  bash: allow
+  bash: deny  # writing one file needs no shell; the shell is how a jail is escaped
   todowrite: allow
   skill:
     dynamic-graph-algorithms: allow
