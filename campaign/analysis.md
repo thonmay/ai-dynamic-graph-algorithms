@@ -40,8 +40,8 @@ Source: `eval1/results.csv`, `eval1/summary.md`, `eval1/bench.csv`.
 | single agent (harness) | 9/9 | 0.69 / 0.32 / 0.21 | 35-60 | 1.93 M (2.22 M incl. the retried attempt) |
 
 - 26 of 27 cells reach final-grade PASS. The miss is no-reflection BFS seed 3:
-  all three graded candidates pass 51,464 sequences at n = 5 and then fail
-  one (the grade stops at the first counterexample), which the
+  all three graded candidates pass all 51,456 sequences up to n = 4 and fail
+  the ninth at n = 5 (the grade stops at the first counterexample), which the
   n <= 4 search grade cannot see. This is the case the two-tier grade exists
   for.
 - Every cell has a search-grade PASS by generation 3 (most in generation 1):
